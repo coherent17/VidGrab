@@ -236,14 +236,6 @@ def process_local_file(
     if not src.is_file():
         raise FileNotFoundError(f"File not found: {src}")
 
-    ffmpeg = find_ffmpeg()
-    if not ffmpeg:
-        raise RuntimeError(
-            "ffmpeg is required to process local files. "
-            "Install ffmpeg or place it next to the app."
-        )
-    _ensure_ffmpeg_on_path(ffmpeg)
-
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -265,6 +257,14 @@ def process_local_file(
         if on_progress:
             on_progress("Complete", 100.0)
         return final_file
+
+    ffmpeg = find_ffmpeg()
+    if not ffmpeg:
+        raise RuntimeError(
+            "ffmpeg is required to process local files. "
+            "Install ffmpeg or place it next to the app."
+        )
+    _ensure_ffmpeg_on_path(ffmpeg)
 
     final_file.unlink(missing_ok=True)
     _trim(

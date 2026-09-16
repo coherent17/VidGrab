@@ -90,6 +90,15 @@ def test_process_local_file_invalid_start_raises(tmp_path) -> None:
         downloader.process_local_file(src, tmp_path, section_start="bogus")
 
 
+def test_invalid_time_reported_before_ffmpeg_requirement(tmp_path, monkeypatch) -> None:
+    """Bad times are validated even when ffmpeg is unavailable."""
+    monkeypatch.setattr(downloader, "find_ffmpeg", lambda: None)
+    src = tmp_path / "a.mp4"
+    src.write_bytes(b"x")
+    with pytest.raises(RuntimeError, match="Invalid start time"):
+        downloader.process_local_file(src, tmp_path, section_start="bogus")
+
+
 def test_process_local_file_end_not_after_start(tmp_path) -> None:
     src = tmp_path / "a.mp4"
     src.write_bytes(b"x")

@@ -72,9 +72,15 @@ vidgrab/            the app
   downloader.py     yt-dlp download / ffmpeg flip & trim logic
   network.py        offline/captive-portal detection
   _version.py       single __version__ source
-assets/             icon.ico + icon.png (regenerate via scripts/generate_icon.py)
+assets/             bundled resources (icon.ico, icon.png, NotoSansTC font)
 ffmpeg/win|linux/   build-time ffmpeg binaries (embedded, not committed)
+scripts/            dev/build helpers
+  scripts\build.bat    Windows build (CMD) — run from the repo root
+  scripts\build.ps1    Windows build (PowerShell) — run from the repo root
+  generate_icon.py  regenerates assets/icon.ico + assets/icon.png
 tests/              pytest suite incl. headless GUI smoke test
+docs/               project notes (SESSION.md working log)
+run.sh              Linux/macOS one-shot launcher
 VidGrab.spec        PyInstaller spec (platform-aware, bundles ffmpeg + Qt)
 ```
 
@@ -94,13 +100,13 @@ On a **Windows** machine (or WSL with Windows interop):
 ```powershell
 cd \\wsl.localhost\<Distro>\home\<you>\VidGrab
 Set-ExecutionPolicy -Scope Process Bypass
-.\build.ps1
+.\scripts\build.ps1
 ```
 
 **Command Prompt** (uses `pushd` to handle WSL UNC paths):
 
 ```bat
-build.bat
+scripts\build.bat
 ```
 
 Or copy to a native path first:
@@ -108,7 +114,7 @@ Or copy to a native path first:
 ```bat
 xcopy \\wsl.localhost\<Distro>\home\<you>\VidGrab C:\VidGrab /E /I
 cd C:\VidGrab
-build.bat
+scripts\build.bat
 ```
 
 Output: `dist\VidGrab.exe` (single self-contained file) and `dist\VidGrab.zip`.

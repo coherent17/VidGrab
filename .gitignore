@@ -16,3 +16,4 @@ ffmpeg/ffplay.exe
 ffmpeg/win/
 ffmpeg/linux/
 .pytest_cache/
+.ruff_cache/

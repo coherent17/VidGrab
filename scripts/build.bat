@@ -2,7 +2,8 @@
 setlocal enabledelayedexpansion
 
 REM pushd maps \\wsl.localhost\... UNC paths to a temp drive letter (Z: etc.)
-pushd "%~dp0" || (
+REM Live-repos dir one level up (this script lives in scripts/)
+pushd "%~dp0.." || (
     echo ERROR: Could not enter project directory: %~dp0
     exit /b 1
 )

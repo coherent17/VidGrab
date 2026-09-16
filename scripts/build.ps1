@@ -1,6 +1,6 @@
 # Build VidGrab on Windows (works from WSL UNC paths in PowerShell)
 $ErrorActionPreference = "Stop"
-Set-Location $PSScriptRoot
+Set-Location (Join-Path $PSScriptRoot "..")
 
 Write-Host "=== VidGrab - Windows Build ===" -ForegroundColor Cyan
 Write-Host "Project dir: $(Get-Location)"

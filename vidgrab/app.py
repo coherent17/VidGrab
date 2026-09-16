@@ -69,9 +69,7 @@ from vidgrab.network import ConnectionStatus, check_internet
 
 DARK_QSS = """
 * {
-    font-family: "Segoe UI", "Noto Sans", "Noto Sans CJK TC", "Noto Sans TC",
-        "Source Han Sans TC", "PingFang TC", "Microsoft JhengHei",
-        "WenQuanYi Zen Hei", "Droid Sans Fallback", "Ubuntu", "Cantarell", sans-serif;
+    font-family: @FONT_CHAIN@;
 }
 QLabel {
     color: #c9d1e0;
@@ -425,9 +423,7 @@ QToolTip {
 
 LIGHT_QSS = """
 * {
-    font-family: "Segoe UI", "Noto Sans", "Noto Sans CJK TC", "Noto Sans TC",
-        "Source Han Sans TC", "PingFang TC", "Microsoft JhengHei",
-        "WenQuanYi Zen Hei", "Droid Sans Fallback", "Ubuntu", "Cantarell", sans-serif;
+    font-family: @FONT_CHAIN@;
 }
 QLabel {
     color: #1e293b;
@@ -1595,6 +1591,7 @@ class VidGrabWindow(QMainWindow):
     def _apply_theme(self) -> None:
         check = _checkmark_path()
         qss = _THEMES[self._theme]
+        qss = qss.replace("@FONT_CHAIN@", _font_chain(self._lang))
         self.setStyleSheet(qss.replace("@CHECK@", check))
         for label, kind in self._card_titles:
             self._style_card_title(label, kind)
@@ -1621,6 +1618,7 @@ class VidGrabWindow(QMainWindow):
             self._lang = code
             self._t = make_translator(code)
             self._apply_language()
+            self._apply_theme()
             _save_config(self._theme, self._lang)
 
     def _apply_language(self) -> None:
@@ -2153,22 +2151,50 @@ def _build_filter(hflip: QCheckBox, vflip: QCheckBox) -> str | None:
 # ── entry point ────────────────────────────────────────────────────────────
 
 
-_APP_FONT_FAMILIES = [
-    "Segoe UI", "Noto Sans", "Noto Sans CJK TC", "Noto Sans TC",
-    "Source Han Sans TC", "PingFang TC", "Microsoft JhengHei",
-    "WenQuanYi Zen Hei", "Droid Sans Fallback", "Ubuntu", "Cantarell",
-    "sans-serif",
-]
+# Fallback font chain used everywhere (QSS + app font). The regional Noto CJK
+# families cover zh (TC), ja (JP) and ko (KR); a language's own font is pulled
+# to the front so CJK glyphs render in their preferred regional form.
+_FONT_FALLBACK = (
+    "Segoe UI", "Noto Sans",
+    "Noto Sans CJK TC", "Noto Sans TC", "Source Han Sans TC",
+    "Noto Sans CJK JP", "Noto Sans JP",
+    "Noto Sans CJK KR", "Noto Sans KR",
+    "PingFang TC", "Microsoft JhengHei", "WenQuanYi Zen Hei",
+    "Droid Sans Fallback", "Ubuntu", "Cantarell", "sans-serif",
+)
+
+_LANG_FONT_PREF = {
+    "zh": "Noto Sans CJK TC",
+    "ja": "Noto Sans CJK JP",
+    "ko": "Noto Sans CJK KR",
+}
+
+
+def _font_chain(lang: str) -> str:
+    """Return the QSS `font-family` list, leading with *lang*'s CJK font."""
+    fams = list(_FONT_FALLBACK)
+    pref = _LANG_FONT_PREF.get(lang)
+    if pref in fams:
+        fams.remove(pref)
+        fams.insert(0, pref)
+    return ", ".join(f'"{f}"' for f in fams)
+
+
+_APP_FONT_FAMILIES = list(_FONT_FALLBACK)
 
 _BUNDLED_FONTS = (
     "NotoSansTC-Regular.otf",
+    "NotoSansJP-Regular.otf",
+    "NotoSansKR-Regular.otf",
     "NotoSansCJKtc-Regular.otf",
+    "NotoSansCJKjp-Regular.otf",
+    "NotoSansCJKkr-Regular.otf",
     "SourceHanSansTC-Regular.otf",
 )
 
 
 def _register_bundled_fonts() -> None:
-    """Load a bundled CJK font (if shipped next to the app) so Chinese renders.
+    """Load bundled CJK fonts (if shipped next to the app) so zh/ja/ko render.
 
     Safe no-op when no bundled font is present; Qt still falls back to any
     system CJK font like Noto Sans CJK TC or Microsoft JhengHei.

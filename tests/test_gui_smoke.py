@@ -74,7 +74,7 @@ def test_lang_toggle(qapp, tmp_path, monkeypatch) -> None:
     try:
         assert win._lang == "en"
         assert win._theme_btn.text() in ("\u2600 Light", "\u2600 \u6dfa\u8272")
-        win._lang_combo.setCurrentIndex(1)  # 繁體中文
+        win._lang_combo.setCurrentIndex(win._lang_combo.findData("zh"))  # 繁體中文
         assert win._lang == "zh"
         assert "\u6dfa\u8272" in win._theme_btn.text()  # 淺色
         assert "\u5916\u89c0" in win._settings_title.text()  # 外觀
@@ -84,3 +84,39 @@ def test_lang_toggle(qapp, tmp_path, monkeypatch) -> None:
         assert cfg["theme"] == "dark"
     finally:
         win.close()
+
+
+def test_lang_toggle_ja_ko(qapp, tmp_path, monkeypatch) -> None:
+    from vidgrab import app as appmod
+
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    appmod._save_config("dark", "en")
+    win = appmod.VidGrabWindow()
+    try:
+        win._lang_combo.setCurrentIndex(win._lang_combo.findData("ja"))
+        assert win._lang == "ja"
+        assert "\u30ed\u30b0" in win._log_lbl.text()  # 記錄 -> ログ
+        win._lang_combo.setCurrentIndex(win._lang_combo.findData("ko"))
+        assert win._lang == "ko"
+        assert "\ub85c\uadf8" in win._log_lbl.text()  # 記錄 -> 로그
+        cfg = appmod._load_config()
+        assert cfg["lang"] == "ko"
+    finally:
+        win.close()
+
+
+def test_bundled_fonts_register(qapp) -> None:
+    from pathlib import Path
+
+    from PySide6.QtGui import QFontDatabase
+
+    from vidgrab import app as appmod
+
+    appmod._register_bundled_fonts()
+    families = set(QFontDatabase.families())
+    for name in ("Noto Sans CJK TC", "Noto Sans CJK JP", "Noto Sans CJK KR"):
+        assert name in families, f"bundled font not registered: {name}"
+
+    assets = Path(appmod.__file__).resolve().parent.parent / "assets"
+    for fname in ("NotoSansTC-Regular.otf", "NotoSansJP-Regular.otf", "NotoSansKR-Regular.otf"):
+        assert (assets / fname).is_file(), f"font asset missing: {fname}"

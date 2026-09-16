@@ -5,7 +5,7 @@
 
 A portable media downloader & editor for **Windows** and **Linux**. Grab a YouTube
 video as **MP4**/**MP3**, or open a local file, then **flip / trim / change speed**
-it — all in one self-contained binary with a dark/light Qt GUI (English + 繁體中文).
+it — all in one self-contained binary with a dark/light Qt GUI (English, 繁體中文, 日本語, 한국어).
 
 Built with Python, PySide6 (Qt), yt-dlp and ffmpeg, packaged with PyInstaller
 (ffmpeg + ffplay embedded, no install required).

@@ -22,9 +22,9 @@ jobs:
           $ffmpeg = Get-ChildItem -Recurse "ffmpeg-unpacked" -Filter "ffmpeg.exe" | Select-Object -First 1
           $ffprobe = Get-ChildItem -Recurse "ffmpeg-unpacked" -Filter "ffprobe.exe" | Select-Object -First 1
           if (-not $ffmpeg -or -not $ffprobe) { throw "ffmpeg.exe or ffprobe.exe not found in archive" }
-          New-Item -ItemType Directory -Force "ffmpeg" | Out-Null
-          Copy-Item $ffmpeg.FullName "ffmpeg/ffmpeg.exe"
-          Copy-Item $ffprobe.FullName "ffmpeg/ffprobe.exe"
+          New-Item -ItemType Directory -Force "ffmpeg\win" | Out-Null
+          Copy-Item $ffmpeg.FullName "ffmpeg\win\ffmpeg.exe"
+          Copy-Item $ffprobe.FullName "ffmpeg\win\ffprobe.exe"
 
       - name: Install Python deps
         run: |
@@ -32,7 +32,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Generate icon
-        run: python scripts/generate_icon.py
+        run: python scripts\generate_icon.py
 
       - name: Build single-file exe
         run: pyinstaller VidGrab.spec --noconfirm

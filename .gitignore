@@ -13,3 +13,6 @@ Thumbs.db
 ffmpeg/ffmpeg.exe
 ffmpeg/ffprobe.exe
 ffmpeg/ffplay.exe
+ffmpeg/win/
+ffmpeg/linux/
+.pytest_cache/

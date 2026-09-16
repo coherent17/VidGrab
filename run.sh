@@ -49,4 +49,4 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
     echo ""
 fi
 
-python app.py
+python -m vidgrab

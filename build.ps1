@@ -29,10 +29,12 @@ if (-not (Test-Path "assets\icon.ico")) {
     python scripts\generate_icon.py
 }
 
-if (-not (Test-Path "ffmpeg\ffmpeg.exe")) {
+$winFfmpeg = "ffmpeg\win\ffmpeg.exe"
+if (-not (Test-Path $winFfmpeg) -and -not (Test-Path "ffmpeg\ffmpeg.exe")) {
     Write-Host ""
-    Write-Host "WARNING: ffmpeg\ffmpeg.exe not found." -ForegroundColor Yellow
-    Write-Host "MP3 and most MP4 downloads need ffmpeg in the ffmpeg\ folder."
+    Write-Host "WARNING: ffmpeg\win\ffmpeg.exe not found." -ForegroundColor Yellow
+    Write-Host "The exe will still build, but MP3 and merged MP4 downloads"
+    Write-Host "need ffmpeg embedded. Drop ffmpeg.exe + ffprobe.exe into ffmpeg\win\."
     Write-Host ""
 }
 

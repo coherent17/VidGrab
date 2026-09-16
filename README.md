@@ -3,18 +3,21 @@
 [![CI](https://github.com/coherent17/VidGrab/actions/workflows/ci.yml/badge.svg)](https://github.com/coherent17/VidGrab/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/coherent17/VidGrab?label=release)](https://github.com/coherent17/VidGrab/releases)
 
-A portable media downloader & editor for Windows with a small dark-theme GUI. Grab a YouTube video as **MP4** or **MP3**, or open a local file, then **flip** and **trim** it — all in one single self-contained `.exe`.
+A portable media downloader & editor for **Windows** and **Linux** with a modern dark/light GUI. Grab a YouTube video as **MP4** or **MP3**, or open a local file, then **flip** and **trim** it — all in one single self-contained binary.
 
-Built with **Python**, **tkinter**, **yt-dlp**, **ffmpeg**, and packaged with **PyInstaller**.
+Built with **Python**, **CustomTkinter**, **yt-dlp**, **ffmpeg**, and packaged with **PyInstaller**.
 
 ## Features
 
-- Download YouTube videos as **MP4** or simultaneous MP4 + MP3 (192 kbps)
-- **Flip** horizontally and/or vertically
-- **Trim** to a time window (seconds `90`, `M:SS` `1:30`, or `H:MM:SS`)
-- **Local file mode** — attach an MP4/MP3/MKV/etc. and flip/trim it, output to any folder
-- App icon, dark UI, progress bar, built-in log
-- **Single self-contained exe** (~94 MB) — ffmpeg is embedded inside the binary, no extra install, no `ffmpeg` folder needed
+- Download YouTube videos as **MP4** or simultaneous MP4 + MP3 (single-pass, ~50 % faster)
+- **Flip** horizontally and/or vertically (ultrafast re-encode, audio copied)
+- **Trim** to a time window (`90`, `1:30`, `1:02:03` or `start-end`) — YouTube downloads fetch only the wanted section when possible
+- **Local file mode** — attach an MP4/MP3/MKV/etc. and flip/trim it
+- **Internet status pill** — live Online / Offline indicator; buttons disabled cleanly with a Retry / Exit dialog when offline
+- **Dark / Light theme toggle** — persisted in `~/.config/vidgrab/config.json`
+- **Single self-contained binary** (~100 MB) — ffmpeg embedded, no install, no `ffmpeg` folder needed
+- **Linux release** — a self-contained x86_64 ELF is published alongside the Windows exe
+- Keyboard shortcuts: Ctrl+O, Ctrl+L, Enter, F1
 - No Python required for end users
 
 ## Quick start (developers)
@@ -43,7 +46,7 @@ Or manually:
 python3 -m venv .venv
 source .venv/bin/activate      # NOT .venv\Scripts\activate
 pip install -r requirements.txt
-python app.py
+python -m vidgrab              # or the back-compat shim: python app.py
 ```
 
 > **WSL GUI:** On Windows 11, WSLg shows the window automatically once `python3-tk` is installed.
@@ -54,7 +57,22 @@ python app.py
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-python app.py
+python -m vidgrab              # or the back-compat shim: python app.py
+```
+
+## Project structure
+
+```
+vidgrab/            the app
+  __main__.py       python -m vidgrab entry point
+  app.py            CustomTkinter UI (VidGrabApp)
+  downloader.py     yt-dlp download / ffmpeg flip & trim logic
+  network.py        offline/captive-portal detection
+  _version.py       single __version__ source
+assets/             icon.ico + icon.png (regenerate via scripts/generate_icon.py)
+ffmpeg/win|linux/   build-time ffmpeg binaries (embedded, not committed)
+tests/              pytest suite incl. headless GUI smoke test
+VidGrab.spec        PyInstaller spec (platform-aware, bundles ffmpeg + CTk assets)
 ```
 
 ## Build the Windows exe
@@ -64,7 +82,7 @@ On a **Windows** machine (or WSL with Windows interop):
 1. Install [Python 3.10+](https://www.python.org/downloads/) — check **"Add python.exe to PATH"**
 2. Copy the project to a **Windows path** (recommended), e.g. `C:\Users\You\VidGrab`
    *(Building from `\\wsl.localhost\...` fails in CMD unless you use the scripts below.)*
-3. Ensure `ffmpeg/ffmpeg.exe` and `ffmpeg/ffprobe.exe` are present — they get embedded into the exe
+3. Ensure `ffmpeg/win/ffmpeg.exe` and `ffmpeg/win/ffprobe.exe` are present — they get embedded into the exe
 4. Generate the icon (once): `python scripts/generate_icon.py`
 5. Build:
 
@@ -92,11 +110,16 @@ build.bat
 
 Output: `dist\VidGrab.exe` (single self-contained file) and `dist\VidGrab.zip`.
 
+The **Linux binary** (`VidGrab-linux`) is produced by CI on `ubuntu-latest`:
+it embeds a static ffmpeg build and needs only standard X11/Wayland libraries
+on the target machine.
+
 ### Distributing to other users
 
-Send users the single `VidGrab.exe` (or the `VidGrab.zip`). Unzip anywhere and run — **no install required**.
-
-> **Note:** ffmpeg is embedded, so there is no separate `ffmpeg` folder to ship. If you later place an `ffmpeg/` folder next to the exe, it overrides the embedded copy (useful for testing).
+Send users the single `VidGrab.exe` (or `VidGrab.zip`), or `VidGrab-linux` on
+Linux. No install required — ffmpeg is embedded, so there is no separate
+`ffmpeg` folder to ship. An `ffmpeg/win/` folder placed next to the exe still
+overrides the embedded copy (useful for testing).
 
 ## Manual PyInstaller command
 
@@ -111,19 +134,33 @@ pyinstaller VidGrab.spec --noconfirm
 ```bash
 source .venv/bin/activate          # or .venv\Scripts\activate on Windows
 pip install -r requirements-dev.txt
-pytest -v                          # 14 tests, no network needed
+ruff check .                       # lint
+pytest -v                          # 23 tests, no network needed
+```
+
+To also run the headless GUI smoke test (constructs the real window), use a
+virtual display:
+
+```bash
+SMOKE_GUI=1 xvfb-run -a pytest -v
 ```
 
 What CI does on every push to `main` / pull request:
 
-- **test** (ubuntu): installs ffmpeg + tkinter, runs the full pytest suite, and fails if any `.exe` binary is ever tracked by git
-- **build-windows** (windows-latest): downloads the gyan ffmpeg essentials build, embeds it via `VidGrab.spec`, and produces the single-file exe + zip as a downloadable artifact
+- **test** (ubuntu): ruff lint, the full pytest suite (incl. the GUI smoke test
+  under Xvfb), and fails if any ffmpeg binary is ever tracked by git
+- **build-windows** (windows-latest): downloads the gyan ffmpeg essentials build
+  into `ffmpeg/win/`, embeds it via `VidGrab.spec`, produces the single-file
+  exe + zip as a downloadable artifact
+- **build-linux** (ubuntu-latest): embeds a static ffmpeg build into
+  `ffmpeg/linux/`, produces the single-file ELF + `.tar.xz`
 
-**Releases:** push a tag to ship a ready-to-download GitHub Release with `VidGrab.exe` + `VidGrab.zip`:
+**Releases:** push a tag to ship a ready-to-download GitHub Release with
+`VidGrab.exe`, `VidGrab.zip`, `VidGrab-linux` and `VidGrab-linux.tar.xz`:
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git tag v2.0.0
+git push origin v2.0.0
 ```
 
 ## Usage

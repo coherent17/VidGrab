@@ -15,26 +15,35 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install system deps (tkinter + ffmpeg)
+      - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-tk ffmpeg
+          sudo apt-get install -y python3-tk xvfb
 
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
-      - name: Run tests
-        run: python -m pytest -v
+      - name: Lint
+        run: ruff check .
 
-      - name: Ensure no FFmpeg binaries are tracked in git
+      - name: Run tests (incl. GUI smoke under Xvfb)
+        run: xvfb-run -a python -m pytest -v
+        env:
+          SMOKE_GUI: "1"
+
+      - name: Ensure no FFmpeg binaries are tracked
         run: |
-          BINARIES=$(git ls-files 'ffmpeg/*.exe' '*.exe')
+          BINARIES=$(git ls-files 'ffmpeg/*.exe' '*.exe' 'ffmpeg/linux/ffmpeg' 'ffmpeg/linux/ffprobe')
           if [ -n "$BINARIES" ]; then
-            echo "Found tracked binaries, refusing to ship them:"; echo "$BINARIES"; exit 1
+            echo "Found tracked binaries:"; echo "$BINARIES"; exit 1
           fi
 
   build-windows:
     needs: test
     uses: ./.github/workflows/build-windows.yml
+
+  build-linux:
+    needs: test
+    uses: ./.github/workflows/build-linux.yml

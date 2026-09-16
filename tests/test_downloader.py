@@ -8,8 +8,7 @@ from pathlib import Path
 
 import pytest
 
-import downloader
-
+from vidgrab import downloader
 
 # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -17,15 +16,16 @@ FFMPEG = shutil.which("ffmpeg")
 requires_ffmpeg = pytest.mark.skipif(not FFMPEG, reason="ffmpeg not installed")
 
 
-def _make_video(path: Path, seconds: str = "1") -> None:
+def _make_video(path: Path, seconds: str = "1", with_audio: bool = False) -> None:
     """Create a tiny 64x64 color video for processing tests."""
-    subprocess.run(
-        [FFMPEG, "-y", "-f", "lavfi", "-i", "color=c=blue:s=64x64:d=1",
-         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-t", seconds, str(path)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    cmd = [FFMPEG, "-y", "-f", "lavfi", "-i", "color=c=blue:s=64x64:d=1",
+           "-c:v", "libx264", "-pix_fmt", "yuv420p"]
+    if with_audio:
+        cmd = [FFMPEG, "-y", "-f", "lavfi", "-i", "color=c=blue:s=64x64:d=1",
+               "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+               "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest"]
+    cmd += ["-t", seconds, str(path)]
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
 
 
 # ── default_output_dir ────────────────────────────────────────────────────
@@ -126,6 +126,27 @@ def test_process_local_file_trim(tmp_path) -> None:
         src, tmp_path, section_start="0", section_end="1"
     )
     assert out.is_file()
+
+
+@requires_ffmpeg
+def test_derive_mp3_from_mp4(tmp_path) -> None:
+    src = tmp_path / "clip.mp4"
+    _make_video(src, seconds="1", with_audio=True)
+    out = downloader.derive_mp3(src, tmp_path)
+    assert out == tmp_path / "clip.mp3"
+    assert out.is_file()
+    assert out.stat().st_size > 0
+
+
+def test_derive_mp3_missing_source(tmp_path) -> None:
+    with pytest.raises(FileNotFoundError):
+        downloader.derive_mp3(tmp_path / "nope.mp4", tmp_path)
+
+
+def test_version_is_importable() -> None:
+    from vidgrab import __version__
+
+    assert __version__.count(".") == 2
 
 
 # ── misc ──────────────────────────────────────────────────────────────────

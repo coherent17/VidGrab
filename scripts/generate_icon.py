@@ -92,9 +92,7 @@ def _draw(size: int) -> bytes:
             if not _in_rounded_rect(cx, cy, rx, ry, crx, px, py):
                 continue
             r, g, b = _BG
-            if _in_triangle(*tri[0], *tri[1], *tri[2], px, py):
-                r, g, b = _FG
-            elif show_arrow and _in_arrow(acx, acy, as_, px, py):
+            if _in_triangle(*tri[0], *tri[1], *tri[2], px, py) or show_arrow and _in_arrow(acx, acy, as_, px, py):
                 r, g, b = _FG
             buf[i] = r
             buf[i + 1] = g

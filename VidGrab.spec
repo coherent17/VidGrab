@@ -1,34 +1,48 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for VidGrab (Windows).
+"""PyInstaller spec for VidGrab (Windows + Linux).
 
-ffmpeg.exe / ffprobe.exe are embedded into the single-file exe and
-extracted to a temp folder at runtime (sys._MEIPASS). Embedding is
-skipped if they are missing so dev builds on Linux still work.
+ffmpeg is embedded from a platform folder (`ffmpeg/win/ffmpeg.exe` on
+Windows, `ffmpeg/linux/ffmpeg` on Linux, legacy `ffmpeg/` as fallback)
+and extracted to sys._MEIPASS/ffmpeg at runtime. Assets (icon) and the
+CustomTkinter data files are bundled too.
 """
 
 import os
 import sys
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_data_files
+
 block_cipher = None
 ROOT = Path(SPECPATH)
 
-# Embed the static (DLL-free) Windows ffmpeg builds next to the app.
+# --- icon / assets -------------------------------------------------------
 _datas: list[tuple[str, str]] = []
-for _name in ("ffmpeg.exe", "ffprobe.exe"):
-    _src = str(ROOT / "ffmpeg" / _name)
-    if os.path.isfile(_src):
-        _datas.append((_src, "ffmpeg"))
-
-# Bundle icon files so the running app can set the window icon from
-# sys._MEIPASS / assets/ without needing a separate file next to the exe.
 for _name in ("icon.ico", "icon.png"):
     _src = str(ROOT / "assets" / _name)
     if os.path.isfile(_src):
         _datas.append((_src, "assets"))
 
+# --- ffmpeg: platform-aware, with legacy fallback ------------------------
+if sys.platform == "win32":
+    _ffmpeg_names = ("ffmpeg.exe", "ffprobe.exe")
+    _platform_subdir = "win"
+else:
+    _ffmpeg_names = ("ffmpeg", "ffprobe")
+    _platform_subdir = "linux"
+
+for _name in _ffmpeg_names:
+    for _sub in (_platform_subdir, ""):
+        _src = str(ROOT / "ffmpeg" / _sub / _name) if _sub else str(ROOT / "ffmpeg" / _name)
+        if os.path.isfile(_src):
+            _datas.append((_src, "ffmpeg"))
+            break
+
+# --- CustomTkinter theme/assets ------------------------------------------
+_datas += collect_data_files("customtkinter")
+
 a = Analysis(
-    [str(ROOT / "app.py")],
+    [str(ROOT / "vidgrab" / "__main__.py")],
     pathex=[str(ROOT)],
     binaries=[],
     datas=_datas,
@@ -36,6 +50,13 @@ a = Analysis(
         "yt_dlp",
         "yt_dlp.extractor",
         "certifi",
+        "customtkinter",
+        "darkdetect",
+        "packaging",
+        "vidgrab",
+        "vidgrab.app",
+        "vidgrab.downloader",
+        "vidgrab.network",
     ],
     hookspath=[],
     hooksconfig={},
@@ -70,4 +91,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=str(ROOT / "assets" / "icon.ico") if sys.platform == "win32" else None,
+    version=str(ROOT / "version_info.txt") if sys.platform == "win32" else None,
 )

@@ -12,15 +12,33 @@ jobs:
   build:
     uses: ./.github/workflows/build-windows.yml
 
+  build-linux:
+    uses: ./.github/workflows/build-linux.yml
+
   release:
-    needs: build
+    needs: [build, build-linux]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download Windows artifact
         uses: actions/download-artifact@v4
         with:
           name: VidGrab-windows
           path: release
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: VidGrab-linux
+          path: release-linux
+
+      - name: Prepare release assets
+        run: |
+          mv release-linux/VidGrab "release/VidGrab-linux"
+          mv release-linux/VidGrab-linux.tar.xz "release/VidGrab-linux.tar.xz"
+          chmod +x "release/VidGrab-linux"
+          ls -lh release
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -31,14 +49,18 @@ jobs:
             Auto-built from tag ${{ github.ref_name }}.
 
             ## Downloads
-            - `VidGrab.exe` — single self-contained executable (ffmpeg embedded)
+            - `VidGrab.exe` — single self-contained Windows executable (ffmpeg embedded)
             - `VidGrab.zip` — same exe, zipped for transport
+            - `VidGrab-linux` — self-contained Linux binary (ffmpeg embedded, x86_64)
+            - `VidGrab-linux.tar.xz` — same binary, compressed
 
             ## What's inside
             - YouTube downloader (MP4 / MP3) via yt-dlp
             - Local file mode: flip & trim MP4/MP3/MKV straight from disk
-            - Dark tkinter GUI, built-in icon, progress + log view
+            - CustomTkinter dark/light GUI, internet status, progress + log view
           fail_on_unmatched_files: false
           files: |
             release/VidGrab.exe
             release/VidGrab.zip
+            release/VidGrab-linux
+            release/VidGrab-linux.tar.xz

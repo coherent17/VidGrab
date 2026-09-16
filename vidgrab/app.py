@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -146,7 +146,19 @@ QGroupBox::title {
     font-weight: 700;
     letter-spacing: 1.5px;
     color: #4f7cff;
-    background: transparent;
+    background-color: transparent;
+}
+QGroupBox#source_card {
+    border-left: 3px solid #f43f5e;
+}
+QGroupBox#source_card::title {
+    color: #fb7185;
+}
+QGroupBox#format_card {
+    border-left: 3px solid #10b981;
+}
+QGroupBox#format_card::title {
+    color: #34d399;
 }
 QGroupBox#flip_card {
     border-left: 3px solid #06b6d4;
@@ -162,6 +174,12 @@ QGroupBox#trim_card::title {
 }
 QGroupBox#save_card {
     border-left: 3px solid #4f7cff;
+}
+QGroupBox#settings_card {
+    border-left: 3px solid #8b5cf6;
+}
+QGroupBox#settings_card::title {
+    color: #a78bfa;
 }
 
 /* ── inputs ── */
@@ -447,7 +465,19 @@ QGroupBox::title {
     font-weight: 700;
     letter-spacing: 1.5px;
     color: #4f7cff;
-    background: #ffffff;
+    background-color: transparent;
+}
+QGroupBox#source_card {
+    border-left: 3px solid #f43f5e;
+}
+QGroupBox#source_card::title {
+    color: #e11d48;
+}
+QGroupBox#format_card {
+    border-left: 3px solid #10b981;
+}
+QGroupBox#format_card::title {
+    color: #059669;
 }
 QGroupBox#flip_card {
     border-left: 3px solid #06b6d4;
@@ -463,6 +493,12 @@ QGroupBox#trim_card::title {
 }
 QGroupBox#save_card {
     border-left: 3px solid #4f7cff;
+}
+QGroupBox#settings_card {
+    border-left: 3px solid #8b5cf6;
+}
+QGroupBox#settings_card::title {
+    color: #7c3aed;
 }
 QLineEdit {
     background-color: #f5f7fa;
@@ -689,6 +725,28 @@ def _checkmark_path() -> str:
     return p.as_posix()
 
 
+# ── brand icon ─────────────────────────────────────────────────────────────
+
+
+def _icon_path() -> Path:
+    return get_app_dir() / "assets" / "icon.png"
+
+
+def _app_icon() -> QIcon:
+    p = _icon_path()
+    if p.is_file():
+        return QIcon(str(p))
+    return QIcon()
+
+
+def _brand_pixmap() -> QPixmap | None:
+    """Sidebar logo at a fixed render size (None if the asset is missing)."""
+    pm = QPixmap(str(_icon_path()))
+    if pm.isNull():
+        return None
+    return pm.scaled(30, 30, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+
 # ── worker thread ──────────────────────────────────────────────────────────
 
 
@@ -775,9 +833,21 @@ class _Sidebar(QWidget):
         bl = QVBoxLayout(brand)
         bl.setContentsMargins(18, 20, 18, 16)
         bl.setSpacing(2)
-        title = QLabel('<span>\u2b07</span>  VidGrab')
+        brand_row = QHBoxLayout()
+        brand_row.setSpacing(10)
+        icon = QLabel()
+        icon.setObjectName("brand_icon")
+        icon.setFixedSize(30, 30)
+        icon.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        pm = _brand_pixmap()
+        if pm:
+            icon.setPixmap(pm)
+        brand_row.addWidget(icon)
+        title = QLabel('Vid<span>Grab</span>')
         title.setObjectName("brand_title")
-        bl.addWidget(title)
+        brand_row.addWidget(title)
+        brand_row.addStretch()
+        bl.addLayout(brand_row)
         sub = QLabel(f"v{__version__}")
         sub.setObjectName("brand_sub")
         bl.addWidget(sub)
@@ -930,7 +1000,7 @@ class VidGrabWindow(QMainWindow):
         row.addWidget(self._url, stretch=1)
         pb = QPushButton("Paste")
         pb.setObjectName("secondary")
-        pb.setFixedWidth(76)
+        pb.setMinimumWidth(76)
         pb.clicked.connect(self._paste_url)
         row.addWidget(pb)
         sl.addLayout(row)
@@ -979,7 +1049,7 @@ class VidGrabWindow(QMainWindow):
         svl.addWidget(self._out, stretch=1)
         bb = QPushButton("Browse\u2026")
         bb.setObjectName("secondary")
-        bb.setFixedWidth(76)
+        bb.setMinimumWidth(76)
         bb.clicked.connect(lambda: self._browse_folder(self._out))
         svl.addWidget(bb)
         lay.addWidget(save)
@@ -1005,7 +1075,7 @@ class VidGrabWindow(QMainWindow):
         row.addWidget(self._file, stretch=1)
         bb = QPushButton("Browse\u2026")
         bb.setObjectName("secondary")
-        bb.setFixedWidth(76)
+        bb.setMinimumWidth(76)
         bb.clicked.connect(self._browse_file)
         row.addWidget(bb)
         sl.addLayout(row)
@@ -1043,7 +1113,7 @@ class VidGrabWindow(QMainWindow):
         svl.addWidget(self._eout, stretch=1)
         bb2 = QPushButton("Browse\u2026")
         bb2.setObjectName("secondary")
-        bb2.setFixedWidth(76)
+        bb2.setMinimumWidth(76)
         bb2.clicked.connect(lambda: self._browse_folder(self._eout))
         svl.addWidget(bb2)
         lay.addWidget(save)
@@ -1104,7 +1174,7 @@ class VidGrabWindow(QMainWindow):
         hdr.addStretch()
         cb = QPushButton("Clear")
         cb.setObjectName("secondary")
-        cb.setFixedWidth(56)
+        cb.setMinimumWidth(56)
         cb.setFixedHeight(24)
         cb.clicked.connect(self._clear_log)
         hdr.addWidget(cb)
@@ -1464,6 +1534,7 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("VidGrab")
     app.setApplicationVersion(__version__)
+    app.setWindowIcon(_app_icon())
     app.setStyle("Fusion")
 
     font = QFont()

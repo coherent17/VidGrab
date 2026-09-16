@@ -1,0 +1,15 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.spec.bak
+*.egg-info/
+.DS_Store
+Thumbs.db
+
+# Large binaries downloaded separately (see ffmpeg/README.txt)
+ffmpeg/ffmpeg.exe
+ffmpeg/ffprobe.exe
+ffmpeg/ffplay.exe

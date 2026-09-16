@@ -14,8 +14,13 @@ from yt_dlp.utils import parse_duration
 
 ProgressCallback = Callable[[str, float | None], None]
 LogCallback = Callable[[str], None]
+TranslateFn = Callable[..., str]
 
 DEFAULT_MP3_BITRATE = "192"
+
+
+def _noop_tr(text: str, **kw: object) -> str:
+    return text.format(**kw) if kw else text
 
 
 # ── locations ─────────────────────────────────────────────────────────────
@@ -97,24 +102,40 @@ def _locate_output(
 
 # ── ffmpeg helpers ────────────────────────────────────────────────────────
 
-def _parse_trim(section_start: str | None, section_end: str | None) -> tuple[float, float]:
+def _parse_trim(
+    section_start: str | None,
+    section_end: str | None,
+    *,
+    translate: TranslateFn | None = None,
+) -> tuple[float, float]:
     """Validate start/end times and return (start, end) in seconds."""
+    tr = translate or _noop_tr
     start = parse_duration(section_start) if section_start else 0
     end = parse_duration(section_end) if section_end else float("inf")
     if start is None:
         raise RuntimeError(
-            f'Invalid start time "{section_start}". '
-            "Use seconds (90), M:SS (1:30) or H:MM:SS (1:02:03)."
+            tr(
+                'Invalid start time "{t}". '
+                "Use seconds (90), M:SS (1:30) or H:MM:SS (1:02:03).",
+                t=section_start,
+            )
         )
     if end is None:
         raise RuntimeError(
-            f'Invalid end time "{section_end}". '
-            "Use seconds (90), M:SS (1:30) or H:MM:SS (1:02:03)."
+            tr(
+                'Invalid end time "{t}". '
+                "Use seconds (90), M:SS (1:30) or H:MM:SS (1:02:03).",
+                t=section_end,
+            )
         )
     if end <= start:
         raise RuntimeError(
-            "Trim end time must be after the start time. "
-            f"Got start {start:.0f}s, end {end:.0f}s."
+            tr(
+                "Trim end time must be after the start time. "
+                "Got start {s}s, end {e}s.",
+                s=int(start),
+                e=int(end),
+            )
         )
     return start, end
 
@@ -128,7 +149,10 @@ def _trim(
     video_filter: str | None = None,
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
+    *,
+    translate: TranslateFn | None = None,
 ) -> None:
+    tr = translate or _noop_tr
     args = [ffmpeg, "-y"]
     if start:
         args += ["-ss", str(start)]
@@ -149,7 +173,7 @@ def _trim(
     if on_log:
         on_log(" ".join(args))
     if on_progress:
-        on_progress("Trimming…", 96.0)
+        on_progress(tr("Trimming…"), 96.0)
 
     proc = subprocess.run(args, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
@@ -157,7 +181,10 @@ def _trim(
             for line in proc.stderr.strip().splitlines()[-6:]:
                 on_log(line)
         raise RuntimeError(
-            f"ffmpeg failed to process the file (exit code {proc.returncode})."
+            tr(
+                "ffmpeg failed to process the file (exit code {code}).",
+                code=proc.returncode,
+            )
         )
 
 
@@ -166,7 +193,9 @@ def _run_ffmpeg(
     *,
     on_log: LogCallback | None = None,
     error_prefix: str = "ffmpeg failed",
+    translate: TranslateFn | None = None,
 ) -> None:
+    tr = translate or _noop_tr
     if on_log:
         on_log(" ".join(cmd))
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
@@ -174,7 +203,9 @@ def _run_ffmpeg(
         if on_log and proc.stderr:
             for line in proc.stderr.strip().splitlines()[-6:]:
                 on_log(line)
-        raise RuntimeError(f"{error_prefix} (exit code {proc.returncode}).")
+        raise RuntimeError(
+            tr("{prefix} (exit code {code}).", prefix=error_prefix, code=proc.returncode)
+        )
 
 
 def derive_mp3(
@@ -183,15 +214,17 @@ def derive_mp3(
     *,
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
+    translate: TranslateFn | None = None,
 ) -> Path:
     """Extract audio from an already-downloaded video as MP3 (no re-download)."""
+    tr = translate or _noop_tr
     src = Path(source)
     if not src.is_file():
-        raise FileNotFoundError(f"File not found: {src}")
+        raise FileNotFoundError(tr("File not found: {src}", src=src))
 
     ffmpeg = find_ffmpeg()
     if not ffmpeg:
-        raise RuntimeError("ffmpeg is required to extract MP3 audio.")
+        raise RuntimeError(tr("ffmpeg is required to extract MP3 audio."))
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -199,19 +232,20 @@ def derive_mp3(
     out.unlink(missing_ok=True)
 
     if on_progress:
-        on_progress("Extracting audio…", None)
+        on_progress(tr("Extracting audio…"), None)
     _run_ffmpeg(
         [
             ffmpeg, "-y", "-i", str(src), "-vn", "-map", "0:a:0",
             "-c:a", "libmp3lame", "-b:a", DEFAULT_MP3_BITRATE, str(out),
         ],
         on_log=on_log,
-        error_prefix="ffmpeg failed to extract MP3 audio",
+        error_prefix=tr("ffmpeg failed to extract MP3 audio"),
+        translate=translate,
     )
     if on_log:
-        on_log(f"Saved: {out.name}")
+        on_log(tr("Saved: {name}", name=out.name))
     if on_progress:
-        on_progress("Complete", 100.0)
+        on_progress(tr("Complete"), 100.0)
     return out
 
 
@@ -226,15 +260,17 @@ def process_local_file(
     section_end: str | None = None,
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
+    translate: TranslateFn | None = None,
 ) -> Path:
     """
     Apply trim / flip to a local media file and write the result to *output_dir*.
 
     Returns the path to the processed file.
     """
+    tr = translate or _noop_tr
     src = Path(input_path).resolve()
     if not src.is_file():
-        raise FileNotFoundError(f"File not found: {src}")
+        raise FileNotFoundError(tr("File not found: {src}", src=src))
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -246,23 +282,25 @@ def process_local_file(
     do_trim = bool(section_start or section_end)
     start, end = 0.0, float("inf")
     if do_trim:
-        start, end = _parse_trim(section_start, section_end)
+        start, end = _parse_trim(section_start, section_end, translate=translate)
 
     needs_ffmpeg = do_trim or video_filter
     if not needs_ffmpeg:
         final_file.unlink(missing_ok=True)
         shutil.copy2(src, final_file)
         if on_log:
-            on_log(f"Copied: {final_file.name}")
+            on_log(tr("Copied: {name}", name=final_file.name))
         if on_progress:
-            on_progress("Complete", 100.0)
+            on_progress(tr("Complete"), 100.0)
         return final_file
 
     ffmpeg = find_ffmpeg()
     if not ffmpeg:
         raise RuntimeError(
-            "ffmpeg is required to process local files. "
-            "Install ffmpeg or place it next to the app."
+            tr(
+                "ffmpeg is required to process local files. "
+                "Install ffmpeg or place it next to the app."
+            )
         )
     _ensure_ffmpeg_on_path(ffmpeg)
 
@@ -276,12 +314,13 @@ def process_local_file(
         video_filter=video_filter,
         on_progress=on_progress,
         on_log=on_log,
+        translate=translate,
     )
 
     if on_log:
-        on_log(f"Saved: {final_file.name}")
+        on_log(tr("Saved: {name}", name=final_file.name))
     if on_progress:
-        on_progress("Complete", 100.0)
+        on_progress(tr("Complete"), 100.0)
     return final_file
 
 
@@ -341,14 +380,16 @@ def download(
     section_end: str | None = None,
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
+    translate: TranslateFn | None = None,
 ) -> Path:
     """
     Download a YouTube URL as MP4 or MP3.
 
     Returns the path to the downloaded file.
     """
+    tr = translate or _noop_tr
     if not url.strip():
-        raise RuntimeError("No URL provided.")
+        raise RuntimeError(tr("No URL provided."))
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -359,9 +400,11 @@ def download(
 
     if fmt == "mp3" and not ffmpeg:
         raise RuntimeError(
-            "ffmpeg is required for MP3 downloads. "
-            "Place ffmpeg.exe in an 'ffmpeg' folder next to the app, "
-            "or install ffmpeg and add it to PATH."
+            tr(
+                "ffmpeg is required for MP3 downloads. "
+                "Place ffmpeg.exe in an 'ffmpeg' folder next to the app, "
+                "or install ffmpeg and add it to PATH."
+            )
         )
 
     def log(msg: str) -> None:
@@ -377,19 +420,19 @@ def download(
             downloaded = data.get("downloaded_bytes", 0)
             if total:
                 pct = min(100.0, downloaded / total * 100)
-                on_progress(f"Downloading… {pct:.1f}%", pct)
+                on_progress(tr("Downloading… {pct:.1f}%", pct=pct), pct)
             else:
-                on_progress("Downloading…", None)
+                on_progress(tr("Downloading…"), None)
         elif status == "finished":
-            on_progress("Processing…", 95.0)
+            on_progress(tr("Processing…"), 95.0)
 
     do_trim = bool(section_start or section_end)
     start, end = 0.0, float("inf")
     if do_trim:
-        start, end = _parse_trim(section_start, section_end)
+        start, end = _parse_trim(section_start, section_end, translate=translate)
 
     if do_trim and not ffmpeg:
-        raise RuntimeError("ffmpeg is required to trim downloads.")
+        raise RuntimeError(tr("ffmpeg is required to trim downloads."))
 
     if do_trim:
         suffix = ".trimtmp"
@@ -420,7 +463,7 @@ def download(
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
             if info is None:
-                raise RuntimeError("Could not fetch video information.")
+                raise RuntimeError(tr("Could not fetch video information."))
             return info
 
     if sections:
@@ -428,7 +471,7 @@ def download(
             info = extract(True)
             section_used = True
         except Exception as exc:  # noqa: BLE001 - fall back to full download
-            log(f"Section download unavailable ({exc}); downloading in full.")
+            log(tr("Section download unavailable ({exc}); downloading in full.", exc=exc))
             info = extract(False)
     else:
         info = extract(False)
@@ -436,7 +479,7 @@ def download(
     title = info.get("title", "download")
     out_file = _locate_output(output_path, title, fmt, suffix)
     if out_file is None:
-        raise RuntimeError("Download finished but output file was not found.")
+        raise RuntimeError(tr("Download finished but output file was not found."))
 
     use_ffmpeg = do_trim or (video_filter and fmt == "mp4")
 
@@ -451,9 +494,9 @@ def download(
             final_file.unlink(missing_ok=True)
             out_file.replace(final_file)
             out_file = final_file
-        log(f"Saved: {out_file.name}")
+        log(tr("Saved: {name}", name=out_file.name))
         if on_progress:
-            on_progress("Complete", 100.0)
+            on_progress(tr("Complete"), 100.0)
         return out_file
 
     ext = "mp3" if fmt == "mp3" else "mp4"
@@ -479,13 +522,14 @@ def download(
         video_filter=video_filter if fmt == "mp4" else None,
         on_progress=on_progress,
         on_log=on_log,
+        translate=translate,
     )
 
     out_file.unlink(missing_ok=True)
 
-    log(f"Saved: {final_file.name}")
+    log(tr("Saved: {name}", name=final_file.name))
     if on_progress:
-        on_progress("Complete", 100.0)
+        on_progress(tr("Complete"), 100.0)
     return final_file
 
 
@@ -498,6 +542,7 @@ def download_both(
     section_end: str | None = None,
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
+    translate: TranslateFn | None = None,
 ) -> tuple[Path, Path]:
     """
     Download a video once as MP4, then derive the MP3 from it locally.
@@ -515,8 +560,13 @@ def download_both(
         section_end=section_end,
         on_progress=on_progress,
         on_log=on_log,
+        translate=translate,
     )
     mp3_path = derive_mp3(
-        mp4_path, output_dir, on_progress=on_progress, on_log=on_log
+        mp4_path,
+        output_dir,
+        on_progress=on_progress,
+        on_log=on_log,
+        translate=translate,
     )
     return mp4_path, mp3_path

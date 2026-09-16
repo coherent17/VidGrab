@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-windows.yml
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: VidGrab-windows
+          path: release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: VidGrab ${{ github.ref_name }}
+          body: |
+            Auto-built from tag ${{ github.ref_name }}.
+
+            ## Downloads
+            - `VidGrab.exe` — single self-contained executable (ffmpeg embedded)
+            - `VidGrab.zip` — same exe, zipped for transport
+
+            ## What's inside
+            - YouTube downloader (MP4 / MP3) via yt-dlp
+            - Local file mode: flip & trim MP4/MP3/MKV straight from disk
+            - Dark tkinter GUI, built-in icon, progress + log view
+          fail_on_unmatched_files: false
+          files: |
+            release/VidGrab.exe
+            release/VidGrab.zip

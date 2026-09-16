@@ -1,5 +1,8 @@
 # VidGrab
 
+[![CI](https://github.com/coherent17/VidGrab/actions/workflows/ci.yml/badge.svg)](https://github.com/coherent17/VidGrab/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/coherent17/VidGrab?label=release)](https://github.com/coherent17/VidGrab/releases)
+
 A portable media downloader & editor for Windows with a small dark-theme GUI. Grab a YouTube video as **MP4** or **MP3**, or open a local file, then **flip** and **trim** it — all in one single self-contained `.exe`.
 
 Built with **Python**, **tkinter**, **yt-dlp**, **ffmpeg**, and packaged with **PyInstaller**.
@@ -101,6 +104,26 @@ Send users the single `VidGrab.exe` (or the `VidGrab.zip`). Unzip anywhere and r
 pip install -r requirements.txt
 python scripts/generate_icon.py
 pyinstaller VidGrab.spec --noconfirm
+```
+
+## Testing & CI
+
+```bash
+source .venv/bin/activate          # or .venv\Scripts\activate on Windows
+pip install -r requirements-dev.txt
+pytest -v                          # 14 tests, no network needed
+```
+
+What CI does on every push to `main` / pull request:
+
+- **test** (ubuntu): installs ffmpeg + tkinter, runs the full pytest suite, and fails if any `.exe` binary is ever tracked by git
+- **build-windows** (windows-latest): downloads the gyan ffmpeg essentials build, embeds it via `VidGrab.spec`, and produces the single-file exe + zip as a downloadable artifact
+
+**Releases:** push a tag to ship a ready-to-download GitHub Release with `VidGrab.exe` + `VidGrab.zip`:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 ## Usage

@@ -1,0 +1,53 @@
+name: Build Windows exe
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download ffmpeg (gyan essentials)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile "ffmpeg.zip"
+          Expand-Archive -Path "ffmpeg.zip" -DestinationPath "ffmpeg-unpacked" -Force
+          $ffmpeg = Get-ChildItem -Recurse "ffmpeg-unpacked" -Filter "ffmpeg.exe" | Select-Object -First 1
+          $ffprobe = Get-ChildItem -Recurse "ffmpeg-unpacked" -Filter "ffprobe.exe" | Select-Object -First 1
+          if (-not $ffmpeg -or -not $ffprobe) { throw "ffmpeg.exe or ffprobe.exe not found in archive" }
+          New-Item -ItemType Directory -Force "ffmpeg" | Out-Null
+          Copy-Item $ffmpeg.FullName "ffmpeg/ffmpeg.exe"
+          Copy-Item $ffprobe.FullName "ffmpeg/ffprobe.exe"
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Generate icon
+        run: python scripts/generate_icon.py
+
+      - name: Build single-file exe
+        run: pyinstaller VidGrab.spec --noconfirm
+
+      - name: Create zip
+        shell: pwsh
+        run: Compress-Archive -Path "dist\VidGrab.exe" -DestinationPath "dist\VidGrab.zip"
+
+      - name: Show artifact sizes
+        shell: pwsh
+        run: Get-ChildItem "dist" | Select-Object Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VidGrab-windows
+          path: |
+            dist/VidGrab.exe
+            dist/VidGrab.zip

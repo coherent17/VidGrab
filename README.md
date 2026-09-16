@@ -47,13 +47,13 @@ make test        # pytest, incl. headless GUI smoke test (Qt offscreen)
 
 ## Building
 
-- **Windows** — `scripts\build.ps1` (PowerShell) or `scripts\build.bat` (CMD) → `dist\VidGrab.exe` + `dist\VidGrab.zip`
+- **Windows** — `scripts\build.ps1` (PowerShell) or `scripts\build.bat` (CMD), or `make build-windows` → `dist\VidGrab.exe`
 - **Linux / macOS** — `make build` → `dist\VidGrab`
 - CI on every push also builds both platforms; **releasing** = push a tag:
 
 ```bash
 git tag v2.1.0
-git push origin v2.1.0     # GitHub Release with VidGrab.exe/.zip + VidGrab-linux/.tar.xz
+git push origin v2.1.0     # GitHub Release with VidGrab.exe + VidGrab-linux/.tar.xz
 ```
 
 ## Project layout
@@ -61,7 +61,7 @@ git push origin v2.1.0     # GitHub Release with VidGrab.exe/.zip + VidGrab-linu
 ```
 vidgrab/        the app (app.py UI, downloader.py logic, i18n.py, network.py, _version.py)
 assets/         bundled resources (icon, NotoSansTC font)
-scripts/        build.bat / build.ps1 (Windows) + generate_icon.py
+scripts/        build.bat / build.ps1 (Windows), generate_icon.py, write_version_info.py
 tests/          pytest suite incl. headless GUI smoke test
 docs/           project notes
 Makefile        dev task runner (setup / run / lint / test / build / clean)

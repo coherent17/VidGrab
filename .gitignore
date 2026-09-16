@@ -17,3 +17,6 @@ ffmpeg/win/
 ffmpeg/linux/
 .pytest_cache/
 .ruff_cache/
+
+# Generated at build time by scripts/write_version_info.py
+version_info.txt

@@ -49,6 +49,9 @@ if not exist "assets\icon.ico" (
     if errorlevel 1 goto :fail
 )
 
+python scripts\write_version_info.py
+if errorlevel 1 goto :fail
+
 if not exist "ffmpeg\ffmpeg.exe" (
     echo.
     echo WARNING: ffmpeg\ffmpeg.exe not found.
@@ -66,14 +69,9 @@ if not exist "dist\VidGrab.exe" (
     goto :fail
 )
 
-set "ZIP=dist\VidGrab.zip"
-if exist "%ZIP%" del /q "%ZIP%"
-powershell -NoProfile -Command "Compress-Archive -Path 'dist\VidGrab.exe' -DestinationPath '%ZIP%' -CompressionLevel Optimal"
-
 echo.
 echo Build complete:
 echo   %CD%\dist\VidGrab.exe   ^(single self-contained exe, ffmpeg embedded^)
-echo   %CD%\%ZIP%                     ^(zip to share^)
 echo.
 popd
 pause

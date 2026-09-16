@@ -37,12 +37,11 @@ jobs:
       - name: Generate icon
         run: python scripts\generate_icon.py
 
+      - name: Generate version info (from vidgrab/_version.py)
+        run: python scripts\write_version_info.py
+
       - name: Build single-file exe
         run: pyinstaller VidGrab.spec --noconfirm
-
-      - name: Create zip
-        shell: pwsh
-        run: Compress-Archive -Path "dist\VidGrab.exe" -DestinationPath "dist\VidGrab.zip"
 
       - name: Show artifact sizes
         shell: pwsh
@@ -53,4 +52,3 @@ jobs:
           name: VidGrab-windows
           path: |
             dist/VidGrab.exe
-            dist/VidGrab.zip

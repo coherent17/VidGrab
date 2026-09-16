@@ -28,6 +28,7 @@ pip install -r requirements.txt
 if (-not (Test-Path "assets\icon.ico")) {
     python scripts\generate_icon.py
 }
+python scripts\write_version_info.py
 
 $winFfmpeg = "ffmpeg\win\ffmpeg.exe"
 if (-not (Test-Path $winFfmpeg) -and -not (Test-Path "ffmpeg\ffmpeg.exe")) {
@@ -45,11 +46,6 @@ if (-not (Test-Path "dist\VidGrab.exe")) {
     exit 1
 }
 
-$zip = "dist\VidGrab.zip"
-if (Test-Path $zip) { Remove-Item $zip }
-Compress-Archive -Path "dist\VidGrab.exe" -DestinationPath $zip -CompressionLevel Optimal
-
 Write-Host ""
 Write-Host "Build complete:" -ForegroundColor Green
 Write-Host "  $(Join-Path (Get-Location) 'dist\VidGrab.exe')  (single self-contained exe, ffmpeg embedded)"
-Write-Host "  $(Join-Path (Get-Location) $zip)  (zip to share)"

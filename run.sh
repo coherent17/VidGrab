@@ -10,16 +10,22 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 missing=()
-python3 -c "import tkinter" 2>/dev/null || missing+=("python3-tk")
 python3 -c "import ensurepip" 2>/dev/null || missing+=("python3-venv")
 python3 -m pip --version >/dev/null 2>&1 || missing+=("python3-pip")
+
+# Qt runtime libraries PySide6 needs on Linux
+for lib in libEGL libGL libxkbcommon libfontconfig; do
+    ldconfig -p 2>/dev/null | grep -q "$lib" || missing+=("$lib")
+done
 
 if [ ${#missing[@]} -gt 0 ]; then
     echo "ERROR: Missing system packages: ${missing[*]}"
     echo ""
     echo "Install them with:"
     echo "  sudo apt update"
-    echo "  sudo apt install -y python3-venv python3-pip python3-tk"
+    echo "  sudo apt install -y python3-venv python3-pip \\"
+    echo "    libegl1 libgl1 libxkbcommon0 libfontconfig1 \\"
+    echo "    libxcb-cursor0 libxcb-xinerama0 libdbus-1-3"
     echo ""
     echo "Then remove the broken venv (if any) and run again:"
     echo "  rm -rf .venv"

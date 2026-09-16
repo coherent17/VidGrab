@@ -141,19 +141,18 @@ ruff check .                       # lint
 pytest -v                          # 26 tests, no network needed
 ```
 
-To also run the headless GUI smoke test (constructs the real window), use a
-virtual display or the Qt offscreen platform:
+To also run the headless GUI smoke test (constructs the real window), use the
+Qt offscreen platform (no display needed):
 
 ```bash
-SMOKE_GUI=1 xvfb-run -a pytest -v
-# or without a display:
-SMOKE_GUI=1 QT_QPA_PLATFORM=offscreen pytest tests/test_gui_smoke.py -v
+SMOKE_GUI=1 QT_QPA_PLATFORM=offscreen pytest -v
 ```
 
 What CI does on every push to `main` / pull request:
 
 - **test** (ubuntu): ruff lint, the full pytest suite (incl. the GUI smoke test
-  under Xvfb), and fails if any ffmpeg binary is ever tracked by git
+  on the Qt offscreen platform), and fails if any ffmpeg binary is ever tracked
+  by git
 - **build-windows** (windows-latest): downloads the gyan ffmpeg essentials build
   into `ffmpeg/win/`, embeds it via `VidGrab.spec`, produces the single-file
   exe + zip as a downloadable artifact

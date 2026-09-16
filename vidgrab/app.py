@@ -10,13 +10,14 @@ from pathlib import Path
 from typing import ClassVar
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -44,226 +45,286 @@ from vidgrab.downloader import (
 from vidgrab.network import ConnectionStatus, check_internet
 
 # ── palette ────────────────────────────────────────────────────────────────
+#
+# Brand: electric blue  #4f7cff
+# Semantic: emerald success, amber warning, red error, violet/teal accents
 
 DARK_QSS = """
 * {
     font-family: "Segoe UI", "Noto Sans", "Ubuntu", "Cantarell", sans-serif;
 }
 QMainWindow {
-    background-color: #0f1419;
+    background-color: #0b0f14;
+}
+
+/* ── header ── */
+QWidget#header {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #0e1420, stop:1 #151c2c);
+    border-bottom: 1px solid #1f2839;
+}
+QLabel#app_version {
+    font-size: 12px;
+    color: #7d8ba1;
+    background: transparent;
+}
+QLabel#app_version b {
+    color: #4f7cff;
 }
 
 /* ── sidebar ── */
 QWidget#sidebar {
-    background-color: #12161e;
-    border-right: 1px solid #1e2536;
+    background-color: #0d1219;
+    border-right: 1px solid #1f2839;
+}
+QFrame#brand {
+    background: transparent;
+}
+QLabel#brand_title {
+    font-size: 20px;
+    font-weight: bold;
+    color: #e8edf6;
+    background: transparent;
+}
+QLabel#brand_title span {
+    color: #4f7cff;
+}
+QLabel#brand_sub {
+    font-size: 11px;
+    color: #5c6b84;
+    background: transparent;
+}
+QFrame#brand_divider {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #4f7cff, stop:1 transparent);
+    border: none;
+    max-height: 2px;
+    min-height: 2px;
 }
 QPushButton#nav {
     background: transparent;
     border: none;
     border-left: 3px solid transparent;
     border-radius: 0px;
-    padding: 10px 18px;
+    padding: 11px 18px;
     text-align: left;
     font-size: 13px;
     font-weight: 500;
-    color: #6b7280;
+    color: #6b7a94;
 }
 QPushButton#nav:hover {
-    background-color: #181e2a;
-    color: #9ca3af;
+    background-color: #141b28;
+    color: #b6c2d6;
+}
+QPushButton#nav:hover:checked {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #1c2540, stop:1 #141b28);
 }
 QPushButton#nav:checked {
-    background-color: #171d2e;
+    background-color: #18213a;
     border-left: 3px solid #4f7cff;
-    color: #e1e4ea;
+    color: #ffffff;
     font-weight: 600;
-}
-
-/* ── header ── */
-QWidget#header {
-    background-color: #0f1419;
-    border-bottom: 1px solid #1a2030;
-}
-QLabel#app_title {
-    font-size: 18px;
-    font-weight: bold;
-    color: #e1e4ea;
-    background: transparent;
-}
-QLabel#app_version {
-    font-size: 11px;
-    color: #4b5563;
-    background: transparent;
 }
 
 /* ── cards ── */
 QGroupBox {
-    background-color: #161c28;
-    border: 1px solid #1e2536;
-    border-radius: 10px;
-    margin-top: 16px;
+    background-color: #141b28;
+    border: 1px solid #1f2839;
+    border-left: 3px solid #1f2839;
+    border-radius: 12px;
+    margin-top: 15px;
     padding: 18px 16px 14px 16px;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    left: 16px;
-    top: 4px;
-    padding: 0 6px;
+    left: 18px;
+    top: 12px;
+    padding: 0 8px;
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 1.5px;
     color: #4f7cff;
     background: transparent;
 }
+QGroupBox#flip_card {
+    border-left: 3px solid #06b6d4;
+}
+QGroupBox#flip_card::title {
+    color: #06b6d4;
+}
+QGroupBox#trim_card {
+    border-left: 3px solid #8b5cf6;
+}
+QGroupBox#trim_card::title {
+    color: #8b5cf6;
+}
+QGroupBox#save_card {
+    border-left: 3px solid #4f7cff;
+}
 
 /* ── inputs ── */
 QLineEdit {
-    background-color: #10151e;
-    border: 1px solid #1e2536;
-    border-radius: 6px;
-    padding: 8px 12px;
+    background-color: #0e141f;
+    border: 1px solid #22304a;
+    border-radius: 8px;
+    padding: 9px 12px;
     font-size: 13px;
-    color: #e1e4ea;
+    color: #e8edf6;
     selection-background-color: #4f7cff;
 }
 QLineEdit:focus {
     border: 1px solid #4f7cff;
+    background-color: #101826;
 }
 QLineEdit:disabled {
-    background-color: #0c1018;
-    color: #374151;
+    background-color: #0c1118;
+    color: #3d4a61;
 }
 
 /* ── labels ── */
 QLabel {
-    color: #e1e4ea;
+    color: #e8edf6;
     background: transparent;
 }
 QLabel#section {
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 1px;
-    color: #4f7cff;
+    color: #5c6b84;
     background: transparent;
 }
 QLabel#muted {
-    color: #6b7280;
+    color: #5c6b84;
     font-size: 12px;
     background: transparent;
+}
+QLabel#status {
+    color: #7d8ba1;
+    font-size: 12px;
+    background: transparent;
+    padding-right: 6px;
 }
 
 /* ── checkboxes ── */
 QCheckBox {
     spacing: 8px;
     font-size: 13px;
-    color: #c9cdd5;
+    color: #c4cede;
 }
 QCheckBox::indicator {
-    width: 18px;
-    height: 18px;
-    border: 2px solid #374151;
-    border-radius: 4px;
-    background-color: #10151e;
+    width: 19px;
+    height: 19px;
+    border: 2px solid #34455f;
+    border-radius: 5px;
+    background-color: #0e141f;
 }
 QCheckBox::indicator:hover {
-    border-color: #6b7280;
+    border-color: #4f7cff;
 }
 QCheckBox::indicator:checked {
     background-color: #4f7cff;
     border-color: #4f7cff;
+    image: url(@CHECK@);
 }
 QCheckBox:disabled {
-    color: #374151;
+    color: #3d4a61;
 }
 
 /* ── buttons ── */
 QPushButton#primary {
-    background-color: #4f7cff;
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #4f7cff, stop:1 #7a5cf0);
     border: none;
-    border-radius: 10px;
-    padding: 14px 24px;
+    border-radius: 12px;
+    padding: 15px 24px;
     font-size: 15px;
     font-weight: 700;
     color: #ffffff;
-    min-height: 20px;
+    min-height: 22px;
 }
 QPushButton#primary:hover {
-    background-color: #6a92ff;
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #6a92ff, stop:1 #8f74ff);
 }
 QPushButton#primary:pressed {
-    background-color: #3b5fd0;
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #3b5fd0, stop:1 #6844d8);
 }
 QPushButton#primary:disabled {
-    background-color: #1a2030;
-    color: #374151;
+    background-color: #182130;
+    color: #3d4a61;
 }
 QPushButton#secondary {
-    background-color: #1a2030;
-    border: 1px solid #2a3244;
-    border-radius: 6px;
-    padding: 7px 14px;
+    background-color: #18232f;
+    border: 1px solid #2a3a4f;
+    border-radius: 8px;
+    padding: 8px 14px;
     font-size: 12px;
-    color: #b0b8c8;
+    font-weight: 500;
+    color: #aebace;
 }
 QPushButton#secondary:hover {
-    background-color: #243044;
+    background-color: #1f2c3d;
     border-color: #4f7cff;
+    color: #e8edf6;
 }
 QPushButton#secondary:pressed {
-    background-color: #161c28;
+    background-color: #141b28;
 }
 QPushButton#secondary:disabled {
-    background-color: #12161e;
-    color: #374151;
+    background-color: #11161f;
+    color: #3d4a61;
 }
 QPushButton#theme_btn {
-    background-color: #1a2030;
-    border: 1px solid #2a3244;
-    border-radius: 6px;
-    padding: 5px 12px;
+    background-color: #18232f;
+    border: 1px solid #2a3a4f;
+    border-radius: 8px;
+    padding: 6px 12px;
     font-size: 12px;
-    color: #b0b8c8;
+    color: #aebace;
 }
 QPushButton#theme_btn:hover {
-    background-color: #243044;
+    background-color: #1f2c3d;
     border-color: #4f7cff;
+    color: #ffffff;
 }
 
 /* ── progress bar ── */
 QProgressBar {
-    background-color: #10151e;
-    border: none;
-    border-radius: 4px;
-    max-height: 8px;
-    min-height: 8px;
+    background-color: #0e141f;
+    border: 1px solid #1f2839;
+    border-radius: 6px;
+    max-height: 12px;
+    min-height: 12px;
     text-align: center;
 }
 QProgressBar::chunk {
-    background-color: #4f7cff;
-    border-radius: 4px;
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #4f7cff, stop:1 #7a5cf0);
+    border-radius: 5px;
 }
 
 /* ── log ── */
 QTextEdit#log {
-    background-color: #0a0e14;
-    border: 1px solid #1a2030;
-    border-radius: 8px;
+    background-color: #080c12;
+    border: 1px solid #1a2332;
+    border-radius: 10px;
     padding: 10px;
     font-family: "Cascadia Code", "JetBrains Mono", "Fira Code", "Consolas", monospace;
     font-size: 11px;
-    color: #5a6478;
+    color: #5a6b85;
     selection-background-color: #4f7cff;
 }
 
 /* ── status bar ── */
 QStatusBar {
-    background-color: #12161e;
-    border-top: 1px solid #1a2030;
+    background-color: #0d1219;
+    border-top: 1px solid #1f2839;
     font-size: 11px;
-    color: #6b7280;
-    padding: 4px 12px;
+    color: #6b7a94;
+    padding: 5px 12px;
 }
 QStatusBar::item {
     border: none;
@@ -272,11 +333,11 @@ QStatusBar::item {
 /* ── scrollbar ── */
 QScrollBar:vertical {
     background: transparent;
-    width: 8px;
+    width: 9px;
     margin: 0;
 }
 QScrollBar::handle:vertical {
-    background-color: #2a3244;
+    background-color: #2a3a4f;
     border-radius: 4px;
     min-height: 24px;
 }
@@ -293,12 +354,12 @@ QScrollBar::sub-page:vertical {
 
 /* ── tooltip ── */
 QToolTip {
-    background-color: #1a2030;
-    border: 1px solid #2a3244;
-    border-radius: 4px;
+    background-color: #18232f;
+    border: 1px solid #2a3a4f;
+    border-radius: 6px;
     padding: 5px 10px;
     font-size: 11px;
-    color: #e1e4ea;
+    color: #e8edf6;
 }
 """
 
@@ -307,199 +368,249 @@ LIGHT_QSS = """
     font-family: "Segoe UI", "Noto Sans", "Ubuntu", "Cantarell", sans-serif;
 }
 QMainWindow {
-    background-color: #f0f2f5;
+    background-color: #eef1f6;
+}
+QWidget#header {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #f6f8fb, stop:1 #e9edff);
+    border-bottom: 1px solid #d9dfec;
+}
+QLabel#app_version {
+    font-size: 12px;
+    color: #64748b;
+    background: transparent;
+}
+QLabel#app_version b {
+    color: #4f7cff;
 }
 QWidget#sidebar {
-    background-color: #e4e7ec;
-    border-right: 1px solid #d1d5db;
+    background-color: #e7ebf2;
+    border-right: 1px solid #d3daea;
+}
+QLabel#brand_title {
+    font-size: 20px;
+    font-weight: bold;
+    color: #1e293b;
+    background: transparent;
+}
+QLabel#brand_title span {
+    color: #4f7cff;
+}
+QLabel#brand_sub {
+    font-size: 11px;
+    color: #64748b;
+    background: transparent;
+}
+QFrame#brand_divider {
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #4f7cff, stop:1 transparent);
+    border: none;
+    max-height: 2px;
+    min-height: 2px;
 }
 QPushButton#nav {
     background: transparent;
     border: none;
     border-left: 3px solid transparent;
     border-radius: 0px;
-    padding: 10px 18px;
+    padding: 11px 18px;
     text-align: left;
     font-size: 13px;
     font-weight: 500;
-    color: #6b7280;
+    color: #64748b;
 }
 QPushButton#nav:hover {
-    background-color: #d8dbe2;
-    color: #374151;
+    background-color: #dbe2f0;
+    color: #334155;
 }
 QPushButton#nav:checked {
     background-color: #dfe6ff;
     border-left: 3px solid #4f7cff;
-    color: #111827;
+    color: #1e293b;
     font-weight: 600;
-}
-QWidget#header {
-    background-color: #f0f2f5;
-    border-bottom: 1px solid #e5e7eb;
-}
-QLabel#app_title {
-    font-size: 18px;
-    font-weight: bold;
-    color: #111827;
-    background: transparent;
-}
-QLabel#app_version {
-    font-size: 11px;
-    color: #9ca3af;
-    background: transparent;
 }
 QGroupBox {
     background-color: #ffffff;
-    border: 1px solid #e5e7eb;
-    border-radius: 10px;
-    margin-top: 16px;
+    border: 1px solid #d9dfec;
+    border-left: 3px solid #d9dfec;
+    border-radius: 12px;
+    margin-top: 15px;
     padding: 18px 16px 14px 16px;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    left: 16px;
-    top: 4px;
-    padding: 0 6px;
+    left: 18px;
+    top: 12px;
+    padding: 0 8px;
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 1.5px;
     color: #4f7cff;
     background: #ffffff;
 }
+QGroupBox#flip_card {
+    border-left: 3px solid #06b6d4;
+}
+QGroupBox#flip_card::title {
+    color: #0891b2;
+}
+QGroupBox#trim_card {
+    border-left: 3px solid #8b5cf6;
+}
+QGroupBox#trim_card::title {
+    color: #7c3aed;
+}
+QGroupBox#save_card {
+    border-left: 3px solid #4f7cff;
+}
 QLineEdit {
-    background-color: #f8f9fb;
-    border: 1px solid #d1d5db;
-    border-radius: 6px;
-    padding: 8px 12px;
+    background-color: #f5f7fa;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 9px 12px;
     font-size: 13px;
-    color: #111827;
+    color: #1e293b;
     selection-background-color: #4f7cff;
 }
 QLineEdit:focus {
     border: 1px solid #4f7cff;
+    background-color: #ffffff;
 }
 QLabel {
-    color: #111827;
+    color: #1e293b;
     background: transparent;
 }
 QLabel#section {
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 1px;
-    color: #4f7cff;
+    color: #64748b;
     background: transparent;
 }
 QLabel#muted {
-    color: #9ca3af;
+    color: #94a3b8;
     font-size: 12px;
     background: transparent;
+}
+QLabel#status {
+    color: #64748b;
+    font-size: 12px;
+    background: transparent;
+    padding-right: 6px;
 }
 QCheckBox {
     spacing: 8px;
     font-size: 13px;
-    color: #374151;
+    color: #334155;
 }
 QCheckBox::indicator {
-    width: 18px;
-    height: 18px;
-    border: 2px solid #d1d5db;
-    border-radius: 4px;
-    background-color: #f8f9fb;
+    width: 19px;
+    height: 19px;
+    border: 2px solid #cbd5e1;
+    border-radius: 5px;
+    background-color: #f8fafc;
 }
 QCheckBox::indicator:hover {
-    border-color: #9ca3af;
+    border-color: #94a3b8;
 }
 QCheckBox::indicator:checked {
     background-color: #4f7cff;
     border-color: #4f7cff;
+    image: url(@CHECK@);
 }
 QPushButton#primary {
-    background-color: #4f7cff;
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #4f7cff, stop:1 #7a5cf0);
     border: none;
-    border-radius: 10px;
-    padding: 14px 24px;
+    border-radius: 12px;
+    padding: 15px 24px;
     font-size: 15px;
     font-weight: 700;
     color: #ffffff;
-    min-height: 20px;
+    min-height: 22px;
 }
 QPushButton#primary:hover {
-    background-color: #6a92ff;
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #6a92ff, stop:1 #8f74ff);
 }
 QPushButton#primary:pressed {
-    background-color: #3b5fd0;
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #3b5fd0, stop:1 #6844d8);
 }
 QPushButton#primary:disabled {
-    background-color: #e5e7eb;
-    color: #9ca3af;
+    background-color: #e2e8f0;
+    color: #94a3b8;
 }
 QPushButton#secondary {
-    background-color: #f3f4f6;
-    border: 1px solid #d1d5db;
-    border-radius: 6px;
-    padding: 7px 14px;
+    background-color: #f1f5f9;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 8px 14px;
     font-size: 12px;
-    color: #4b5563;
+    font-weight: 500;
+    color: #475569;
 }
 QPushButton#secondary:hover {
-    background-color: #e5e7eb;
-    border-color: #9ca3af;
+    background-color: #e2e8f0;
+    border-color: #94a3b8;
+    color: #1e293b;
 }
 QPushButton#secondary:pressed {
-    background-color: #d1d5db;
+    background-color: #cbd5e1;
 }
 QPushButton#theme_btn {
-    background-color: #f3f4f6;
-    border: 1px solid #d1d5db;
-    border-radius: 6px;
-    padding: 5px 12px;
+    background-color: #f1f5f9;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 6px 12px;
     font-size: 12px;
-    color: #4b5563;
+    color: #475569;
 }
 QPushButton#theme_btn:hover {
-    background-color: #e5e7eb;
+    background-color: #e2e8f0;
+    color: #1e293b;
 }
 QProgressBar {
-    background-color: #e5e7eb;
-    border: none;
-    border-radius: 4px;
-    max-height: 8px;
-    min-height: 8px;
+    background-color: #e2e8f0;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    max-height: 12px;
+    min-height: 12px;
 }
 QProgressBar::chunk {
-    background-color: #4f7cff;
-    border-radius: 4px;
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #4f7cff, stop:1 #7a5cf0);
+    border-radius: 5px;
 }
 QTextEdit#log {
-    background-color: #f8f9fb;
-    border: 1px solid #e5e7eb;
-    border-radius: 8px;
+    background-color: #f8fafc;
+    border: 1px solid #d9dfec;
+    border-radius: 10px;
     padding: 10px;
     font-family: "Cascadia Code", "JetBrains Mono", "Fira Code", "Consolas", monospace;
     font-size: 11px;
-    color: #6b7280;
+    color: #64748b;
     selection-background-color: #4f7cff;
 }
 QStatusBar {
-    background-color: #e4e7ec;
-    border-top: 1px solid #d1d5db;
+    background-color: #e7ebf2;
+    border-top: 1px solid #d3daea;
     font-size: 11px;
-    color: #6b7280;
-    padding: 4px 12px;
+    color: #64748b;
+    padding: 5px 12px;
 }
 QScrollBar:vertical {
     background: transparent;
-    width: 8px;
+    width: 9px;
 }
 QScrollBar::handle:vertical {
-    background-color: #d1d5db;
+    background-color: #cbd5e1;
     border-radius: 4px;
     min-height: 24px;
 }
 QScrollBar::handle:vertical:hover {
-    background-color: #9ca3af;
+    background-color: #94a3b8;
 }
 QScrollBar::add-line:vertical,
 QScrollBar::sub-line:vertical,
@@ -509,12 +620,12 @@ QScrollBar::sub-page:vertical {
     height: 0px;
 }
 QToolTip {
-    background-color: #1f2937;
-    border: 1px solid #374151;
-    border-radius: 4px;
+    background-color: #f1f5f9;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
     padding: 5px 10px;
     font-size: 11px;
-    color: #f9fafb;
+    color: #1e293b;
 }
 """
 
@@ -547,6 +658,35 @@ def _save_config(theme: str) -> None:
         (d / "config.json").write_text(json.dumps({"theme": theme}))
     except OSError:
         pass
+
+
+# ── checkmark asset ────────────────────────────────────────────────────────
+
+
+def _checkmark_path() -> str:
+    """Return (generating if needed) a white checkmark PNG for checkbox tips."""
+    d = _config_dir()
+    p = d / "check.png"
+    if not p.is_file():
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            pix = QPixmap(20, 20)
+            pix.fill(Qt.transparent)
+            qp = QPainter(pix)
+            qp.setRenderHint(QPainter.Antialiasing)
+            qp.setPen(
+                QPen(
+                    QColor("#ffffff"), 2.4, Qt.SolidLine,
+                    Qt.RoundCap, Qt.RoundJoin,
+                )
+            )
+            qp.drawLine(4, 11, 8, 15)
+            qp.drawLine(8, 15, 16, 5)
+            qp.end()
+            pix.save(str(p), "PNG")
+        except Exception:  # noqa: BLE001 - fall back to no image
+            return ""
+    return p.as_posix()
 
 
 # ── worker thread ──────────────────────────────────────────────────────────
@@ -611,7 +751,7 @@ class _Worker(QThread):
 
 
 class _Sidebar(QWidget):
-    """Left-hand navigation panel with icon + label buttons."""
+    """Left-hand navigation panel with brand block + icon nav buttons."""
 
     page_changed = Signal(int)
 
@@ -630,10 +770,22 @@ class _Sidebar(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(2)
 
-        title = QLabel("  \u2b07  VidGrab")
-        title.setObjectName("app_title")
-        title.setContentsMargins(0, 18, 0, 20)
-        lay.addWidget(title)
+        brand = QWidget()
+        brand.setObjectName("brand")
+        bl = QVBoxLayout(brand)
+        bl.setContentsMargins(18, 20, 18, 16)
+        bl.setSpacing(2)
+        title = QLabel('<span>\u2b07</span>  VidGrab')
+        title.setObjectName("brand_title")
+        bl.addWidget(title)
+        sub = QLabel(f"v{__version__}")
+        sub.setObjectName("brand_sub")
+        bl.addWidget(sub)
+        divider = QFrame()
+        divider.setObjectName("brand_divider")
+        divider.setFrameShape(QFrame.NoFrame)
+        bl.addWidget(divider, alignment=Qt.AlignTop)
+        lay.addWidget(brand)
 
         self._buttons: list[QPushButton] = []
         for idx, (icon, label) in enumerate(self._NAV):
@@ -641,7 +793,7 @@ class _Sidebar(QWidget):
             btn.setObjectName("nav")
             btn.setCheckable(True)
             btn.setAutoExclusive(True)
-            btn.setFixedHeight(40)
+            btn.setFixedHeight(42)
             if idx == 0:
                 btn.setChecked(True)
             btn.toggled.connect(
@@ -668,10 +820,10 @@ class VidGrabWindow(QMainWindow):
         self._worker: _Worker | None = None
 
         self.setWindowTitle("VidGrab")
-        self.setMinimumSize(920, 660)
-        self.resize(1020, 740)
+        self.setMinimumSize(920, 680)
+        self.resize(1040, 760)
 
-        self.setStyleSheet(_THEMES[self._theme])
+        self._apply_theme()
         self._build_ui()
         self._update_ffmpeg_status()
         self._start_internet_check()
@@ -712,30 +864,40 @@ class VidGrabWindow(QMainWindow):
 
         self._statusbar = QStatusBar()
         self.setStatusBar(self._statusbar)
-        self._net_lbl = QLabel("● checking…")
-        self._net_lbl.setStyleSheet("font-weight:bold; font-size:11px;")
+        self._net_lbl = QLabel("\u25cf checking\u2026")
+        self._net_lbl.setFixedHeight(22)
+        self._net_lbl.setAlignment(Qt.AlignCenter)
+        self._label_pill(self._net_lbl, "#f59e0b")
         self._ffmpeg_lbl = QLabel()
         self._version_lbl = QLabel(f"v{__version__}")
         self._statusbar.addWidget(self._net_lbl)
         self._statusbar.addWidget(self._mk_sep())
         self._statusbar.addWidget(self._ffmpeg_lbl)
-        self._statusbar.addPermanentWidget(self._mk_sep())
         self._statusbar.addPermanentWidget(self._version_lbl)
 
     @staticmethod
+    def _label_pill(label: QLabel, color: str, dark_text: bool = False) -> None:
+        label.setStyleSheet(
+            f"background-color:{color}; color:{'#0b0f14' if dark_text else '#ffffff'};"
+            "border-radius:10px; padding:2px 10px; font-weight:bold; font-size:11px;"
+        )
+
+    @staticmethod
     def _mk_sep() -> QLabel:
-        s = QLabel("│")
-        s.setStyleSheet("color:#374151; font-size:11px; padding:0 4px;")
+        s = QLabel("\u2502")
+        s.setStyleSheet(
+            "color:#2c3a4f; font-size:11px; padding:0 4px; background:transparent;"
+        )
         return s
 
     def _build_header(self) -> QWidget:
         w = QWidget()
         w.setObjectName("header")
-        w.setFixedHeight(56)
+        w.setFixedHeight(54)
         lay = QHBoxLayout(w)
         lay.setContentsMargins(20, 0, 20, 0)
 
-        lbl = QLabel(f"VidGrab  v{__version__}")
+        lbl = QLabel(f'<b>VidGrab</b>  v{__version__}')
         lbl.setObjectName("app_version")
         lay.addWidget(lbl)
         lay.addStretch()
@@ -758,10 +920,12 @@ class VidGrabWindow(QMainWindow):
         lay.setSpacing(12)
 
         src = QGroupBox("SOURCE")
+        src.setObjectName("source_card")
         sl = QVBoxLayout(src)
         row = QHBoxLayout()
         self._url = QLineEdit()
-        self._url.setPlaceholderText("Paste a YouTube link…")
+        self._url.setPlaceholderText("Paste a YouTube link\u2026")
+        self._url.setClearButtonEnabled(True)
         self._url.returnPressed.connect(self._start_action)
         row.addWidget(self._url, stretch=1)
         pb = QPushButton("Paste")
@@ -773,10 +937,11 @@ class VidGrabWindow(QMainWindow):
         lay.addWidget(src)
 
         fmt = QGroupBox("FORMAT")
+        fmt.setObjectName("format_card")
         fl = QHBoxLayout(fmt)
-        self._mp4 = QCheckBox("MP4 (video)")
+        self._mp4 = _colored_check("MP4 (video)", "#10b981")
         self._mp4.setChecked(True)
-        self._mp3 = QCheckBox("MP3 (audio)")
+        self._mp3 = _colored_check("MP3 (audio)", "#f59e0b")
         fl.addWidget(self._mp4)
         fl.addWidget(self._mp3)
         fl.addStretch()
@@ -784,6 +949,7 @@ class VidGrabWindow(QMainWindow):
 
         row2 = QHBoxLayout()
         flip = QGroupBox("FLIP")
+        flip.setObjectName("flip_card")
         vl = QVBoxLayout(flip)
         self._hflip = QCheckBox("Horizontal")
         self._vflip = QCheckBox("Vertical")
@@ -792,6 +958,7 @@ class VidGrabWindow(QMainWindow):
         row2.addWidget(flip)
 
         trim = QGroupBox("TRIM")
+        trim.setObjectName("trim_card")
         tl = QFormLayout(trim)
         self._ts = QLineEdit()
         self._ts.setPlaceholderText("0:00")
@@ -805,8 +972,10 @@ class VidGrabWindow(QMainWindow):
         lay.addLayout(row2)
 
         save = QGroupBox("SAVE TO")
+        save.setObjectName("save_card")
         svl = QHBoxLayout(save)
         self._out = QLineEdit(str(default_output_dir()))
+        self._out.setClearButtonEnabled(True)
         svl.addWidget(self._out, stretch=1)
         bb = QPushButton("Browse\u2026")
         bb.setObjectName("secondary")
@@ -827,10 +996,12 @@ class VidGrabWindow(QMainWindow):
         lay.setSpacing(12)
 
         src = QGroupBox("SOURCE")
+        src.setObjectName("source_card")
         sl = QVBoxLayout(src)
         row = QHBoxLayout()
         self._file = QLineEdit()
         self._file.setPlaceholderText("Choose a local video or audio file\u2026")
+        self._file.setClearButtonEnabled(True)
         row.addWidget(self._file, stretch=1)
         bb = QPushButton("Browse\u2026")
         bb.setObjectName("secondary")
@@ -842,6 +1013,7 @@ class VidGrabWindow(QMainWindow):
 
         row2 = QHBoxLayout()
         flip = QGroupBox("FLIP")
+        flip.setObjectName("flip_card")
         vl = QVBoxLayout(flip)
         self._ehflip = QCheckBox("Horizontal")
         self._evflip = QCheckBox("Vertical")
@@ -850,6 +1022,7 @@ class VidGrabWindow(QMainWindow):
         row2.addWidget(flip)
 
         trim = QGroupBox("TRIM")
+        trim.setObjectName("trim_card")
         tl = QFormLayout(trim)
         self._ets = QLineEdit()
         self._ets.setPlaceholderText("0:00")
@@ -863,8 +1036,10 @@ class VidGrabWindow(QMainWindow):
         lay.addLayout(row2)
 
         save = QGroupBox("SAVE TO")
+        save.setObjectName("save_card")
         svl = QHBoxLayout(save)
         self._eout = QLineEdit(str(default_output_dir()))
+        self._eout.setClearButtonEnabled(True)
         svl.addWidget(self._eout, stretch=1)
         bb2 = QPushButton("Browse\u2026")
         bb2.setObjectName("secondary")
@@ -885,6 +1060,7 @@ class VidGrabWindow(QMainWindow):
         lay.setSpacing(12)
 
         g1 = QGroupBox("APPEARANCE")
+        g1.setObjectName("settings_card")
         fl = QFormLayout(g1)
         self._theme_combo = QComboBox()
         self._theme_combo.addItems(["Dark", "Light"])
@@ -896,6 +1072,7 @@ class VidGrabWindow(QMainWindow):
         lay.addWidget(g1)
 
         g2 = QGroupBox("ABOUT")
+        g2.setObjectName("settings_card")
         al = QVBoxLayout(g2)
         info = QLabel(
             f"<b>VidGrab {__version__}</b><br><br>"
@@ -917,8 +1094,8 @@ class VidGrabWindow(QMainWindow):
     def _build_bottom(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(20, 4, 20, 8)
-        lay.setSpacing(6)
+        lay.setContentsMargins(20, 4, 20, 12)
+        lay.setSpacing(8)
 
         hdr = QHBoxLayout()
         lbl = QLabel("LOG")
@@ -936,20 +1113,26 @@ class VidGrabWindow(QMainWindow):
         self._log = QTextEdit()
         self._log.setObjectName("log")
         self._log.setReadOnly(True)
-        self._log.setMinimumHeight(80)
+        self._log.setMinimumHeight(60)
         lay.addWidget(self._log, stretch=1)
 
         prow = QHBoxLayout()
+        prow.setSpacing(10)
         self._progress = QProgressBar()
+        self._progress.setFixedHeight(12)
+        self._progress.setTextVisible(False)
         self._progress.setValue(0)
         prow.addWidget(self._progress, stretch=1)
         self._status_lbl = QLabel("Ready")
-        self._status_lbl.setObjectName("muted")
+        self._status_lbl.setObjectName("status")
+        self._status_lbl.setMinimumWidth(110)
+        self._status_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         prow.addWidget(self._status_lbl)
         lay.addLayout(prow)
 
         self._action = QPushButton("\u2b07  Download")
         self._action.setObjectName("primary")
+        self._action.setFixedHeight(50)
         self._action.setEnabled(False)
         self._action.clicked.connect(self._start_action)
         lay.addWidget(self._action)
@@ -970,6 +1153,11 @@ class VidGrabWindow(QMainWindow):
 
     # ── theme ──────────────────────────────────────────────────────────
 
+    def _apply_theme(self) -> None:
+        check = _checkmark_path()
+        qss = _THEMES[self._theme]
+        self.setStyleSheet(qss.replace("@CHECK@", check))
+
     def _toggle_theme(self) -> None:
         self._set_theme("light" if self._theme == "dark" else "dark")
 
@@ -977,7 +1165,7 @@ class VidGrabWindow(QMainWindow):
         if name not in _THEMES:
             return
         self._theme = name
-        self.setStyleSheet(_THEMES[name])
+        self._apply_theme()
         self._theme_btn.setText(
             "\u263e Dark" if self._theme == "light" else "\u2600 Light"
         )
@@ -1074,14 +1262,10 @@ class VidGrabWindow(QMainWindow):
         self._internet_online = status.online
         if status.online:
             self._net_lbl.setText("\u25cf Online")
-            self._net_lbl.setStyleSheet(
-                "color:#3ecf8e; font-weight:bold; font-size:11px;"
-            )
+            self._label_pill(self._net_lbl, "#10b981")
         else:
             self._net_lbl.setText("\u25cb Offline")
-            self._net_lbl.setStyleSheet(
-                "color:#ff6b6b; font-weight:bold; font-size:11px;"
-            )
+            self._label_pill(self._net_lbl, "#ef4444")
         self._refresh_btn()
 
     # ── busy / button state ────────────────────────────────────────────
@@ -1139,7 +1323,8 @@ class VidGrabWindow(QMainWindow):
             QMessageBox.critical(
                 self,
                 "ffmpeg required",
-                "Downloads need ffmpeg for MP3 and most MP4 merges.",
+                "Downloads need ffmpeg for MP3 and most MP4 merges. "
+                "Install ffmpeg or rebuild with an embedded copy.",
             )
             return
 
@@ -1171,7 +1356,8 @@ class VidGrabWindow(QMainWindow):
             QMessageBox.critical(
                 self,
                 "ffmpeg required",
-                "Processing local files requires ffmpeg.",
+                "Processing local files requires ffmpeg. "
+                "Install ffmpeg or rebuild with an embedded copy.",
             )
             return
 
@@ -1198,7 +1384,9 @@ class VidGrabWindow(QMainWindow):
         if isinstance(pct, (int, float)):
             if self._progress.maximum() == 0:
                 self._progress.setMaximum(100)
-            self._progress.setValue(int(min(100, pct)))
+            val = int(min(100, max(0, pct)))
+            self._progress.setValue(val)
+            self._status_lbl.setText(f"{msg}  ({val}%)")
         elif self._busy:
             self._progress.setMaximum(0)
 
@@ -1247,6 +1435,17 @@ class VidGrabWindow(QMainWindow):
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
+
+
+def _colored_check(text: str, color: str) -> QCheckBox:
+    """QCheckBox with a custom accent color + white checkmark on check."""
+    check = _checkmark_path()
+    cb = QCheckBox(text)
+    cb.setStyleSheet(
+        f"QCheckBox::indicator:checked {{ background-color: {color}; "
+        f"border-color: {color}; image: url({check}); }}"
+    )
+    return cb
 
 
 def _build_filter(hflip: QCheckBox, vflip: QCheckBox) -> str | None:

@@ -1,7 +1,7 @@
 """Headless smoke test that constructs the real PySide6 UI.
 
-Runs only when SMOKE_GUI=1 (CI uses xvfb-run, or set QT_QPA_PLATFORM=offscreen
-locally). Catches PySide6 API misuse and layout errors that a plain import misses.
+Runs only when SMOKE_GUI=1 (e.g. QT_QPA_PLATFORM=offscreen).
+Catches PySide6 API misuse and layout errors that a plain import misses.
 """
 
 from __future__ import annotations

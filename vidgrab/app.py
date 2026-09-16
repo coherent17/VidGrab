@@ -66,6 +66,10 @@ DARK_QSS = """
         "Source Han Sans TC", "PingFang TC", "Microsoft JhengHei",
         "WenQuanYi Zen Hei", "Droid Sans Fallback", "Ubuntu", "Cantarell", sans-serif;
 }
+QLabel {
+    color: #c9d1e0;
+    background: transparent;
+}
 QMainWindow {
     background-color: #0b0f14;
 }
@@ -145,7 +149,7 @@ QGroupBox {
     background-color: #111827;
     border: 1px solid #1f2839;
     border-radius: 12px;
-    padding: 12px 14px;
+    padding: 0px;
     font-size: 12px;
     font-weight: 600;
     color: #8b93ab;
@@ -375,6 +379,10 @@ LIGHT_QSS = """
         "Source Han Sans TC", "PingFang TC", "Microsoft JhengHei",
         "WenQuanYi Zen Hei", "Droid Sans Fallback", "Ubuntu", "Cantarell", sans-serif;
 }
+QLabel {
+    color: #1e293b;
+    background: transparent;
+}
 QMainWindow {
     background-color: #eef1f6;
 }
@@ -453,7 +461,7 @@ QGroupBox {
     background-color: #f8fafc;
     border: 1px solid #d3daea;
     border-radius: 12px;
-    padding: 12px 14px;
+    padding: 0px;
     font-size: 12px;
     font-weight: 600;
     color: #64748b;
@@ -1195,9 +1203,12 @@ class VidGrabWindow(QMainWindow):
         self._mp4 = _colored_check("MP4 (video)", "#10b981")
         self._mp4.setChecked(True)
         self._mp3 = _colored_check("MP3 (audio)", "#f59e0b")
-        fl.addWidget(self._mp4)
-        fl.addWidget(self._mp3)
-        fl.addStretch()
+        fr = QHBoxLayout()
+        fr.setSpacing(18)
+        fr.addWidget(self._mp4)
+        fr.addWidget(self._mp3)
+        fr.addStretch()
+        fl.addLayout(fr)
         lay.addWidget(fmt)
 
         row2 = QHBoxLayout()
@@ -1205,14 +1216,16 @@ class VidGrabWindow(QMainWindow):
         self._dl_flip_title = flip_title
         self._hflip = QCheckBox("Horizontal")
         self._vflip = QCheckBox("Vertical")
-        vl.addWidget(self._hflip)
-        vl.addWidget(self._vflip)
+        frw = QHBoxLayout()
+        frw.setSpacing(10)
+        frw.addWidget(self._hflip)
+        frw.addWidget(self._vflip)
+        frw.addStretch()
+        vl.addLayout(frw)
         row2.addWidget(flip)
 
         trim, trim_title, tcv = self._card("TRIM", "trim_card", "trim")
         self._dl_trim_title = trim_title
-        tl = QFormLayout()
-        tl.setSpacing(8)
         self._ts = QLineEdit()
         self._ts.setPlaceholderText("0:00")
         self._ts.setMaximumWidth(110)
@@ -1221,25 +1234,34 @@ class VidGrabWindow(QMainWindow):
         self._te.setMaximumWidth(110)
         self._ts_lbl = QLabel("Start:")
         self._te_lbl = QLabel("End:")
-        tl.addRow(self._ts_lbl, self._ts)
-        tl.addRow(self._te_lbl, self._te)
-        tcv.addLayout(tl)
+        tr = QHBoxLayout()
+        tr.setSpacing(8)
+        tr.addWidget(self._ts_lbl)
+        tr.addWidget(self._ts)
+        tr.addSpacing(10)
+        tr.addWidget(self._te_lbl)
+        tr.addWidget(self._te)
+        tr.addStretch()
+        tcv.addLayout(tr)
         row2.addWidget(trim)
         lay.addLayout(row2)
         lay.addStretch(1)
 
         save, save_title, svl = self._card("SAVE TO", "save_card", "save")
         self._dl_save_title = save_title
+        sr = QHBoxLayout()
+        sr.setSpacing(10)
         self._out = QLineEdit(str(default_output_dir()))
         self._out.setClearButtonEnabled(True)
-        svl.addWidget(self._out, stretch=1)
+        sr.addWidget(self._out, stretch=1)
         bb = QPushButton("Browse\u2026")
         bb.setObjectName("secondary")
         bb.setMinimumWidth(76)
         bb.setCursor(QCursor(_HAND))
         bb.clicked.connect(lambda: self._browse_folder(self._out))
-        svl.addWidget(bb)
+        sr.addWidget(bb)
         self._dl_browse = bb
+        svl.addLayout(sr)
         lay.addWidget(save)
         return page
 
@@ -1274,14 +1296,16 @@ class VidGrabWindow(QMainWindow):
         self._ed_flip_title = flip_title
         self._ehflip = QCheckBox("Horizontal")
         self._evflip = QCheckBox("Vertical")
-        vl.addWidget(self._ehflip)
-        vl.addWidget(self._evflip)
+        frw = QHBoxLayout()
+        frw.setSpacing(10)
+        frw.addWidget(self._ehflip)
+        frw.addWidget(self._evflip)
+        frw.addStretch()
+        vl.addLayout(frw)
         row2.addWidget(flip)
 
         trim, trim_title, tcv = self._card("TRIM", "trim_card", "trim")
         self._ed_trim_title = trim_title
-        tl = QFormLayout()
-        tl.setSpacing(8)
         self._ets = QLineEdit()
         self._ets.setPlaceholderText("0:00")
         self._ets.setMaximumWidth(110)
@@ -1290,25 +1314,34 @@ class VidGrabWindow(QMainWindow):
         self._ete.setMaximumWidth(110)
         self._ets_lbl = QLabel("Start:")
         self._ete_lbl = QLabel("End:")
-        tl.addRow(self._ets_lbl, self._ets)
-        tl.addRow(self._ete_lbl, self._ete)
-        tcv.addLayout(tl)
+        tr = QHBoxLayout()
+        tr.setSpacing(8)
+        tr.addWidget(self._ets_lbl)
+        tr.addWidget(self._ets)
+        tr.addSpacing(10)
+        tr.addWidget(self._ete_lbl)
+        tr.addWidget(self._ete)
+        tr.addStretch()
+        tcv.addLayout(tr)
         row2.addWidget(trim)
         lay.addLayout(row2)
         lay.addStretch(1)
 
         save, save_title, svl = self._card("SAVE TO", "save_card", "save")
         self._ed_save_title = save_title
+        sr = QHBoxLayout()
+        sr.setSpacing(10)
         self._eout = QLineEdit(str(default_output_dir()))
         self._eout.setClearButtonEnabled(True)
-        svl.addWidget(self._eout, stretch=1)
+        sr.addWidget(self._eout, stretch=1)
         bb2 = QPushButton("Browse\u2026")
         bb2.setObjectName("secondary")
         bb2.setMinimumWidth(76)
         bb2.setCursor(QCursor(_HAND))
         bb2.clicked.connect(lambda: self._browse_folder(self._eout))
-        svl.addWidget(bb2)
+        sr.addWidget(bb2)
         self._ed_browse2 = bb2
+        svl.addLayout(sr)
         lay.addWidget(save)
         return page
 

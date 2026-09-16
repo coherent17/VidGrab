@@ -24,12 +24,21 @@ jobs:
 
       - name: Download static ffmpeg
         run: |
-          wget -q https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+          curl -fsSL --retry 5 --retry-all-errors --connect-timeout 20 \
+            https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz \
+            -o ffmpeg-release-amd64-static.tar.xz
+          # Integrity check: must be a real XZ archive (magic bytes fd 37 7a 58 5a 00)
+          head -c 6 ffmpeg-release-amd64-static.tar.xz | grep -q $'\xfd7zXZ\x00' || {
+            echo "ERROR: downloaded file is not a valid XZ archive"
+            file ffmpeg-release-amd64-static.tar.xz || true
+            exit 1
+          }
           tar -xJf ffmpeg-release-amd64-static.tar.xz
           mkdir -p ffmpeg/linux
           cp ffmpeg-*-amd64-static/ffmpeg  ffmpeg/linux/ffmpeg
           cp ffmpeg-*-amd64-static/ffprobe ffmpeg/linux/ffprobe
           chmod +x ffmpeg/linux/ffmpeg ffmpeg/linux/ffprobe
+          rm -f ffmpeg-release-amd64-static.tar.xz
 
       - name: Generate icon
         run: .venv/bin/python scripts/generate_icon.py

@@ -133,20 +133,21 @@ QGroupBox {
     border: 1px solid #1f2839;
     border-left: 3px solid #1f2839;
     border-radius: 12px;
-    margin-top: 15px;
+    margin-top: 16px;
     padding: 18px 16px 14px 16px;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
     subcontrol-position: top left;
     left: 18px;
-    top: 12px;
-    padding: 0 8px;
+    top: -7px;
+    padding: 0 6px;
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 1.5px;
     color: #4f7cff;
-    background-color: transparent;
+    background-color: #0b0f14;
+    border-radius: 4px;
 }
 QGroupBox#source_card {
     border-left: 3px solid #f43f5e;
@@ -452,20 +453,21 @@ QGroupBox {
     border: 1px solid #d9dfec;
     border-left: 3px solid #d9dfec;
     border-radius: 12px;
-    margin-top: 15px;
+    margin-top: 16px;
     padding: 18px 16px 14px 16px;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
     subcontrol-position: top left;
     left: 18px;
-    top: 12px;
-    padding: 0 8px;
+    top: -7px;
+    padding: 0 6px;
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 1.5px;
     color: #4f7cff;
-    background-color: transparent;
+    background-color: #eef1f6;
+    border-radius: 4px;
 }
 QGroupBox#source_card {
     border-left: 3px solid #f43f5e;
@@ -927,8 +929,7 @@ class VidGrabWindow(QMainWindow):
         self._stack.addWidget(self._build_edit_form())
         self._stack.addWidget(self._build_settings_form())
         content.addWidget(self._stack, stretch=4)
-
-        content.addWidget(self._build_bottom(), stretch=3)
+        content.addWidget(self._build_bottom())
         body.addLayout(content, stretch=1)
         root.addLayout(body, stretch=1)
 
@@ -987,7 +988,7 @@ class VidGrabWindow(QMainWindow):
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(20, 14, 20, 6)
-        lay.setSpacing(12)
+        lay.setSpacing(14)
 
         src = QGroupBox("SOURCE")
         src.setObjectName("source_card")
@@ -1005,6 +1006,7 @@ class VidGrabWindow(QMainWindow):
         row.addWidget(pb)
         sl.addLayout(row)
         lay.addWidget(src)
+        lay.addStretch(1)
 
         fmt = QGroupBox("FORMAT")
         fmt.setObjectName("format_card")
@@ -1040,6 +1042,7 @@ class VidGrabWindow(QMainWindow):
         tl.addRow("End:", self._te)
         row2.addWidget(trim)
         lay.addLayout(row2)
+        lay.addStretch(1)
 
         save = QGroupBox("SAVE TO")
         save.setObjectName("save_card")
@@ -1053,8 +1056,6 @@ class VidGrabWindow(QMainWindow):
         bb.clicked.connect(lambda: self._browse_folder(self._out))
         svl.addWidget(bb)
         lay.addWidget(save)
-
-        lay.addStretch()
         return page
 
     # ── edit form ──────────────────────────────────────────────────────
@@ -1063,7 +1064,7 @@ class VidGrabWindow(QMainWindow):
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(20, 14, 20, 6)
-        lay.setSpacing(12)
+        lay.setSpacing(14)
 
         src = QGroupBox("SOURCE")
         src.setObjectName("source_card")
@@ -1080,6 +1081,7 @@ class VidGrabWindow(QMainWindow):
         row.addWidget(bb)
         sl.addLayout(row)
         lay.addWidget(src)
+        lay.addStretch(1)
 
         row2 = QHBoxLayout()
         flip = QGroupBox("FLIP")
@@ -1104,6 +1106,7 @@ class VidGrabWindow(QMainWindow):
         tl.addRow("End:", self._ete)
         row2.addWidget(trim)
         lay.addLayout(row2)
+        lay.addStretch(1)
 
         save = QGroupBox("SAVE TO")
         save.setObjectName("save_card")
@@ -1117,8 +1120,6 @@ class VidGrabWindow(QMainWindow):
         bb2.clicked.connect(lambda: self._browse_folder(self._eout))
         svl.addWidget(bb2)
         lay.addWidget(save)
-
-        lay.addStretch()
         return page
 
     # ── settings form ──────────────────────────────────────────────────
@@ -1168,14 +1169,15 @@ class VidGrabWindow(QMainWindow):
         lay.setSpacing(8)
 
         hdr = QHBoxLayout()
+        hdr.setSpacing(8)
         lbl = QLabel("LOG")
         lbl.setObjectName("section")
+        lbl.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         hdr.addWidget(lbl)
         hdr.addStretch()
         cb = QPushButton("Clear")
         cb.setObjectName("secondary")
         cb.setMinimumWidth(56)
-        cb.setFixedHeight(24)
         cb.clicked.connect(self._clear_log)
         hdr.addWidget(cb)
         lay.addLayout(hdr)

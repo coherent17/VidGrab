@@ -48,12 +48,11 @@ jobs:
           body: |
             Auto-built from tag ${{ github.ref_name }}.
 
-            ## What's new in 2.1
-            - **Speed control** — dedicated slider changes playback speed from 0.25× to 4× on downloads and local files (`setpts` + `atempo`, zero artifacts)
-            - **Quality picker** — choose resolution (up to 4K) for MP4 or bitrate (128–320 kbps) for MP3
-            - **Live preview** — ▶ Preview on the Process page plays your trim/flip/speed settings through ffplay before you commit
-            - **Drag & drop** — drop a local file anywhere to load it into Process
-            - **繁体中文 (Traditional Chinese)** localization for the entire UI
+            ## What's new in 2.2
+            - **New brand icon** — a futuristic cyber-chip design: chamfered tile, electric blue→cyan→violet→magenta gradient, neon outline + glow, play triangle with a download chevron, and the "VidGrab" wordmark (icon shown in the README)
+            - **日本語 (Japanese) and 한국어 (Korean)** — full UI localization for 4 languages total; Noto Sans CJK JP/KR fonts bundled so text renders perfectly on any OS
+            - **Makefile** — `setup`/`run`/`lint`/`test`/`build`/`clean`/`icon` targets replace `run.sh`
+            - **Repo polish** — build scripts consolidated under `scripts/`, session notes moved to `docs/`, `version_info.txt` derived from `_version.py`, single `requirements.txt`, zip artifact dropped
 
             ## Downloads
             - `VidGrab.exe` — single self-contained Windows executable (ffmpeg + ffplay embedded)

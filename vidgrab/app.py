@@ -52,11 +52,13 @@ from vidgrab.downloader import (
     default_output_dir,
     download,
     download_both,
+    download_playlist,
     find_ffmpeg,
     find_ffplay,
     get_app_dir,
     get_bundle_dir,
     preview_args,
+    probe,
     process_local_file,
 )
 from vidgrab.i18n import LANGUAGES, make_translator
@@ -266,6 +268,26 @@ QCheckBox::indicator:checked {
 }
 QCheckBox:hover {
     color: #e8edf6;
+}
+
+/* ── info card ── */
+QLabel#info_name {
+    color: #e8edf6;
+    font-size: 14px;
+    font-weight: 700;
+    background: transparent;
+}
+QLabel#info_meta {
+    color: #7d8ba1;
+    font-size: 12px;
+    background: transparent;
+}
+QLabel#info_thumb {
+    background-color: #0d1219;
+    border: 1px solid #1f2839;
+    border-radius: 8px;
+    color: #4b5672;
+    font-size: 11px;
 }
 
 /* ── buttons ── */
@@ -618,6 +640,26 @@ QCheckBox:hover {
     color: #1e293b;
 }
 
+/* ── info card ── */
+QLabel#info_name {
+    color: #1e293b;
+    font-size: 14px;
+    font-weight: 700;
+    background: transparent;
+}
+QLabel#info_meta {
+    color: #64748b;
+    font-size: 12px;
+    background: transparent;
+}
+QLabel#info_thumb {
+    background-color: #f1f5f9;
+    border: 1px solid #d3daea;
+    border-radius: 8px;
+    color: #94a3b8;
+    font-size: 11px;
+}
+
 /* ── buttons ── */
 QPushButton#secondary {
     background-color: #f1f5f9;
@@ -819,6 +861,25 @@ def _save_config(theme: str, lang: str = "en") -> None:
         pass
 
 
+def _thumb_cache_dir() -> Path:
+    d = _config_dir() / "cache"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return d
+
+
+def _fmt_duration(seconds: float) -> str:
+    """Render a duration in seconds as M:SS or H:MM:SS."""
+    total = int(seconds)
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
 # ── vector icons ────────────────────────────────────────────────────────────
 
 _HAND = Qt.PointingHandCursor
@@ -962,12 +1023,14 @@ def _brand_pixmap() -> QPixmap | None:
 
 
 class _Worker(QThread):
-    """Run a download / processing task off the main thread."""
+    """Run a download / processing / probe task off the main thread."""
 
     finished = Signal(object)
     error = Signal(str)
     progress = Signal(str, object)
     log = Signal(str)
+    probed = Signal(object)
+    probe_error = Signal(str)
 
     def __init__(self, task: str, **kwargs) -> None:
         super().__init__()
@@ -982,6 +1045,14 @@ class _Worker(QThread):
 
     def run(self) -> None:
         try:
+            if self._task == "probe":
+                result = probe(
+                    self._kw["url"],
+                    thumb_dir=self._kw.get("thumb_dir"),
+                    translate=self._kw.get("translate"),
+                )
+                self.probed.emit(result)
+                return
             common = {
                 "video_filter": self._kw.get("video_filter"),
                 "speed": self._kw.get("speed"),
@@ -1001,6 +1072,14 @@ class _Worker(QThread):
                 result = download_both(
                     self._kw["url"], self._kw["output_dir"], **common,
                 )
+            elif self._task == "download_playlist":
+                result = download_playlist(
+                    self._kw["url"], self._kw["output_dir"], self._kw["fmt"],
+                    quality=self._kw.get("quality"),
+                    on_progress=self._cb_progress,
+                    on_log=self._cb_log,
+                    translate=self._kw.get("translate"),
+                )
             elif self._task == "local_file":
                 result = process_local_file(
                     self._kw["input_path"], self._kw["output_dir"],
@@ -1010,7 +1089,10 @@ class _Worker(QThread):
                 raise RuntimeError(f"Unknown task: {self._task}")
             self.finished.emit(result)
         except Exception as exc:  # noqa: BLE001
-            self.error.emit(str(exc))
+            if self._task == "probe":
+                self.probe_error.emit(str(exc))
+            else:
+                self.error.emit(str(exc))
 
 
 # ── sidebar ────────────────────────────────────────────────────────────────
@@ -1150,6 +1232,7 @@ class VidGrabWindow(QMainWindow):
         self._worker: _Worker | None = None
         self._card_titles: list[tuple[QLabel, str]] = []
         self._preview_proc: QProcess | None = None
+        self._probe_data: dict | None = None
 
         self.setWindowTitle("VidGrab")
         self.setMinimumSize(920, 680)
@@ -1158,6 +1241,7 @@ class VidGrabWindow(QMainWindow):
 
         self._apply_theme()
         self._build_ui()
+        self._setup_probe()
         self._apply_language()
         self._update_ffmpeg_status()
         self._start_internet_check()
@@ -1290,6 +1374,34 @@ class VidGrabWindow(QMainWindow):
         self._dl_paste = pb
         sl.addLayout(row)
         lay.addWidget(src)
+
+        info, info_title, ivl = self._card("VIDEO INFO", "info_card", "source")
+        self._dl_info_title = info_title
+        ih = QHBoxLayout()
+        ih.setSpacing(14)
+        self._info_thumb = QLabel()
+        self._info_thumb.setObjectName("info_thumb")
+        self._info_thumb.setFixedSize(168, 94)
+        self._info_thumb.setAlignment(Qt.AlignCenter)
+        ih.addWidget(self._info_thumb)
+        tcol = QVBoxLayout()
+        tcol.setSpacing(3)
+        self._info_name = QLabel()
+        self._info_name.setObjectName("info_name")
+        self._info_name.setWordWrap(True)
+        self._info_meta = QLabel()
+        self._info_meta.setObjectName("info_meta")
+        self._info_meta.setWordWrap(True)
+        self._playlist_cb = QCheckBox()
+        self._playlist_cb.setCursor(QCursor(_HAND))
+        self._playlist_cb.hide()
+        tcol.addWidget(self._info_name)
+        tcol.addWidget(self._info_meta)
+        tcol.addWidget(self._playlist_cb)
+        tcol.addStretch()
+        ih.addLayout(tcol, stretch=1)
+        ivl.addLayout(ih)
+        lay.addWidget(info)
         lay.addStretch(1)
 
         fmt, fmt_title, fl = self._card("FORMAT", "format_card", "format")
@@ -1635,12 +1747,19 @@ class VidGrabWindow(QMainWindow):
         )
         # download page
         self._dl_source_title.setText(t("SOURCE"))
+        self._dl_info_title.setText(t("VIDEO INFO"))
         self._dl_format_title.setText(t("FORMAT"))
         self._dl_flip_title.setText(t("FLIP"))
         self._dl_trim_title.setText(t("TRIM"))
         self._dl_speed_title.setText(t("SPEED"))
         self._dl_save_title.setText(t("SAVE TO"))
         self._url.setPlaceholderText(t("Paste a YouTube link\u2026"))
+        if self._probe_data is not None:
+            self._render_info(self._probe_data)
+        else:
+            self._info_meta.setText(
+                t("Paste a YouTube link to see its details\u2026")
+            )
         self._hflip.setText(t("Horizontal"))
         self._vflip.setText(t("Vertical"))
         self._mp4.setText(t("MP4 (video)"))
@@ -1712,6 +1831,104 @@ class VidGrabWindow(QMainWindow):
         text = QApplication.clipboard().text()
         if text:
             self._url.setText(text.strip())
+
+    # ── URL auto-detect / info card ───────────────────────────────────────
+
+    def _setup_probe(self) -> None:
+        """Debounce URL edits; fetching metadata starts ~700 ms after the
+        user stops typing (or pastes a link)."""
+        self._probe_token = 0
+        self._probe_workers: list[_Worker] = []
+        self._probe_timer = QTimer(self)
+        self._probe_timer.setSingleShot(True)
+        self._probe_timer.setInterval(700)
+        self._probe_timer.timeout.connect(self._start_probe)
+        self._url.textChanged.connect(lambda _txt: self._probe_timer.start())
+
+    def _start_probe(self) -> None:
+        self._probe_token += 1
+        url = self._url.text().strip()
+        if self._busy or not url or self._internet_online is not True:
+            if not url:
+                self._reset_info_card()
+            return
+        self._info_meta.setText(self._t("Loading\u2026"))
+        token = self._probe_token
+        worker = _Worker(
+            "probe",
+            url=url,
+            thumb_dir=_thumb_cache_dir(),
+            translate=self._t,
+        )
+        worker.probed.connect(lambda r, tok=token: self._on_probe_result(r, tok))
+        worker.probe_error.connect(lambda e, tok=token: self._on_probe_error(e, tok))
+        worker.finished.connect(lambda w=worker: self._drop_probe_worker(w))
+        self._probe_workers.append(worker)
+        worker.start()
+
+    def _drop_probe_worker(self, worker: _Worker) -> None:
+        if worker in self._probe_workers:
+            self._probe_workers.remove(worker)
+
+    def _on_probe_result(self, result: dict, token: int) -> None:
+        if token != self._probe_token or self._busy:
+            return
+        self._render_info(result)
+
+    def _on_probe_error(self, msg: str, token: int) -> None:
+        if token != self._probe_token or self._busy:
+            return
+        self._probe_data = None
+        self._info_name.setText("")
+        self._info_thumb.setPixmap(QPixmap())
+        self._playlist_cb.hide()
+        self._info_meta.setText(msg)
+
+    def _reset_info_card(self) -> None:
+        self._probe_data = None
+        self._info_name.setText("")
+        self._info_thumb.setPixmap(QPixmap())
+        self._playlist_cb.hide()
+        self._info_meta.setText(
+            self._t("Paste a YouTube link to see its details\u2026")
+        )
+
+    def _render_info(self, result: dict) -> None:
+        self._probe_data = result
+        self._info_name.setText(result.get("title") or "")
+        meta: list[str] = []
+        uploader = result.get("uploader") or ""
+        if uploader:
+            meta.append(uploader)
+        duration = result.get("duration")
+        if duration:
+            meta.append(_fmt_duration(duration))
+        if result.get("is_playlist"):
+            count = result.get("playlist_count")
+            if count:
+                meta.append(self._t("{count} videos", count=count))
+                self._playlist_cb.setText(
+                    self._t("Download playlist ({count} videos)", count=count)
+                )
+            else:
+                self._playlist_cb.setText(self._t("Download playlist"))
+            self._playlist_cb.setVisible(True)
+        else:
+            formats = result.get("formats") or []
+            if formats:
+                top = formats[0].split(" \u00b7 ", 1)[0]
+                meta.append(self._t("Up to {res}", res=top))
+            self._playlist_cb.setVisible(False)
+        self._info_meta.setText("  \u00b7  ".join(meta))
+        self._info_thumb.setPixmap(QPixmap())
+        thumb = result.get("thumbnail_local")
+        if thumb and Path(thumb).is_file():
+            pm = QPixmap(thumb)
+            if not pm.isNull():
+                scaled = pm.scaled(
+                    168, 94, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
+                self._info_thumb.setPixmap(scaled)
 
     def _browse_folder(self, target: QLineEdit) -> None:
         folder = QFileDialog.getExistingDirectory(
@@ -1858,6 +2075,21 @@ class VidGrabWindow(QMainWindow):
         start = self._ts.text().strip() or None
         end = self._te.text().strip() or None
         out = self._out.text()
+
+        overrides = filt or speed or start or end
+        if self._playlist_cb.isVisible() and self._playlist_cb.isChecked():
+            self._probe_token += 1  # ignore any in-flight info fetch
+            if overrides:
+                self._append_log(
+                    self._t(
+                        "Playlists download each video in the selected format; "
+                        "trim, flip and speed are skipped."
+                    )
+                )
+            fmt = "mp3" if self._mp3.isChecked() else "mp4"
+            self._run("download_playlist", url=url, output_dir=out,
+                      fmt=fmt, quality=quality)
+            return
 
         if self._mp4.isChecked() and self._mp3.isChecked():
             self._run("download_both", url=url, output_dir=out,
@@ -2007,7 +2239,7 @@ class VidGrabWindow(QMainWindow):
         self._progress.setMaximum(100)
         self._progress.setValue(100)
         self._status_lbl.setText(self._t("Done"))
-        if isinstance(result, tuple):
+        if isinstance(result, (tuple, list)):
             paths = "\n".join(str(p) for p in result)
         else:
             paths = str(result)
@@ -2048,6 +2280,11 @@ class VidGrabWindow(QMainWindow):
             )
             event.ignore()
             return
+        # give any in-flight info fetch a moment to finish before teardown
+        self._probe_token += 1
+        for worker in list(self._probe_workers):
+            if worker.isRunning():
+                worker.wait(3000)
         event.accept()
 
 

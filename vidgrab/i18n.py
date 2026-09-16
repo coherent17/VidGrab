@@ -33,6 +33,7 @@ TRANS: dict[str, dict[str, str]] = {
     "SOURCE":          {"en": "SOURCE",          "zh": "來源"},
     "FORMAT":          {"en": "FORMAT",          "zh": "格式"},
     "FLIP":            {"en": "FLIP",            "zh": "翻轉"},
+    "SPEED":           {"en": "SPEED",           "zh": "速度"},
     "TRIM":            {"en": "TRIM",            "zh": "裁剪"},
     "SAVE TO":         {"en": "SAVE TO",         "zh": "儲存至"},
     # ── inputs / checkboxes ──
@@ -44,7 +45,6 @@ TRANS: dict[str, dict[str, str]] = {
     "MP3 (audio)":     {"en": "MP3 (audio)",     "zh": "MP3 (音訊)"},
     "Start:":          {"en": "Start:",          "zh": "開始:"},
     "End:":            {"en": "End:",            "zh": "結束:"},
-    "Speed:":          {"en": "Speed:",          "zh": "速度:"},
     "Paste":           {"en": "Paste",           "zh": "貼上"},
     "Browse…":         {"en": "Browse…",         "zh": "瀏覽…"},
     "Clear":           {"en": "Clear",           "zh": "清除"},

@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QStackedWidget,
     QStatusBar,
     QTextEdit,
@@ -204,6 +205,39 @@ QComboBox QAbstractItemView {
     selection-background-color: #1a2744;
     border-radius: 6px;
     padding: 4px;
+}
+
+QSlider#speed_slider::groove:horizontal {
+    height: 6px;
+    border-radius: 3px;
+    background: #1f2839;
+}
+QSlider#speed_slider::sub-page:horizontal {
+    height: 6px;
+    border-radius: 3px;
+    background: #f59e0b;
+}
+QSlider#speed_slider::handle:horizontal {
+    width: 16px;
+    height: 16px;
+    margin: -5px 0;
+    border-radius: 8px;
+    background: #fbbf24;
+    border: 2px solid #0d1219;
+}
+QSlider#speed_slider::handle:horizontal:hover {
+    background: #fcd34d;
+}
+QLabel#speed_value {
+    color: #fbbf24;
+    font-weight: 700;
+    font-size: 15px;
+    background: transparent;
+}
+QLabel#speed_marker {
+    color: #7d8ba1;
+    font-size: 11px;
+    background: transparent;
 }
 
 QCheckBox {
@@ -525,6 +559,39 @@ QComboBox QAbstractItemView {
     padding: 4px;
 }
 
+QSlider#speed_slider::groove:horizontal {
+    height: 6px;
+    border-radius: 3px;
+    background: #d3daea;
+}
+QSlider#speed_slider::sub-page:horizontal {
+    height: 6px;
+    border-radius: 3px;
+    background: #f59e0b;
+}
+QSlider#speed_slider::handle:horizontal {
+    width: 16px;
+    height: 16px;
+    margin: -5px 0;
+    border-radius: 8px;
+    background: #f59e0b;
+    border: 2px solid #ffffff;
+}
+QSlider#speed_slider::handle:horizontal:hover {
+    background: #d97706;
+}
+QLabel#speed_value {
+    color: #d97706;
+    font-weight: 700;
+    font-size: 15px;
+    background: transparent;
+}
+QLabel#speed_marker {
+    color: #64748b;
+    font-size: 11px;
+    background: transparent;
+}
+
 QCheckBox {
     color: #334155;
     font-size: 13px;
@@ -709,11 +776,11 @@ _THEMES: dict[str, str] = {"dark": DARK_QSS, "light": LIGHT_QSS}
 _CARD_ACCENTS: dict[str, dict[str, str]] = {
     "dark": {
         "source": "#f43f5e", "format": "#10b981", "flip": "#06b6d4",
-        "trim": "#8b5cf6", "save": "#4f7cff", "settings": "#8b5cf6",
+        "speed": "#f59e0b", "trim": "#8b5cf6", "save": "#4f7cff", "settings": "#8b5cf6",
     },
     "light": {
         "source": "#e11d48", "format": "#059669", "flip": "#0891b2",
-        "trim": "#7c3aed", "save": "#4f7cff", "settings": "#7c3aed",
+        "speed": "#d97706", "trim": "#7c3aed", "save": "#4f7cff", "settings": "#7c3aed",
     },
 }
 
@@ -1245,7 +1312,6 @@ class VidGrabWindow(QMainWindow):
         frw.addWidget(self._vflip)
         frw.addStretch()
         vl.addLayout(frw)
-        self._dl_speed_lbl, self._speed = _add_speed_row(vl)
         row2.addWidget(flip)
 
         trim, trim_title, tcv = self._card("TRIM", "trim_card", "trim")
@@ -1269,6 +1335,13 @@ class VidGrabWindow(QMainWindow):
         tcv.addLayout(tr)
         row2.addWidget(trim)
         lay.addLayout(row2)
+        lay.addStretch(1)
+
+        speed, speed_title, svl = self._card("SPEED", "speed_card", "speed")
+        self._dl_speed_title = speed_title
+        self._speed, _sv, srow = _build_speed_row()
+        svl.addLayout(srow)
+        lay.addWidget(speed)
         lay.addStretch(1)
 
         save, save_title, svl = self._card("SAVE TO", "save_card", "save")
@@ -1326,7 +1399,6 @@ class VidGrabWindow(QMainWindow):
         frw.addWidget(self._evflip)
         frw.addStretch()
         vl.addLayout(frw)
-        self._ed_speed_lbl, self._espeed = _add_speed_row(vl)
         row2.addWidget(flip)
 
         trim, trim_title, tcv = self._card("TRIM", "trim_card", "trim")
@@ -1350,6 +1422,13 @@ class VidGrabWindow(QMainWindow):
         tcv.addLayout(tr)
         row2.addWidget(trim)
         lay.addLayout(row2)
+        lay.addStretch(1)
+
+        speed, speed_title, svl = self._card("SPEED", "speed_card", "speed")
+        self._ed_speed_title = speed_title
+        self._espeed, _sv2, srow = _build_speed_row()
+        svl.addLayout(srow)
+        lay.addWidget(speed)
         lay.addStretch(1)
 
         save, save_title, svl = self._card("SAVE TO", "save_card", "save")
@@ -1442,7 +1521,7 @@ class VidGrabWindow(QMainWindow):
         self._log = QTextEdit()
         self._log.setObjectName("log")
         self._log.setReadOnly(True)
-        self._log.setMinimumHeight(70)
+        self._log.setMinimumHeight(50)
         self._log.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
         lay.addWidget(self._log, stretch=1)
 
@@ -1537,7 +1616,7 @@ class VidGrabWindow(QMainWindow):
         self._dl_format_title.setText(t("FORMAT"))
         self._dl_flip_title.setText(t("FLIP"))
         self._dl_trim_title.setText(t("TRIM"))
-        self._dl_speed_lbl.setText(t("Speed:"))
+        self._dl_speed_title.setText(t("SPEED"))
         self._dl_save_title.setText(t("SAVE TO"))
         self._url.setPlaceholderText(t("Paste a YouTube link\u2026"))
         self._hflip.setText(t("Horizontal"))
@@ -1554,7 +1633,7 @@ class VidGrabWindow(QMainWindow):
         self._ed_source_title.setText(t("SOURCE"))
         self._ed_flip_title.setText(t("FLIP"))
         self._ed_trim_title.setText(t("TRIM"))
-        self._ed_speed_lbl.setText(t("Speed:"))
+        self._ed_speed_title.setText(t("SPEED"))
         self._ed_save_title.setText(t("SAVE TO"))
         self._file.setPlaceholderText(t("Choose a local video or audio file\u2026"))
         self._ehflip.setText(t("Horizontal"))
@@ -1877,33 +1956,51 @@ def _colored_check(text: str, color: str) -> QCheckBox:
     return cb
 
 
-_SPEED_PRESETS = ["0.5\u00d7", "0.75\u00d7", "1\u00d7", "1.25\u00d7", "1.5\u00d7", "1.75\u00d7", "2\u00d7"]
+_SPEED_MIN = 25
+_SPEED_MAX = 400
 
 
-def _add_speed_row(vl: QVBoxLayout) -> tuple[QLabel, QComboBox]:
-    """Add a 'Speed: [presets ▼]' row to a card layout; returns (label, combo)."""
+def _build_speed_row() -> tuple[QSlider, QLabel, QHBoxLayout]:
+    """A horizontal speed slider (0.25x..4x) + live value readout.
+
+    Returns (slider, value_label, row_layout) so callers can drop the row
+    into a card and keep the reference labels."""
+    slider = QSlider(Qt.Orientation.Horizontal)
+    slider.setObjectName("speed_slider")
+    slider.setRange(_SPEED_MIN, _SPEED_MAX)
+    slider.setValue(100)
+    slider.setSingleStep(5)
+    slider.setPageStep(25)
+    slider.setTickPosition(QSlider.TicksBelow)
+    slider.setTickInterval(50)
+    slider.setCursor(QCursor(_HAND))
+    val = QLabel("1\u00d7")
+    val.setObjectName("speed_value")
+    val.setMinimumWidth(48)
+    val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    slider.valueChanged.connect(lambda v: val.setText(_format_speed(v)))
     row = QHBoxLayout()
     row.setSpacing(8)
-    lbl = QLabel("Speed:")
-    combo = QComboBox()
-    combo.addItems(_SPEED_PRESETS)
-    combo.setCurrentText("1\u00d7")
-    combo.setCursor(QCursor(_HAND))
-    row.addWidget(lbl)
-    row.addWidget(combo)
-    row.addStretch()
-    vl.addLayout(row)
-    return lbl, combo
+    lo = QLabel("0.25\u00d7")
+    lo.setObjectName("speed_marker")
+    hi = QLabel("4\u00d7")
+    hi.setObjectName("speed_marker")
+    row.addWidget(lo)
+    row.addWidget(slider, stretch=1)
+    row.addWidget(hi)
+    row.addWidget(val)
+    return slider, val, row
 
 
-def _read_speed(combo: QComboBox) -> float | None:
-    """Read the selected preset; returns None when speed is 1.0x (no change)."""
-    text = combo.currentText().rstrip("\u00d7x").strip()
-    try:
-        value = float(text)
-    except ValueError:
-        return None
-    return None if value == 1.0 else value
+def _format_speed(value: int) -> str:
+    """Render a slider value (percent) as e.g. '1.5x'."""
+    return f"{value / 100:g}\u00d7"
+
+
+def _read_speed(slider: QSlider) -> float | None:
+    """Read the slider as a speed factor; None when it is 1.0x (no change)."""
+    value = slider.value()
+    return None if value == 100 else value / 100
 
 
 class _FitScrollArea(QScrollArea):

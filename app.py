@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Back-compat entry point: forwards to the vidgrab package."""
 
 from vidgrab.app import main

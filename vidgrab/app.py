@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """VidGrab — modern dark/light desktop UI (CustomTkinter)."""
 
 from __future__ import annotations
@@ -499,7 +498,7 @@ class VidGrabApp(ctk.CTk):
         status = check_internet(timeout=2.5)
         try:
             self.after(0, lambda: self._apply_internet(status))
-        except Exception:  # noqa: BLE001 - app may already be closed
+        except Exception:  # noqa: BLE001,S110 - app may already be closed
             pass
 
     def _apply_internet(self, status: ConnectionStatus) -> None:

@@ -27,6 +27,8 @@ for _name in (
     if os.path.isfile(_src):
         _datas.append((_src, "assets"))
 
+_win_icon = str(ROOT / "assets" / "icon.ico")
+
 # --- ffmpeg: platform-aware, with legacy fallback ------------------------
 if sys.platform == "win32":
     _ffmpeg_names = ("ffmpeg.exe", "ffprobe.exe", "ffplay.exe")
@@ -131,6 +133,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=str(ROOT / "assets" / "icon.ico") if sys.platform == "win32" else None,
+    icon=_win_icon if (sys.platform == "win32" and os.path.isfile(_win_icon)) else None,
     version=str(ROOT / "version_info.txt") if sys.platform == "win32" else None,
 )

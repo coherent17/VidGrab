@@ -8,7 +8,7 @@ VENV        := .venv
 PY          := $(VENV)/bin/python
 PIP         := $(VENV)/bin/pip
 
-.PHONY: setup run lint test build clean
+.PHONY: setup run lint test build clean icon
 
 setup: ## create venv + install deps (one-time)
 	python3 -m venv $(VENV)
@@ -29,9 +29,12 @@ test: ## full pytest suite incl. headless GUI smoke test
 
 build: ## build the self-contained binary for the current OS (Linux here)
 	@[ -x $(PY) ] || $(MAKE) setup
-	$(PY) scripts/generate_icon.py
 	$(PY) scripts/write_version_info.py
 	$(PY) -m PyInstaller VidGrab.spec --noconfirm
+
+icon: ## regenerate assets/icon.{png,ico} + docs/icon.png from vidgrab/icon.py
+	@[ -x $(PY) ] || $(MAKE) setup
+	$(PY) scripts/generate_icon.py
 
 build-windows: ## Windows-only: run scripts\build.ps1 via PowerShell
 	powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\build.ps1

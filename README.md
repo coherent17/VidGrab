@@ -1,5 +1,7 @@
 # VidGrab
 
+![VidGrab icon](docs/icon.png)
+
 [![CI](https://github.com/coherent17/VidGrab/actions/workflows/ci.yml/badge.svg)](https://github.com/coherent17/VidGrab/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/coherent17/VidGrab?label=release)](https://github.com/coherent17/VidGrab/releases)
 
@@ -52,18 +54,17 @@ make test        # pytest, incl. headless GUI smoke test (Qt offscreen)
 - CI on every push also builds both platforms; **releasing** = push a tag:
 
 ```bash
-git tag v2.1.0
-git push origin v2.1.0     # GitHub Release with VidGrab.exe + VidGrab-linux/.tar.xz
+git tag v2.2.0
+git push origin v2.2.0     # GitHub Release with VidGrab.exe + VidGrab-linux/.tar.xz
 ```
 
 ## Project layout
 
 ```
-vidgrab/        the app (app.py UI, downloader.py logic, i18n.py, network.py, _version.py)
-assets/         bundled resources (icon, NotoSansTC font)
+vidgrab/        the app (app.py UI, downloader.py logic, i18n.py, network.py, icon.py, _version.py)
+assets/         bundled resources (icon.ico/png + NotoSans CJK TC/JP/KR fonts)
 scripts/        build.bat / build.ps1 (Windows), generate_icon.py, write_version_info.py
-tests/          pytest suite incl. headless GUI smoke test
-docs/           project notes
+docs/           project notes + icon.png preview (embedded above)
 Makefile        dev task runner (setup / run / lint / test / build / clean)
 VidGrab.spec    PyInstaller spec (bundles ffmpeg + Qt)
 ```

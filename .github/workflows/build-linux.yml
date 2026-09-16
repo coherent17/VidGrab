@@ -62,9 +62,6 @@ jobs:
           chmod +x ffmpeg/linux/ffplay
           rm -f ffmpeg-master-latest-linux64-gpl.tar.xz
 
-      - name: Generate icon
-        run: .venv/bin/python scripts/generate_icon.py
-
       - name: Build single-file binary
         run: .venv/bin/pyinstaller VidGrab.spec --noconfirm
 

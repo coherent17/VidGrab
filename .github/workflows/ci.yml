@@ -26,7 +26,7 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Run tests
-        run: pytest -v
+        run: python -m pytest -v
 
       - name: Ensure no FFmpeg binaries are tracked in git
         run: |

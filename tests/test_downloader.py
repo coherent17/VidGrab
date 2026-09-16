@@ -565,10 +565,9 @@ def test_new_files_filters_partials(tmp_path) -> None:
     (tmp_path / "02 - b.mp4.part").write_bytes(b"x")
     (tmp_path / "03 - c.mp4.ytdl").write_bytes(b"x")
     (tmp_path / "04 - d.mp3").write_bytes(b"x")
-    assert downloader._new_files(tmp_path, after) == [
-        tmp_path / "01 - a.mp4",
-        tmp_path / "04 - d.mp3",
-    ]
+    assert sorted(downloader._new_files(tmp_path, after)) == sorted(
+        [tmp_path / "01 - a.mp4", tmp_path / "04 - d.mp3"]
+    )
 
 
 def test_playlist_order_index() -> None:

@@ -1,7 +1,7 @@
-"""Headless smoke test that constructs the real UI.
+"""Headless smoke test that constructs the real PySide6 UI.
 
-Runs only under a virtual X server (CI sets SMOKE_GUI=1 and uses xvfb-run).
-Catches CustomTkinter API misuse and layout errors that a plain import misses.
+Runs only when SMOKE_GUI=1 (CI uses xvfb-run, or set QT_QPA_PLATFORM=offscreen
+locally). Catches PySide6 API misuse and layout errors that a plain import misses.
 """
 
 from __future__ import annotations
@@ -12,41 +12,54 @@ import pytest
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("SMOKE_GUI") != "1",
-    reason="set SMOKE_GUI=1 and run under xvfb-run to enable",
+    reason="set SMOKE_GUI=1 to enable",
 )
 
 
-@pytest.fixture
-def app(monkeypatch) -> None:
-    # Never hit the real network during the smoke test.
+@pytest.fixture(scope="module")
+def qapp():
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    yield app
+
+
+def test_window_constructs_and_destroys(qapp, monkeypatch) -> None:
     monkeypatch.setattr(
         "vidgrab.app.check_internet",
         lambda timeout=2.5: type("S", (), {"online": True, "reason": "mock"})(),
     )
+    from vidgrab.app import VidGrabWindow
 
-
-def test_app_constructs_and_destroys(app) -> None:
-    from vidgrab.app import VidGrabApp
-
-    instance = VidGrabApp()
+    win = VidGrabWindow()
     try:
-        assert instance.title() == "VidGrab"
-        assert instance.source_seg.get() == "YouTube URL"
-        # toggle to local-file mode and back
-        instance.source_seg.set("Local File")
-        instance._refresh_source_row()
-        instance.source_seg.set("YouTube URL")
-        instance._refresh_source_row()
+        assert win.windowTitle() == "VidGrab"
+        assert win._stack.count() == 3
+        assert win._stack.currentIndex() == 0
+        # navigate to Edit page and back
+        win._switch_page(1)
+        assert win._stack.currentIndex() == 1
+        assert win._action.text().startswith(
+            "\u2702"
+        ) or win._action.text().startswith("Process")
+        win._switch_page(0)
+        assert win._stack.currentIndex() == 0
     finally:
-        instance.destroy()
+        win.close()
 
 
-def test_app_toggles_theme(app) -> None:
+def test_theme_toggle(qapp, tmp_path, monkeypatch) -> None:
     from vidgrab import app as appmod
 
-    instance = appmod.VidGrabApp()
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    appmod._save_config("dark")
+    win = appmod.VidGrabWindow()
     try:
-        instance._set_theme("Light")
-        assert appmod.ctk.get_appearance_mode() == "Light"
+        assert win._theme == "dark"
+        win._toggle_theme()
+        assert win._theme == "light"
+        assert appmod._load_config() == "light"
+        win._toggle_theme()
+        assert win._theme == "dark"
     finally:
-        instance.destroy()
+        win.close()

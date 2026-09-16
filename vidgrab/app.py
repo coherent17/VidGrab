@@ -1,17 +1,36 @@
-"""VidGrab — modern dark/light desktop UI (CustomTkinter)."""
+"""VidGrab — professional desktop media tool (PySide6 / Qt)."""
 
 from __future__ import annotations
 
-import ctypes
 import json
 import os
 import sys
 import threading
-import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog
+from typing import ClassVar
 
-import customtkinter as ctk
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QStackedWidget,
+    QStatusBar,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 from vidgrab import __version__
 from vidgrab.downloader import (
@@ -24,644 +43,1239 @@ from vidgrab.downloader import (
 )
 from vidgrab.network import ConnectionStatus, check_internet
 
-# --- palette (used by custom widgets / pills / log; theme handles the rest) ---
-BG = "#0f141c"
-SURFACE = "#1b2230"
-ACCENT = "#4f7cff"
-ACCENT_HI = "#6a92ff"
-ACCENT_DARK = "#3b5fd0"
-TEXT = "#e8ecf4"
-MUTED = "#8b97aa"
-SUCCESS = "#3ecf8e"
-ORANGE = "#f0a050"
-ERROR = "#ff6b6b"
-LOG_BG = "#0c1017"
-TROUGH = "#11151f"
+# ── palette ────────────────────────────────────────────────────────────────
 
-PILL = {"online": SUCCESS, "offline": ERROR, "checking": ORANGE}
+DARK_QSS = """
+* {
+    font-family: "Segoe UI", "Noto Sans", "Ubuntu", "Cantarell", sans-serif;
+}
+QMainWindow {
+    background-color: #0f1419;
+}
+
+/* ── sidebar ── */
+QWidget#sidebar {
+    background-color: #12161e;
+    border-right: 1px solid #1e2536;
+}
+QPushButton#nav {
+    background: transparent;
+    border: none;
+    border-left: 3px solid transparent;
+    border-radius: 0px;
+    padding: 10px 18px;
+    text-align: left;
+    font-size: 13px;
+    font-weight: 500;
+    color: #6b7280;
+}
+QPushButton#nav:hover {
+    background-color: #181e2a;
+    color: #9ca3af;
+}
+QPushButton#nav:checked {
+    background-color: #171d2e;
+    border-left: 3px solid #4f7cff;
+    color: #e1e4ea;
+    font-weight: 600;
+}
+
+/* ── header ── */
+QWidget#header {
+    background-color: #0f1419;
+    border-bottom: 1px solid #1a2030;
+}
+QLabel#app_title {
+    font-size: 18px;
+    font-weight: bold;
+    color: #e1e4ea;
+    background: transparent;
+}
+QLabel#app_version {
+    font-size: 11px;
+    color: #4b5563;
+    background: transparent;
+}
+
+/* ── cards ── */
+QGroupBox {
+    background-color: #161c28;
+    border: 1px solid #1e2536;
+    border-radius: 10px;
+    margin-top: 16px;
+    padding: 18px 16px 14px 16px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 16px;
+    top: 4px;
+    padding: 0 6px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    color: #4f7cff;
+    background: transparent;
+}
+
+/* ── inputs ── */
+QLineEdit {
+    background-color: #10151e;
+    border: 1px solid #1e2536;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 13px;
+    color: #e1e4ea;
+    selection-background-color: #4f7cff;
+}
+QLineEdit:focus {
+    border: 1px solid #4f7cff;
+}
+QLineEdit:disabled {
+    background-color: #0c1018;
+    color: #374151;
+}
+
+/* ── labels ── */
+QLabel {
+    color: #e1e4ea;
+    background: transparent;
+}
+QLabel#section {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: #4f7cff;
+    background: transparent;
+}
+QLabel#muted {
+    color: #6b7280;
+    font-size: 12px;
+    background: transparent;
+}
+
+/* ── checkboxes ── */
+QCheckBox {
+    spacing: 8px;
+    font-size: 13px;
+    color: #c9cdd5;
+}
+QCheckBox::indicator {
+    width: 18px;
+    height: 18px;
+    border: 2px solid #374151;
+    border-radius: 4px;
+    background-color: #10151e;
+}
+QCheckBox::indicator:hover {
+    border-color: #6b7280;
+}
+QCheckBox::indicator:checked {
+    background-color: #4f7cff;
+    border-color: #4f7cff;
+}
+QCheckBox:disabled {
+    color: #374151;
+}
+
+/* ── buttons ── */
+QPushButton#primary {
+    background-color: #4f7cff;
+    border: none;
+    border-radius: 10px;
+    padding: 14px 24px;
+    font-size: 15px;
+    font-weight: 700;
+    color: #ffffff;
+    min-height: 20px;
+}
+QPushButton#primary:hover {
+    background-color: #6a92ff;
+}
+QPushButton#primary:pressed {
+    background-color: #3b5fd0;
+}
+QPushButton#primary:disabled {
+    background-color: #1a2030;
+    color: #374151;
+}
+QPushButton#secondary {
+    background-color: #1a2030;
+    border: 1px solid #2a3244;
+    border-radius: 6px;
+    padding: 7px 14px;
+    font-size: 12px;
+    color: #b0b8c8;
+}
+QPushButton#secondary:hover {
+    background-color: #243044;
+    border-color: #4f7cff;
+}
+QPushButton#secondary:pressed {
+    background-color: #161c28;
+}
+QPushButton#secondary:disabled {
+    background-color: #12161e;
+    color: #374151;
+}
+QPushButton#theme_btn {
+    background-color: #1a2030;
+    border: 1px solid #2a3244;
+    border-radius: 6px;
+    padding: 5px 12px;
+    font-size: 12px;
+    color: #b0b8c8;
+}
+QPushButton#theme_btn:hover {
+    background-color: #243044;
+    border-color: #4f7cff;
+}
+
+/* ── progress bar ── */
+QProgressBar {
+    background-color: #10151e;
+    border: none;
+    border-radius: 4px;
+    max-height: 8px;
+    min-height: 8px;
+    text-align: center;
+}
+QProgressBar::chunk {
+    background-color: #4f7cff;
+    border-radius: 4px;
+}
+
+/* ── log ── */
+QTextEdit#log {
+    background-color: #0a0e14;
+    border: 1px solid #1a2030;
+    border-radius: 8px;
+    padding: 10px;
+    font-family: "Cascadia Code", "JetBrains Mono", "Fira Code", "Consolas", monospace;
+    font-size: 11px;
+    color: #5a6478;
+    selection-background-color: #4f7cff;
+}
+
+/* ── status bar ── */
+QStatusBar {
+    background-color: #12161e;
+    border-top: 1px solid #1a2030;
+    font-size: 11px;
+    color: #6b7280;
+    padding: 4px 12px;
+}
+QStatusBar::item {
+    border: none;
+}
+
+/* ── scrollbar ── */
+QScrollBar:vertical {
+    background: transparent;
+    width: 8px;
+    margin: 0;
+}
+QScrollBar::handle:vertical {
+    background-color: #2a3244;
+    border-radius: 4px;
+    min-height: 24px;
+}
+QScrollBar::handle:vertical:hover {
+    background-color: #4f7cff;
+}
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical,
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+    background: transparent;
+    height: 0px;
+}
+
+/* ── tooltip ── */
+QToolTip {
+    background-color: #1a2030;
+    border: 1px solid #2a3244;
+    border-radius: 4px;
+    padding: 5px 10px;
+    font-size: 11px;
+    color: #e1e4ea;
+}
+"""
+
+LIGHT_QSS = """
+* {
+    font-family: "Segoe UI", "Noto Sans", "Ubuntu", "Cantarell", sans-serif;
+}
+QMainWindow {
+    background-color: #f0f2f5;
+}
+QWidget#sidebar {
+    background-color: #e4e7ec;
+    border-right: 1px solid #d1d5db;
+}
+QPushButton#nav {
+    background: transparent;
+    border: none;
+    border-left: 3px solid transparent;
+    border-radius: 0px;
+    padding: 10px 18px;
+    text-align: left;
+    font-size: 13px;
+    font-weight: 500;
+    color: #6b7280;
+}
+QPushButton#nav:hover {
+    background-color: #d8dbe2;
+    color: #374151;
+}
+QPushButton#nav:checked {
+    background-color: #dfe6ff;
+    border-left: 3px solid #4f7cff;
+    color: #111827;
+    font-weight: 600;
+}
+QWidget#header {
+    background-color: #f0f2f5;
+    border-bottom: 1px solid #e5e7eb;
+}
+QLabel#app_title {
+    font-size: 18px;
+    font-weight: bold;
+    color: #111827;
+    background: transparent;
+}
+QLabel#app_version {
+    font-size: 11px;
+    color: #9ca3af;
+    background: transparent;
+}
+QGroupBox {
+    background-color: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    margin-top: 16px;
+    padding: 18px 16px 14px 16px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 16px;
+    top: 4px;
+    padding: 0 6px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    color: #4f7cff;
+    background: #ffffff;
+}
+QLineEdit {
+    background-color: #f8f9fb;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 13px;
+    color: #111827;
+    selection-background-color: #4f7cff;
+}
+QLineEdit:focus {
+    border: 1px solid #4f7cff;
+}
+QLabel {
+    color: #111827;
+    background: transparent;
+}
+QLabel#section {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: #4f7cff;
+    background: transparent;
+}
+QLabel#muted {
+    color: #9ca3af;
+    font-size: 12px;
+    background: transparent;
+}
+QCheckBox {
+    spacing: 8px;
+    font-size: 13px;
+    color: #374151;
+}
+QCheckBox::indicator {
+    width: 18px;
+    height: 18px;
+    border: 2px solid #d1d5db;
+    border-radius: 4px;
+    background-color: #f8f9fb;
+}
+QCheckBox::indicator:hover {
+    border-color: #9ca3af;
+}
+QCheckBox::indicator:checked {
+    background-color: #4f7cff;
+    border-color: #4f7cff;
+}
+QPushButton#primary {
+    background-color: #4f7cff;
+    border: none;
+    border-radius: 10px;
+    padding: 14px 24px;
+    font-size: 15px;
+    font-weight: 700;
+    color: #ffffff;
+    min-height: 20px;
+}
+QPushButton#primary:hover {
+    background-color: #6a92ff;
+}
+QPushButton#primary:pressed {
+    background-color: #3b5fd0;
+}
+QPushButton#primary:disabled {
+    background-color: #e5e7eb;
+    color: #9ca3af;
+}
+QPushButton#secondary {
+    background-color: #f3f4f6;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 7px 14px;
+    font-size: 12px;
+    color: #4b5563;
+}
+QPushButton#secondary:hover {
+    background-color: #e5e7eb;
+    border-color: #9ca3af;
+}
+QPushButton#secondary:pressed {
+    background-color: #d1d5db;
+}
+QPushButton#theme_btn {
+    background-color: #f3f4f6;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 5px 12px;
+    font-size: 12px;
+    color: #4b5563;
+}
+QPushButton#theme_btn:hover {
+    background-color: #e5e7eb;
+}
+QProgressBar {
+    background-color: #e5e7eb;
+    border: none;
+    border-radius: 4px;
+    max-height: 8px;
+    min-height: 8px;
+}
+QProgressBar::chunk {
+    background-color: #4f7cff;
+    border-radius: 4px;
+}
+QTextEdit#log {
+    background-color: #f8f9fb;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 10px;
+    font-family: "Cascadia Code", "JetBrains Mono", "Fira Code", "Consolas", monospace;
+    font-size: 11px;
+    color: #6b7280;
+    selection-background-color: #4f7cff;
+}
+QStatusBar {
+    background-color: #e4e7ec;
+    border-top: 1px solid #d1d5db;
+    font-size: 11px;
+    color: #6b7280;
+    padding: 4px 12px;
+}
+QScrollBar:vertical {
+    background: transparent;
+    width: 8px;
+}
+QScrollBar::handle:vertical {
+    background-color: #d1d5db;
+    border-radius: 4px;
+    min-height: 24px;
+}
+QScrollBar::handle:vertical:hover {
+    background-color: #9ca3af;
+}
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical,
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+    background: transparent;
+    height: 0px;
+}
+QToolTip {
+    background-color: #1f2937;
+    border: 1px solid #374151;
+    border-radius: 4px;
+    padding: 5px 10px;
+    font-size: 11px;
+    color: #f9fafb;
+}
+"""
+
+_THEMES: dict[str, str] = {"dark": DARK_QSS, "light": LIGHT_QSS}
+
+# ── config ─────────────────────────────────────────────────────────────────
 
 
-def get_config_dir() -> Path:
+def _config_dir() -> Path:
     if sys.platform == "win32":
-        base = Path(os.environ.get("APPDATA", Path.home()))
+        base = Path(os.environ.get("APPDATA", str(Path.home())))
         return base / "VidGrab"
-    base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    base = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
     return base / "vidgrab"
 
 
-class _Tooltip:
-    """Lightweight hover tooltip for any widget."""
-
-    def __init__(self, widget: tk.Widget, text: str) -> None:
-        self._widget = widget
-        self._text = text
-        self._win: ctk.CTkToplevel | None = None
-        widget.bind("<Enter>", self._show, add="+")
-        widget.bind("<Leave>", self._hide, add="+")
-        widget.bind("<ButtonPress>", self._hide, add="+")
-
-    def _show(self, _event: tk.Event) -> str | None:
-        if self._win is not None:
-            return None
-        x, y, _, _ = self._widget.winfo_rootx(), self._widget.winfo_rooty(), 0, 0
-        x += 12
-        y += self._widget.winfo_height() + 8
-        win = ctk.CTkToplevel(self._widget)
-        win.wm_overrideredirect(True)
-        win.geometry(f"+{x}+{y}")
-        win.attributes("-topmost", True)
-        win.configure(fg_color=SURFACE)
-        label = ctk.CTkLabel(
-            win, text=self._text, text_color=TEXT, font=ctk.CTkFont(size=11),
-            fg_color=SURFACE, padx=10, pady=6,
-        )
-        label.pack()
-        self._win = win
-        return None
-
-    def _hide(self, _event: tk.Event | None = None) -> None:
-        if self._win is not None:
-            self._win.destroy()
-            self._win = None
+def _load_config() -> str:
+    try:
+        data = json.loads((_config_dir() / "config.json").read_text())
+        theme = data.get("theme", "dark")
+    except (OSError, json.JSONDecodeError):
+        theme = "dark"
+    return theme if theme in _THEMES else "dark"
 
 
-class VidGrabApp(ctk.CTk):
-    def __init__(self) -> None:
-        self._warn_high_dpi()
-        self._load_config()
-        ctk.set_appearance_mode(self._theme)
-        ctk.set_default_color_theme("blue")
+def _save_config(theme: str) -> None:
+    try:
+        d = _config_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "config.json").write_text(json.dumps({"theme": theme}))
+    except OSError:
+        pass
+
+
+# ── worker thread ──────────────────────────────────────────────────────────
+
+
+class _Worker(QThread):
+    """Run a download / processing task off the main thread."""
+
+    finished = Signal(object)
+    error = Signal(str)
+    progress = Signal(str, object)
+    log = Signal(str)
+
+    def __init__(self, task: str, **kwargs) -> None:
         super().__init__()
-        self.title("VidGrab")
-        self.geometry("660x720")
-        self.minsize(580, 640)
+        self._task = task
+        self._kw = kwargs
 
-        self._download_thread: threading.Thread | None = None
-        self._internet_thread: threading.Thread | None = None
-        self._internet_online: bool | None = None
+    def _cb_progress(self, msg: str, pct: float | None) -> None:
+        self.progress.emit(msg, pct)
+
+    def _cb_log(self, msg: str) -> None:
+        self.log.emit(msg)
+
+    def run(self) -> None:
+        try:
+            common = {
+                "video_filter": self._kw.get("video_filter"),
+                "section_start": self._kw.get("section_start"),
+                "section_end": self._kw.get("section_end"),
+                "on_progress": self._cb_progress,
+                "on_log": self._cb_log,
+            }
+            if self._task == "download":
+                result = download(
+                    self._kw["url"], self._kw["output_dir"], self._kw["fmt"],
+                    **common,
+                )
+            elif self._task == "download_both":
+                result = download_both(
+                    self._kw["url"], self._kw["output_dir"], **common,
+                )
+            elif self._task == "local_file":
+                result = process_local_file(
+                    self._kw["input_path"], self._kw["output_dir"], **common,
+                )
+            else:
+                raise RuntimeError(f"Unknown task: {self._task}")
+            self.finished.emit(result)
+        except Exception as exc:  # noqa: BLE001
+            self.error.emit(str(exc))
+
+
+# ── internet probe ─────────────────────────────────────────────────────────
+#
+# The probe runs in a Python daemon thread and reports through a tiny
+# poll timer on the GUI thread. Daemon threads are never joined, so the
+# close path never blocks (and never destroys a running QThread).
+
+
+# ── sidebar ────────────────────────────────────────────────────────────────
+
+
+class _Sidebar(QWidget):
+    """Left-hand navigation panel with icon + label buttons."""
+
+    page_changed = Signal(int)
+
+    _NAV: ClassVar[list[tuple[str, str]]] = [
+        ("\u2b07", "Download"),
+        ("\u2702", "Edit"),
+        ("\u2699", "Settings"),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setObjectName("sidebar")
+        self.setFixedWidth(200)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+
+        title = QLabel("  \u2b07  VidGrab")
+        title.setObjectName("app_title")
+        title.setContentsMargins(0, 18, 0, 20)
+        lay.addWidget(title)
+
+        self._buttons: list[QPushButton] = []
+        for idx, (icon, label) in enumerate(self._NAV):
+            btn = QPushButton(f"  {icon}   {label}")
+            btn.setObjectName("nav")
+            btn.setCheckable(True)
+            btn.setAutoExclusive(True)
+            btn.setFixedHeight(40)
+            if idx == 0:
+                btn.setChecked(True)
+            btn.toggled.connect(
+                lambda checked, i=idx: self.page_changed.emit(i) if checked else None
+            )
+            lay.addWidget(btn)
+            self._buttons.append(btn)
+
+        lay.addStretch()
+
+    def select(self, idx: int) -> None:
+        self._buttons[idx].setChecked(True)
+
+
+# ── main window ────────────────────────────────────────────────────────────
+
+
+class VidGrabWindow(QMainWindow):
+    def __init__(self) -> None:
+        super().__init__()
+        self._theme = _load_config()
         self._busy = False
+        self._internet_online: bool | None = None
+        self._worker: _Worker | None = None
 
-        self._set_window_icon()
+        self.setWindowTitle("VidGrab")
+        self.setMinimumSize(920, 660)
+        self.resize(1020, 740)
+
+        self.setStyleSheet(_THEMES[self._theme])
         self._build_ui()
         self._update_ffmpeg_status()
-        self._internet_tick()
-        self._bind_shortcuts()
+        self._start_internet_check()
+        self._setup_shortcuts()
 
-    # ------------------------------------------------------------ helpers
-    def _warn_high_dpi(self) -> None:
-        if sys.platform != "win32":
-            return
-        try:
-            ctypes.windll.shcore.SetProcessDpiAwareness(1)
-        except Exception:  # noqa: BLE001,S110 - best effort, ignore
-            pass
+    # ── ui construction ────────────────────────────────────────────────
 
-    def _load_config(self) -> None:
-        try:
-            data = json.loads((get_config_dir() / "config.json").read_text())
-            self._theme = data.get("theme", "dark")
-        except (OSError, json.JSONDecodeError):
-            self._theme = "dark"
-        if self._theme not in ("dark", "light"):
-            self._theme = "dark"
-
-    def _save_config(self) -> None:
-        try:
-            cfg_dir = get_config_dir()
-            cfg_dir.mkdir(parents=True, exist_ok=True)
-            (cfg_dir / "config.json").write_text(json.dumps({"theme": self._theme}))
-        except OSError:
-            pass
-
-    def _set_window_icon(self) -> None:
-        app_dir = get_app_dir()
-        try:
-            if sys.platform == "win32":
-                ico = app_dir / "assets" / "icon.ico"
-                if ico.is_file():
-                    self.iconbitmap(str(ico))
-            else:
-                png = app_dir / "assets" / "icon.png"
-                if png.is_file():
-                    photo = tk.PhotoImage(file=str(png))
-                    self.iconphoto(True, photo)
-        except tk.TclError:
-            pass
-
-    # ---------------------------------------------------------------- ui
     def _build_ui(self) -> None:
-        padx = 16
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # header
-        header = ctk.CTkFrame(self, fg_color="transparent")
-        header.pack(fill=tk.X, padx=padx, pady=(12, 4))
-        title = ctk.CTkLabel(
-            header, text="⬇  VidGrab",
-            font=ctk.CTkFont(size=20, weight="bold"), anchor="w",
+        root.addWidget(self._build_header())
+
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+
+        self._sidebar = _Sidebar()
+        self._sidebar.page_changed.connect(self._switch_page)
+        body.addWidget(self._sidebar)
+
+        content = QVBoxLayout()
+        content.setContentsMargins(0, 0, 0, 0)
+        content.setSpacing(0)
+
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._build_download_form())
+        self._stack.addWidget(self._build_edit_form())
+        self._stack.addWidget(self._build_settings_form())
+        content.addWidget(self._stack, stretch=4)
+
+        content.addWidget(self._build_bottom(), stretch=3)
+        body.addLayout(content, stretch=1)
+        root.addLayout(body, stretch=1)
+
+        self._statusbar = QStatusBar()
+        self.setStatusBar(self._statusbar)
+        self._net_lbl = QLabel("● checking…")
+        self._net_lbl.setStyleSheet("font-weight:bold; font-size:11px;")
+        self._ffmpeg_lbl = QLabel()
+        self._version_lbl = QLabel(f"v{__version__}")
+        self._statusbar.addWidget(self._net_lbl)
+        self._statusbar.addWidget(self._mk_sep())
+        self._statusbar.addWidget(self._ffmpeg_lbl)
+        self._statusbar.addPermanentWidget(self._mk_sep())
+        self._statusbar.addPermanentWidget(self._version_lbl)
+
+    @staticmethod
+    def _mk_sep() -> QLabel:
+        s = QLabel("│")
+        s.setStyleSheet("color:#374151; font-size:11px; padding:0 4px;")
+        return s
+
+    def _build_header(self) -> QWidget:
+        w = QWidget()
+        w.setObjectName("header")
+        w.setFixedHeight(56)
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(20, 0, 20, 0)
+
+        lbl = QLabel(f"VidGrab  v{__version__}")
+        lbl.setObjectName("app_version")
+        lay.addWidget(lbl)
+        lay.addStretch()
+
+        self._theme_btn = QPushButton(
+            "\u263e Dark" if self._theme == "light" else "\u2600 Light"
         )
-        title.pack(side=tk.LEFT)
-        _Tooltip(title, f"VidGrab {__version__}\nFree & open source")
-        ctk.CTkLabel(
-            header, text=f"v{__version__}", text_color=MUTED,
-            font=ctk.CTkFont(size=11),
-        ).pack(side=tk.LEFT, padx=(8, 0), pady=(6, 0))
+        self._theme_btn.setObjectName("theme_btn")
+        self._theme_btn.setFixedHeight(28)
+        self._theme_btn.clicked.connect(self._toggle_theme)
+        lay.addWidget(self._theme_btn)
+        return w
 
-        self.theme_menu = ctk.CTkOptionMenu(
-            header, width=96, values=["Dark", "Light"],
-            command=self._set_theme, fg_color=SURFACE,
-            button_color=ACCENT, button_hover_color=ACCENT_HI,
+    # ── download form ──────────────────────────────────────────────────
+
+    def _build_download_form(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(20, 14, 20, 6)
+        lay.setSpacing(12)
+
+        src = QGroupBox("SOURCE")
+        sl = QVBoxLayout(src)
+        row = QHBoxLayout()
+        self._url = QLineEdit()
+        self._url.setPlaceholderText("Paste a YouTube link…")
+        self._url.returnPressed.connect(self._start_action)
+        row.addWidget(self._url, stretch=1)
+        pb = QPushButton("Paste")
+        pb.setObjectName("secondary")
+        pb.setFixedWidth(76)
+        pb.clicked.connect(self._paste_url)
+        row.addWidget(pb)
+        sl.addLayout(row)
+        lay.addWidget(src)
+
+        fmt = QGroupBox("FORMAT")
+        fl = QHBoxLayout(fmt)
+        self._mp4 = QCheckBox("MP4 (video)")
+        self._mp4.setChecked(True)
+        self._mp3 = QCheckBox("MP3 (audio)")
+        fl.addWidget(self._mp4)
+        fl.addWidget(self._mp3)
+        fl.addStretch()
+        lay.addWidget(fmt)
+
+        row2 = QHBoxLayout()
+        flip = QGroupBox("FLIP")
+        vl = QVBoxLayout(flip)
+        self._hflip = QCheckBox("Horizontal")
+        self._vflip = QCheckBox("Vertical")
+        vl.addWidget(self._hflip)
+        vl.addWidget(self._vflip)
+        row2.addWidget(flip)
+
+        trim = QGroupBox("TRIM")
+        tl = QFormLayout(trim)
+        self._ts = QLineEdit()
+        self._ts.setPlaceholderText("0:00")
+        self._ts.setMaximumWidth(110)
+        self._te = QLineEdit()
+        self._te.setPlaceholderText("\u221e")
+        self._te.setMaximumWidth(110)
+        tl.addRow("Start:", self._ts)
+        tl.addRow("End:", self._te)
+        row2.addWidget(trim)
+        lay.addLayout(row2)
+
+        save = QGroupBox("SAVE TO")
+        svl = QHBoxLayout(save)
+        self._out = QLineEdit(str(default_output_dir()))
+        svl.addWidget(self._out, stretch=1)
+        bb = QPushButton("Browse\u2026")
+        bb.setObjectName("secondary")
+        bb.setFixedWidth(76)
+        bb.clicked.connect(lambda: self._browse_folder(self._out))
+        svl.addWidget(bb)
+        lay.addWidget(save)
+
+        lay.addStretch()
+        return page
+
+    # ── edit form ──────────────────────────────────────────────────────
+
+    def _build_edit_form(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(20, 14, 20, 6)
+        lay.setSpacing(12)
+
+        src = QGroupBox("SOURCE")
+        sl = QVBoxLayout(src)
+        row = QHBoxLayout()
+        self._file = QLineEdit()
+        self._file.setPlaceholderText("Choose a local video or audio file\u2026")
+        row.addWidget(self._file, stretch=1)
+        bb = QPushButton("Browse\u2026")
+        bb.setObjectName("secondary")
+        bb.setFixedWidth(76)
+        bb.clicked.connect(self._browse_file)
+        row.addWidget(bb)
+        sl.addLayout(row)
+        lay.addWidget(src)
+
+        row2 = QHBoxLayout()
+        flip = QGroupBox("FLIP")
+        vl = QVBoxLayout(flip)
+        self._ehflip = QCheckBox("Horizontal")
+        self._evflip = QCheckBox("Vertical")
+        vl.addWidget(self._ehflip)
+        vl.addWidget(self._evflip)
+        row2.addWidget(flip)
+
+        trim = QGroupBox("TRIM")
+        tl = QFormLayout(trim)
+        self._ets = QLineEdit()
+        self._ets.setPlaceholderText("0:00")
+        self._ets.setMaximumWidth(110)
+        self._ete = QLineEdit()
+        self._ete.setPlaceholderText("\u221e")
+        self._ete.setMaximumWidth(110)
+        tl.addRow("Start:", self._ets)
+        tl.addRow("End:", self._ete)
+        row2.addWidget(trim)
+        lay.addLayout(row2)
+
+        save = QGroupBox("SAVE TO")
+        svl = QHBoxLayout(save)
+        self._eout = QLineEdit(str(default_output_dir()))
+        svl.addWidget(self._eout, stretch=1)
+        bb2 = QPushButton("Browse\u2026")
+        bb2.setObjectName("secondary")
+        bb2.setFixedWidth(76)
+        bb2.clicked.connect(lambda: self._browse_folder(self._eout))
+        svl.addWidget(bb2)
+        lay.addWidget(save)
+
+        lay.addStretch()
+        return page
+
+    # ── settings form ──────────────────────────────────────────────────
+
+    def _build_settings_form(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(20, 14, 20, 6)
+        lay.setSpacing(12)
+
+        g1 = QGroupBox("APPEARANCE")
+        fl = QFormLayout(g1)
+        self._theme_combo = QComboBox()
+        self._theme_combo.addItems(["Dark", "Light"])
+        self._theme_combo.setCurrentText(self._theme.capitalize())
+        self._theme_combo.currentTextChanged.connect(
+            lambda t: self._set_theme(t.lower())
         )
-        self.theme_menu.set(self._theme.capitalize())
-        self.theme_menu.pack(side=tk.RIGHT)
+        fl.addRow("Theme:", self._theme_combo)
+        lay.addWidget(g1)
 
-        ctk.CTkButton(
-            header, text="About", width=64, command=self._show_about,
-            fg_color=SURFACE, hover_color=ACCENT_DARK,
-        ).pack(side=tk.RIGHT, padx=(0, 8))
-
-        ctk.CTkLabel(
-            header, text="YouTube videos or local files with flip & trim",
-            text_color=MUTED, font=ctk.CTkFont(size=12),
-        ).pack(side=tk.LEFT, padx=(4, 0), pady=(7, 0))
-
-        main = ctk.CTkFrame(self, fg_color="transparent")
-        main.pack(fill=tk.BOTH, expand=True, padx=padx, pady=10)
-        main.columnconfigure(0, weight=1)
-
-        # --- source card ---
-        source = ctk.CTkFrame(
-            main, fg_color=SURFACE, corner_radius=10,
-            border_width=1, border_color="#2a3342",
+        g2 = QGroupBox("ABOUT")
+        al = QVBoxLayout(g2)
+        info = QLabel(
+            f"<b>VidGrab {__version__}</b><br><br>"
+            "Download YouTube videos (MP4 / MP3), or open a local file "
+            "and flip or trim it.<br><br>"
+            "Built with Python, PySide6, yt-dlp and ffmpeg.<br>"
+            "MIT License \u2014 use and modify freely."
         )
-        source.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        source.columnconfigure(0, weight=1)
+        info.setWordWrap(True)
+        info.setTextFormat(Qt.RichText)
+        al.addWidget(info)
+        lay.addWidget(g2)
 
-        self.source_seg = ctk.CTkSegmentedButton(
-            source, values=["YouTube URL", "Local File"],
-            command=self._refresh_source_row, height=32,
-            fg_color=LOG_BG, selected_color=ACCENT,
-            selected_hover_color=ACCENT_HI, text_color=MUTED,
+        lay.addStretch()
+        return page
+
+    # ── shared bottom (log + progress + button) ────────────────────────
+
+    def _build_bottom(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(20, 4, 20, 8)
+        lay.setSpacing(6)
+
+        hdr = QHBoxLayout()
+        lbl = QLabel("LOG")
+        lbl.setObjectName("section")
+        hdr.addWidget(lbl)
+        hdr.addStretch()
+        cb = QPushButton("Clear")
+        cb.setObjectName("secondary")
+        cb.setFixedWidth(56)
+        cb.setFixedHeight(24)
+        cb.clicked.connect(self._clear_log)
+        hdr.addWidget(cb)
+        lay.addLayout(hdr)
+
+        self._log = QTextEdit()
+        self._log.setObjectName("log")
+        self._log.setReadOnly(True)
+        self._log.setMinimumHeight(80)
+        lay.addWidget(self._log, stretch=1)
+
+        prow = QHBoxLayout()
+        self._progress = QProgressBar()
+        self._progress.setValue(0)
+        prow.addWidget(self._progress, stretch=1)
+        self._status_lbl = QLabel("Ready")
+        self._status_lbl.setObjectName("muted")
+        prow.addWidget(self._status_lbl)
+        lay.addLayout(prow)
+
+        self._action = QPushButton("\u2b07  Download")
+        self._action.setObjectName("primary")
+        self._action.setEnabled(False)
+        self._action.clicked.connect(self._start_action)
+        lay.addWidget(self._action)
+
+        return w
+
+    # ── page switching ─────────────────────────────────────────────────
+
+    def _switch_page(self, idx: int) -> None:
+        self._stack.setCurrentIndex(idx)
+        labels = ("\u2b07  Download", "\u2702  Process", "")
+        if idx < 2:
+            self._action.setVisible(True)
+            self._action.setText(labels[idx])
+        else:
+            self._action.setVisible(False)
+        self._refresh_btn()
+
+    # ── theme ──────────────────────────────────────────────────────────
+
+    def _toggle_theme(self) -> None:
+        self._set_theme("light" if self._theme == "dark" else "dark")
+
+    def _set_theme(self, name: str) -> None:
+        if name not in _THEMES:
+            return
+        self._theme = name
+        self.setStyleSheet(_THEMES[name])
+        self._theme_btn.setText(
+            "\u263e Dark" if self._theme == "light" else "\u2600 Light"
         )
-        self.source_seg.grid(row=0, column=0, columnspan=3, sticky="ew", padx=12, pady=(12, 8))
-        self.source_seg.set("YouTube URL")
+        self._theme_combo.blockSignals(True)
+        self._theme_combo.setCurrentText(self._theme.capitalize())
+        self._theme_combo.blockSignals(False)
+        _save_config(self._theme)
 
-        # url row
-        self._url_row = ctk.CTkFrame(source, fg_color="transparent")
-        self._url_row.grid(row=1, column=0, columnspan=3, sticky="ew", padx=12, pady=(0, 10))
-        self._url_row.columnconfigure(0, weight=1)
-        self.url_var = tk.StringVar()
-        self.url_entry = ctk.CTkEntry(
-            self._url_row, textvariable=self.url_var, placeholder_text="Paste a YouTube link…",
-            height=36, corner_radius=6,
-        )
-        self.url_entry.grid(row=0, column=0, sticky="ew")
-        self.url_entry.bind("<Return>", lambda _e: self._start_download())
-        ctk.CTkButton(
-            self._url_row, text="Paste", width=72, height=36,
-            command=self._do_paste, fg_color=SURFACE, hover_color=ACCENT_DARK,
-        ).grid(row=0, column=1, padx=(8, 0))
-
-        # local file row
-        self._file_row = ctk.CTkFrame(source, fg_color="transparent")
-        self._file_row.grid(row=2, column=0, columnspan=3, sticky="ew", padx=12, pady=(0, 10))
-        self._file_row.columnconfigure(0, weight=1)
-        self.local_file_var = tk.StringVar()
-        self.local_entry = ctk.CTkEntry(
-            self._file_row, textvariable=self.local_file_var,
-            placeholder_text="Choose a local video or audio file…", height=36, corner_radius=6,
-        )
-        self.local_entry.grid(row=0, column=0, sticky="ew")
-        ctk.CTkButton(
-            self._file_row, text="Browse…", width=88, height=36,
-            command=self._browse_local_file, fg_color=SURFACE, hover_color=ACCENT_DARK,
-        ).grid(row=0, column=1, padx=(8, 0))
-
-        # --- format card ---
-        self._fmt_card = ctk.CTkFrame(
-            main, fg_color=SURFACE, corner_radius=10,
-            border_width=1, border_color="#2a3342",
-        )
-        self._fmt_card.grid(row=1, column=0, sticky="ew", pady=(0, 10))
-        self.format_mp4_var = tk.BooleanVar(value=True)
-        self.format_mp3_var = tk.BooleanVar(value=False)
-        self._fmt_mp4_cb = ctk.CTkCheckBox(
-            self._fmt_card, text="MP4 (video)", variable=self.format_mp4_var,
-            fg_color=SUCCESS, hover_color=SUCCESS, corner_radius=4,
-            font=ctk.CTkFont(size=13), checkbox_width=20, checkbox_height=20,
-        )
-        self._fmt_mp4_cb.grid(row=0, column=0, padx=(16, 28), pady=14, sticky="w")
-        self._fmt_mp3_cb = ctk.CTkCheckBox(
-            self._fmt_card, text="MP3 (audio)", variable=self.format_mp3_var,
-            fg_color=ORANGE, hover_color=ORANGE, corner_radius=4,
-            font=ctk.CTkFont(size=13), checkbox_width=20, checkbox_height=20,
-        )
-        self._fmt_mp3_cb.grid(row=0, column=1, padx=(0, 16), pady=14, sticky="w")
-        _Tooltip(self._fmt_mp4_cb, "MP4 keeps video (and audio)")
-        _Tooltip(self._fmt_mp3_cb, "MP3 extracts audio only")
-
-        # --- flip + trim ---
-        opts = ctk.CTkFrame(main, fg_color="transparent")
-        opts.grid(row=2, column=0, sticky="ew", pady=(0, 10))
-        opts.columnconfigure(0, weight=1)
-        opts.columnconfigure(1, weight=1)
-
-        flip = ctk.CTkFrame(opts, fg_color=SURFACE, corner_radius=10, border_width=1, border_color="#2a3342")
-        flip.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        self.hflip_var = tk.BooleanVar(value=False)
-        self.vflip_var = tk.BooleanVar(value=False)
-        ctk.CTkLabel(flip, text="FLIP", text_color=ACCENT, font=ctk.CTkFont(size=11, weight="bold")).grid(
-            row=0, column=0, columnspan=2, sticky="w", padx=14, pady=(10, 2))
-        ctk.CTkCheckBox(flip, text="Horizontal", variable=self.hflip_var, fg_color=ACCENT, corner_radius=4).grid(
-            row=1, column=0, sticky="w", padx=14, pady=(4, 12))
-        ctk.CTkCheckBox(flip, text="Vertical", variable=self.vflip_var, fg_color=ACCENT, corner_radius=4).grid(
-            row=1, column=1, sticky="w", padx=(0, 14), pady=(4, 12))
-
-        trim = ctk.CTkFrame(opts, fg_color=SURFACE, corner_radius=10, border_width=1, border_color="#2a3342")
-        trim.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
-        ctk.CTkLabel(trim, text="TRIM", text_color=ACCENT, font=ctk.CTkFont(size=11, weight="bold")).grid(
-            row=0, column=0, columnspan=4, sticky="w", padx=14, pady=(10, 2))
-        self.trim_start_var = tk.StringVar()
-        self.trim_end_var = tk.StringVar()
-        ctk.CTkLabel(trim, text="Start", text_color=MUTED, font=ctk.CTkFont(size=12)).grid(
-            row=1, column=0, padx=(14, 6), pady=(4, 12))
-        ctk.CTkEntry(trim, textvariable=self.trim_start_var, placeholder_text="0:00", width=72, height=32, corner_radius=6).grid(
-            row=1, column=1, pady=(4, 12))
-        ctk.CTkLabel(trim, text="End", text_color=MUTED, font=ctk.CTkFont(size=12)).grid(
-            row=1, column=2, padx=(10, 6), pady=(4, 12))
-        ctk.CTkEntry(trim, textvariable=self.trim_end_var, placeholder_text="∞", width=72, height=32, corner_radius=6).grid(
-            row=1, column=3, padx=(0, 14), pady=(4, 12))
-
-        # --- save to ---
-        save = ctk.CTkFrame(main, fg_color=SURFACE, corner_radius=10, border_width=1, border_color="#2a3342")
-        save.grid(row=3, column=0, sticky="ew", pady=(0, 10))
-        save.columnconfigure(0, weight=1)
-        self.output_var = tk.StringVar(value=str(default_output_dir()))
-        ctk.CTkEntry(save, textvariable=self.output_var, height=36, corner_radius=6).grid(
-            row=0, column=0, sticky="ew", padx=(14, 8), pady=12)
-        ctk.CTkButton(save, text="Browse…", width=88, height=36, command=self._browse_output,
-                      fg_color=SURFACE, hover_color=ACCENT_DARK).grid(row=0, column=1, padx=(0, 14))
-
-        # --- progress + status ---
-        prog = ctk.CTkFrame(main, fg_color="transparent")
-        prog.grid(row=4, column=0, sticky="ew", pady=(4, 6))
-        prog.columnconfigure(0, weight=1)
-        self.progress = ctk.CTkProgressBar(prog, height=10, corner_radius=5,
-                                           progress_color=ACCENT, fg_color=TROUGH)
-        self.progress.grid(row=0, column=0, sticky="ew")
-        self.progress.set(0)
-        self.status_var = tk.StringVar(value="Ready")
-        ctk.CTkLabel(prog, textvariable=self.status_var, text_color=MUTED,
-                     font=ctk.CTkFont(size=12)).grid(row=0, column=1, padx=(12, 0))
-
-        # --- log ---
-        log_card = ctk.CTkFrame(main, fg_color=LOG_BG, corner_radius=10, border_width=1, border_color="#2a3342")
-        log_card.grid(row=5, column=0, sticky="nsew", pady=(4, 8))
-        log_card.columnconfigure(0, weight=1)
-        log_card.rowconfigure(1, weight=1)
-        log_header = ctk.CTkFrame(log_card, fg_color="transparent")
-        log_header.grid(row=0, column=0, columnspan=2, sticky="ew", padx=14, pady=(8, 2))
-        ctk.CTkLabel(log_header, text="LOG", text_color=ACCENT, font=ctk.CTkFont(size=11, weight="bold")).pack(side=tk.LEFT)
-        ctk.CTkButton(log_header, text="Clear", width=52, height=22, command=self._clear_log,
-                      fg_color=SURFACE, hover_color=ACCENT_DARK, font=ctk.CTkFont(size=11)).pack(side=tk.RIGHT)
-        self.log_text = ctk.CTkTextbox(
-            log_card, height=150, corner_radius=8, fg_color=LOG_BG,
-            text_color=MUTED, font=ctk.CTkFont(family="Consolas", size=11), wrap="word",
-        )
-        self.log_text.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=14, pady=(2, 12))
-        self.log_text.configure(state="disabled")
-
-        # --- download button ---
-        self.download_btn = ctk.CTkButton(
-            main, text="⬇  Download", command=self._start_download,
-            height=44, corner_radius=8, fg_color=ACCENT, hover_color=ACCENT_HI,
-            font=ctk.CTkFont(size=14, weight="bold"),
-        )
-        self.download_btn.grid(row=6, column=0, sticky="ew", pady=(2, 6))
-        # enabled once the first internet probe reports online
-        self.download_btn.configure(state="disabled")
-        # initialize source-mode visibility
-        self._refresh_source_row()
-
-        # --- footer: ffmpeg + internet ---
-        footer = ctk.CTkFrame(main, fg_color="transparent")
-        footer.grid(row=7, column=0, sticky="ew")
-        footer.columnconfigure(0, weight=1)
-        self.ffmpeg_var = tk.StringVar()
-        ctk.CTkLabel(footer, textvariable=self.ffmpeg_var, text_color=MUTED,
-                     font=ctk.CTkFont(size=11)).grid(row=0, column=0, sticky="w")
-        self.net_pill = ctk.CTkLabel(
-            footer, text="● checking…", text_color=ORANGE,
-            font=ctk.CTkFont(size=11, weight="bold"), anchor="e",
-        )
-        self.net_pill.grid(row=0, column=1, sticky="e")
-        _Tooltip(self.net_pill, "Live internet status")
-
-        main.rowconfigure(5, weight=1)
-
-    # ------------------------------------------------------------- theme
-    def _set_theme(self, choice: str) -> None:
-        self._theme = choice.lower()
-        ctk.set_appearance_mode(self._theme)
-        self._save_config()
+    # ── about ──────────────────────────────────────────────────────────
 
     def _show_about(self) -> None:
-        self._dlg(
+        QMessageBox.about(
+            self,
             "About VidGrab",
-            f"VidGrab {__version__}\n\n"
-            "Download YouTube videos (MP4 / MP3), or open a local file "
-            "and flip or trim it.\n\n"
-            "Built with Python, CustomTkinter, yt-dlp and ffmpeg.\n"
-            "MIT License — use and modify freely.",
-            actions=[("OK", None)],
+            f"<h3>VidGrab {__version__}</h3>"
+            "<p>Download YouTube videos (MP4 / MP3), or open a local file "
+            "and flip or trim it.</p>"
+            "<p>Built with Python, PySide6, yt-dlp and ffmpeg.<br>"
+            "MIT License \u2014 use and modify freely.</p>",
         )
 
-    # ------------------------------------------------------------ dialogs
-    def _dlg(
-        self,
-        title: str,
-        message: str,
-        *,
-        kind: str = "info",
-        actions: list[tuple[str, callable | None]] | None = None,
-        parent: ctk.CTkToplevel | None = None,
-    ) -> None:
-        win = ctk.CTkToplevel(parent or self)
-        win.title(title)
-        win.configure(fg_color=SURFACE)
-        win.attributes("-topmost", True)
-        win.resizable(False, False)
-        color = {"error": ERROR, "success": SUCCESS, "info": ACCENT}.get(kind, ACCENT)
-        ctk.CTkLabel(win, text=title, text_color=color, font=ctk.CTkFont(size=15, weight="bold")).pack(
-            padx=26, pady=(18, 6), anchor="w")
-        msg = ctk.CTkLabel(win, text=message, text_color=TEXT, justify="left", wraplength=420,
-                           font=ctk.CTkFont(size=12))
-        msg.pack(fill=tk.X, padx=26, pady=(0, 14))
-        btn_row = ctk.CTkFrame(win, fg_color="transparent")
-        btn_row.pack(fill=tk.X, padx=26, pady=(0, 16))
-        for text, cb in (actions or [("OK", None)]):
-            ctk.CTkButton(btn_row, text=text, width=96, height=32, corner_radius=6,
-                          fg_color=ACCENT, hover_color=ACCENT_HI,
-                          command=lambda w=win, c=cb: (w.destroy(), (c() if c else None))[-1]).pack(
-                side=tk.RIGHT, padx=(8, 0))
+    # ── clipboard / file dialogs ───────────────────────────────────────
 
-        win.update_idletasks()
-        w, h = win.winfo_reqwidth(), win.winfo_reqheight()
-        x = self.winfo_rootx() + max(0, (self.winfo_width() - w) // 2)
-        y = self.winfo_rooty() + max(0, (self.winfo_height() - h) // 3)
-        win.geometry(f"+{int(x)}+{int(y)}")
-        win.grab_set()
-        self.wait_window(win)
+    def _paste_url(self) -> None:
+        text = QApplication.clipboard().text()
+        if text:
+            self._url.setText(text.strip())
 
-    # ------------------------------------------------------------ handlers
-    def _bind_shortcuts(self) -> None:
-        self.bind("<Control-o>", lambda _e: self._browse_local_file())
-        self.bind("<Control-O>", lambda _e: self._browse_local_file())
-        self.bind("<Control-l>", lambda _e: self._clear_log())
-        self.bind("<Control-L>", lambda _e: self._clear_log())
-        self.bind("<F1>", lambda _e: self._show_about())
-
-    def _do_paste(self) -> None:
-        try:
-            text = self.clipboard_get()
-        except tk.TclError:
-            return
-        self.url_entry.focus_set()
-        self.url_entry.delete(0, tk.END)
-        self.url_entry.insert(0, text)
-
-    def _browse_output(self) -> None:
-        folder = filedialog.askdirectory(initialdir=self.output_var.get())
+    def _browse_folder(self, target: QLineEdit) -> None:
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Output Folder", target.text()
+        )
         if folder:
-            self.output_var.set(folder)
+            target.setText(folder)
 
-    def _browse_local_file(self) -> None:
-        filetypes = [
-            ("Media files", "*.mp4 *.mp3 *.mkv *.webm *.avi *.mov *.m4a *.wav *.flac"),
-            ("MP4 files", "*.mp4"),
-            ("MP3 files", "*.mp3"),
-            ("All files", "*.*"),
-        ]
-        path = filedialog.askopenfilename(filetypes=filetypes)
+    def _browse_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Media File",
+            "",
+            "Media (*.mp4 *.mp3 *.mkv *.webm *.avi *.mov *.m4a *.wav *.flac);;"
+            "All files (*)",
+        )
         if path:
-            self.local_file_var.set(path)
+            self._file.setText(path)
 
-    def _refresh_source_row(self, _value: str | None = None) -> None:
-        mode = self.source_seg.get()
-        if mode.startswith("YouTube"):
-            self._url_row.grid()
-            self._file_row.grid_remove()
-            self._fmt_card.grid()
-            self.download_btn.configure(text="⬇  Download")
-        else:
-            self._url_row.grid_remove()
-            self._file_row.grid()
-            self._fmt_card.grid_remove()
-            self.download_btn.configure(text="⬇  Process")
+    # ── log ────────────────────────────────────────────────────────────
 
     def _clear_log(self) -> None:
-        self.log_text.configure(state="normal")
-        self.log_text.delete("1.0", tk.END)
-        self.log_text.configure(state="disabled")
+        self._log.clear()
 
-    def _append_log(self, message: str) -> None:
-        self.log_text.configure(state="normal")
-        self.log_text.insert("end", message + "\n")
-        self.log_text.see("end")
-        self.log_text.configure(state="disabled")
+    def _append_log(self, msg: str) -> None:
+        self._log.append(msg)
+
+    # ── ffmpeg status ──────────────────────────────────────────────────
 
     def _update_ffmpeg_status(self) -> None:
-        ffmpeg = find_ffmpeg()
-        if ffmpeg:
-            if Path(ffmpeg).is_relative_to(get_app_dir()):
-                self.ffmpeg_var.set("ffmpeg: embedded")
+        ff = find_ffmpeg()
+        if ff:
+            if Path(ff).is_relative_to(get_app_dir()):
+                self._ffmpeg_lbl.setText("ffmpeg: embedded")
             else:
-                self.ffmpeg_var.set(f"ffmpeg: {Path(ffmpeg)}")
+                self._ffmpeg_lbl.setText(f"ffmpeg: {Path(ff).name}")
         else:
-            self.ffmpeg_var.set("ffmpeg not found — install ffmpeg or rebuild")
+            self._ffmpeg_lbl.setText("ffmpeg: not found")
 
-    def _set_busy(self, busy: bool) -> None:
-        self._busy = busy
-        mode = self.source_seg.get()
-        label = "Processing…" if mode.startswith("Local") else "Downloading…"
-        text = label if busy else ("⬇  Process" if mode.startswith("Local") else "⬇  Download")
-        self.download_btn.configure(state="disabled" if (busy or not self._internet_online) else "normal",
-                                    text=text)
+    # ── internet ───────────────────────────────────────────────────────
 
-    # ------------------------------------------------- neutron status
-    def _internet_tick(self) -> None:
-        if self._internet_thread is None or not self._internet_thread.is_alive():
-            self._internet_thread = threading.Thread(target=self._internet_probe, daemon=True)
-            self._internet_thread.start()
-        self.after(10000, self._internet_tick)
+    def _start_internet_check(self) -> None:
+        self._pending_status: ConnectionStatus | None = None
+        self._probe_thread: threading.Thread | None = None
+        self._poll = QTimer(self)
+        self._poll.timeout.connect(self._poll_internet)
+        self._poll.start(200)
+        self._do_probe()
 
-    def _internet_probe(self) -> None:
-        status = check_internet(timeout=2.5)
-        try:
-            self.after(0, lambda: self._apply_internet(status))
-        except Exception:  # noqa: BLE001,S110 - app may already be closed
-            pass
+    def _do_probe(self) -> None:
+        if self._probe_thread is None or not self._probe_thread.is_alive():
+            self._probe_thread = threading.Thread(
+                target=self._probe_worker, daemon=True
+            )
+            self._probe_thread.start()
+
+    def _probe_worker(self) -> None:
+        self._pending_status = check_internet(timeout=2.5)
+
+    def _poll_internet(self) -> None:
+        status = self._pending_status
+        if status is not None:
+            self._pending_status = None
+            self._apply_internet(status)
 
     def _apply_internet(self, status: ConnectionStatus) -> None:
         self._internet_online = status.online
-        self.net_pill.configure(
-            text="● Online" if status.online else "○ Offline",
-            text_color=PILL["online" if status.online else "offline"],
-        )
-        if not self._busy:
-            state = "normal" if status.online else "disabled"
-            self.download_btn.configure(state=state)
-
-    # ---------------------------------------------------------- progress
-    def _on_progress(self, message: str, percent: float | None) -> None:
-        def update() -> None:
-            self.status_var.set(message)
-            if percent is not None:
-                self.progress.set(min(1.0, percent / 100))
-
-        self.after(0, update)
-
-    def _on_log(self, message: str) -> None:
-        self.after(0, lambda: self._append_log(message))
-
-    # -------------------------------------------------------------- start
-    def _start_download(self) -> None:
-        if self._download_thread and self._download_thread.is_alive():
-            return
-
-        if not self._internet_online and self.source_seg.get().startswith("YouTube"):
-            self._dlg(
-                "No internet connection",
-                "You appear to be offline.\n\n"
-                "VidGrab needs a live internet connection to reach YouTube.",
-                kind="error",
-                actions=[("Exit", self.destroy), ("Check again", self._internet_tick)],
+        if status.online:
+            self._net_lbl.setText("\u25cf Online")
+            self._net_lbl.setStyleSheet(
+                "color:#3ecf8e; font-weight:bold; font-size:11px;"
             )
-            return
-
-        mode = self.source_seg.get()
-        if mode.startswith("Local"):
-            self._start_local_file()
         else:
-            self._start_url()
+            self._net_lbl.setText("\u25cb Offline")
+            self._net_lbl.setStyleSheet(
+                "color:#ff6b6b; font-weight:bold; font-size:11px;"
+            )
+        self._refresh_btn()
 
-    def _start_local_file(self) -> None:
-        input_path = self.local_file_var.get().strip()
-        if not input_path:
-            self._dlg("No file", "Please select a local media file.", kind="error")
+    # ── busy / button state ────────────────────────────────────────────
+
+    def _refresh_btn(self) -> None:
+        if self._busy:
+            self._action.setEnabled(False)
             return
-        if not Path(input_path).is_file():
-            self._dlg("File not found", f"The file does not exist:\n{input_path}", kind="error")
+        idx = self._stack.currentIndex()
+        if idx == 0:
+            self._action.setEnabled(self._internet_online is True)
+        elif idx == 1:
+            self._action.setEnabled(True)
+        else:
+            self._action.setVisible(False)
+
+    def _set_busy(self, busy: bool) -> None:
+        self._busy = busy
+        if busy:
+            self._progress.setMaximum(0)
+            self._progress.setValue(0)
+            idx = self._stack.currentIndex()
+            self._action.setText(
+                "\u2b07  Downloading\u2026" if idx == 0 else "\u2702  Processing\u2026"
+            )
+        else:
+            self._progress.setMaximum(100)
+            self._progress.setValue(0)
+            self._switch_page(self._stack.currentIndex())
+
+    # ── start action ───────────────────────────────────────────────────
+
+    def _start_action(self) -> None:
+        if self._busy:
             return
-        if not find_ffmpeg():
-            self._dlg(
-                "ffmpeg required",
-                "Processing local files requires ffmpeg.\n\n"
-                "Linux/macOS:\n  sudo apt install ffmpeg\n\n"
-                "Windows:\n  Put ffmpeg.exe in an 'ffmpeg' folder next to the app.",
-                kind="error",
+        idx = self._stack.currentIndex()
+        if idx == 0:
+            self._start_download()
+        elif idx == 1:
+            self._start_local_file()
+
+    def _start_download(self) -> None:
+        url = self._url.text().strip()
+        if not url:
+            QMessageBox.warning(self, "Missing URL", "Please paste a YouTube link.")
+            return
+        if not self._internet_online:
+            QMessageBox.warning(
+                self,
+                "No internet",
+                "You appear to be offline.\nVidGrab needs a live connection.",
             )
             return
-
-        self.progress.set(0)
-        self.status_var.set("Starting…")
-        self._set_busy(True)
-
-        def worker() -> None:
-            try:
-                flip_parts = []
-                if self.hflip_var.get():
-                    flip_parts.append("hflip")
-                if self.vflip_var.get():
-                    flip_parts.append("vflip")
-                flip = ",".join(flip_parts) or None
-                result = process_local_file(
-                    input_path,
-                    self.output_var.get(),
-                    video_filter=flip,
-                    section_start=self.trim_start_var.get().strip() or None,
-                    section_end=self.trim_end_var.get().strip() or None,
-                    on_progress=self._on_progress,
-                    on_log=self._on_log,
-                )
-                self.after(0, lambda: self._finish_ok([result]))
-            except Exception as exc:  # noqa: BLE001
-                self.after(0, lambda e=exc: self._finish_err(e))
-
-        self._download_thread = threading.Thread(target=worker, daemon=True)
-        self._download_thread.start()
-
-    def _start_url(self) -> None:
-        url = self.url_var.get().strip()
-        if not url:
-            self._dlg("Missing URL", "Please paste a YouTube link.", kind="error")
-            return
         if not find_ffmpeg():
-            self._dlg(
+            QMessageBox.critical(
+                self,
                 "ffmpeg required",
                 "Downloads need ffmpeg for MP3 and most MP4 merges.",
-                kind="error",
             )
             return
 
-        self.progress.set(0)
-        self.status_var.set("Starting…")
         self._set_busy(True)
+        filt = _build_filter(self._hflip, self._vflip)
+        start = self._ts.text().strip() or None
+        end = self._te.text().strip() or None
+        out = self._out.text()
 
-        def worker() -> None:
-            try:
-                flip_parts = []
-                if self.hflip_var.get():
-                    flip_parts.append("hflip")
-                if self.vflip_var.get():
-                    flip_parts.append("vflip")
-                flip = ",".join(flip_parts) or None
-                start = self.trim_start_var.get().strip()
-                end = self.trim_end_var.get().strip()
-                out_dir = self.output_var.get()
-                want_mp4 = self.format_mp4_var.get()
-                want_mp3 = self.format_mp3_var.get()
+        if self._mp4.isChecked() and self._mp3.isChecked():
+            self._run("download_both", url=url, output_dir=out,
+                      video_filter=filt, section_start=start, section_end=end)
+        else:
+            fmt = "mp3" if self._mp3.isChecked() else "mp4"
+            self._run("download", url=url, output_dir=out, fmt=fmt,
+                      video_filter=filt, section_start=start, section_end=end)
 
-                if want_mp4 and want_mp3:
-                    mp4, mp3 = download_both(
-                        url, out_dir, video_filter=flip,
-                        section_start=start or None, section_end=end or None,
-                        on_progress=self._on_progress, on_log=self._on_log,
-                    )
-                    self.after(0, lambda: self._finish_ok([mp4, mp3]))
-                else:
-                    fmt = "mp3" if want_mp3 else "mp4"
-                    result = download(
-                        url, out_dir, fmt, video_filter=flip,
-                        section_start=start or None, section_end=end or None,
-                        on_progress=self._on_progress, on_log=self._on_log,
-                    )
-                    self.after(0, lambda: self._finish_ok([result]))
-            except Exception as exc:  # noqa: BLE001
-                self.after(0, lambda e=exc: self._finish_err(e))
+    def _start_local_file(self) -> None:
+        path = self._file.text().strip()
+        if not path:
+            QMessageBox.warning(self, "No file", "Please select a local media file.")
+            return
+        if not Path(path).is_file():
+            QMessageBox.warning(
+                self, "File not found", f"The file does not exist:\n{path}"
+            )
+            return
+        if not find_ffmpeg():
+            QMessageBox.critical(
+                self,
+                "ffmpeg required",
+                "Processing local files requires ffmpeg.",
+            )
+            return
 
-        self._download_thread = threading.Thread(target=worker, daemon=True)
-        self._download_thread.start()
+        self._set_busy(True)
+        filt = _build_filter(self._ehflip, self._evflip)
+        start = self._ets.text().strip() or None
+        end = self._ete.text().strip() or None
+        out = self._eout.text()
+        self._run("local_file", input_path=path, output_dir=out,
+                  video_filter=filt, section_start=start, section_end=end)
 
-    def _finish_ok(self, saved_paths: list[Path]) -> None:
+    def _run(self, task: str, **kwargs) -> None:
+        self._worker = _Worker(task, **kwargs)
+        self._worker.finished.connect(self._on_result)
+        self._worker.error.connect(self._on_error)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.log.connect(self._append_log)
+        self._worker.start()
+
+    # ── callbacks ──────────────────────────────────────────────────────
+
+    def _on_progress(self, msg: str, pct: object) -> None:
+        self._status_lbl.setText(msg)
+        if isinstance(pct, (int, float)):
+            if self._progress.maximum() == 0:
+                self._progress.setMaximum(100)
+            self._progress.setValue(int(min(100, pct)))
+        elif self._busy:
+            self._progress.setMaximum(0)
+
+    def _on_result(self, result: object) -> None:
         self._set_busy(False)
-        self.progress.set(1.0)
-        self.status_var.set("Done")
-        self._dlg(
-            "Success",
-            "Saved to:\n" + "\n".join(str(p) for p in saved_paths),
-            kind="success",
-        )
+        self._progress.setMaximum(100)
+        self._progress.setValue(100)
+        self._status_lbl.setText("Done")
+        if isinstance(result, tuple):
+            paths = "\n".join(str(p) for p in result)
+        else:
+            paths = str(result)
+        QMessageBox.information(self, "Success", f"Saved to:\n{paths}")
 
-    def _finish_err(self, exc: Exception) -> None:
+    def _on_error(self, msg: str) -> None:
         self._set_busy(False)
-        self.status_var.set("Failed")
-        self._append_log(f"Error: {exc}")
-        self._dlg("Something went wrong", str(exc), kind="error")
+        self._progress.setMaximum(100)
+        self._progress.setValue(0)
+        self._status_lbl.setText("Failed")
+        self._append_log(f"Error: {msg}")
+        QMessageBox.critical(self, "Something went wrong", msg)
+
+    # ── shortcuts ──────────────────────────────────────────────────────
+
+    def _setup_shortcuts(self) -> None:
+        from PySide6.QtGui import QKeySequence, QShortcut
+
+        QShortcut(QKeySequence("Ctrl+V"), self, self._paste_url)
+        QShortcut(QKeySequence("Ctrl+L"), self, self._clear_log)
+        QShortcut(QKeySequence("F1"), self, self._show_about)
+
+    # ── close ──────────────────────────────────────────────────────────
+
+    def closeEvent(self, event) -> None:
+        _save_config(self._theme)
+        if self._worker is not None and self._worker.isRunning():
+            QMessageBox.information(
+                self,
+                "Task in progress",
+                "A download or processing task is still running.\n"
+                "Please wait for it to complete before closing.",
+            )
+            event.ignore()
+            return
+        event.accept()
+
+
+# ── helpers ────────────────────────────────────────────────────────────────
+
+
+def _build_filter(hflip: QCheckBox, vflip: QCheckBox) -> str | None:
+    parts = []
+    if hflip.isChecked():
+        parts.append("hflip")
+    if vflip.isChecked():
+        parts.append("vflip")
+    return ",".join(parts) or None
+
+
+# ── entry point ────────────────────────────────────────────────────────────
 
 
 def main() -> None:
-    app = VidGrabApp()
-    app.mainloop()
+    app = QApplication(sys.argv)
+    app.setApplicationName("VidGrab")
+    app.setApplicationVersion(__version__)
+    app.setStyle("Fusion")
+
+    font = QFont()
+    font.setFamilies(
+        ["Segoe UI", "Noto Sans", "Ubuntu", "Cantarell", "sans-serif"]
+    )
+    app.setFont(font)
+
+    window = VidGrabWindow()
+    window.show()
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":

@@ -3,21 +3,22 @@
 [![CI](https://github.com/coherent17/VidGrab/actions/workflows/ci.yml/badge.svg)](https://github.com/coherent17/VidGrab/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/coherent17/VidGrab?label=release)](https://github.com/coherent17/VidGrab/releases)
 
-A portable media downloader & editor for **Windows** and **Linux** with a modern dark/light GUI. Grab a YouTube video as **MP4** or **MP3**, or open a local file, then **flip** and **trim** it — all in one single self-contained binary.
+A portable media downloader & editor for **Windows** and **Linux** with a modern dark/light Qt GUI. Grab a YouTube video as **MP4** or **MP3**, or open a local file, then **flip** and **trim** it — all in one single self-contained binary.
 
-Built with **Python**, **CustomTkinter**, **yt-dlp**, **ffmpeg**, and packaged with **PyInstaller**.
+Built with **Python**, **PySide6 (Qt)**, **yt-dlp**, **ffmpeg**, and packaged with **PyInstaller**.
 
 ## Features
 
 - Download YouTube videos as **MP4** or simultaneous MP4 + MP3 (single-pass, ~50 % faster)
 - **Flip** horizontally and/or vertically (ultrafast re-encode, audio copied)
 - **Trim** to a time window (`90`, `1:30`, `1:02:03` or `start-end`) — YouTube downloads fetch only the wanted section when possible
-- **Local file mode** — attach an MP4/MP3/MKV/etc. and flip/trim it
-- **Internet status pill** — live Online / Offline indicator; buttons disabled cleanly with a Retry / Exit dialog when offline
-- **Dark / Light theme toggle** — persisted in `~/.config/vidgrab/config.json`
+- **Local file mode** — browse a local MP4/MP3/MKV/etc. from the **Edit** page and flip/trim it
+- **Internet status bar** — live ● Online / ○ Offline indicator with ffmpeg + version in the `QStatusBar`; buttons disabled cleanly when offline
+- **Sidebar navigation** — Download / Edit / Settings pages with a left-hand icon nav panel
+- **Dark / Light theme toggle** — QSS-styled, persisted in `~/.config/vidgrab/config.json`
 - **Single self-contained binary** (~100 MB) — ffmpeg embedded, no install, no `ffmpeg` folder needed
 - **Linux release** — a self-contained x86_64 ELF is published alongside the Windows exe
-- Keyboard shortcuts: Ctrl+O, Ctrl+L, Enter, F1
+- Keyboard shortcuts: Ctrl+V (paste), Ctrl+L (clear log), Enter (start), F1 (about)
 - No Python required for end users
 
 ## Quick start (developers)
@@ -30,7 +31,9 @@ The Windows commands (`python`, `.venv\Scripts\activate`) do **not** work in WSL
 
 ```bash
 sudo apt update
-sudo apt install -y python3-venv python3-pip python3-tk ffmpeg
+sudo apt install -y python3-venv python3-pip ffmpeg \
+  libegl1 libgl1 libxkbcommon0 libfontconfig1 \
+  libxcb-cursor0 libxcb-xinerama0 libdbus-1-3
 ```
 
 **Run the app:**
@@ -49,7 +52,7 @@ pip install -r requirements.txt
 python -m vidgrab              # or the back-compat shim: python app.py
 ```
 
-> **WSL GUI:** On Windows 11, WSLg shows the window automatically once `python3-tk` is installed.
+> **WSL GUI:** On Windows 11, WSLg shows the window automatically once the Qt system libraries are installed.
 
 ### Windows
 
@@ -65,14 +68,14 @@ python -m vidgrab              # or the back-compat shim: python app.py
 ```
 vidgrab/            the app
   __main__.py       python -m vidgrab entry point
-  app.py            CustomTkinter UI (VidGrabApp)
+  app.py            PySide6 (Qt) UI — sidebar + content panel (VidGrabWindow)
   downloader.py     yt-dlp download / ffmpeg flip & trim logic
   network.py        offline/captive-portal detection
   _version.py       single __version__ source
 assets/             icon.ico + icon.png (regenerate via scripts/generate_icon.py)
 ffmpeg/win|linux/   build-time ffmpeg binaries (embedded, not committed)
 tests/              pytest suite incl. headless GUI smoke test
-VidGrab.spec        PyInstaller spec (platform-aware, bundles ffmpeg + CTk assets)
+VidGrab.spec        PyInstaller spec (platform-aware, bundles ffmpeg + Qt)
 ```
 
 ## Build the Windows exe
@@ -135,14 +138,16 @@ pyinstaller VidGrab.spec --noconfirm
 source .venv/bin/activate          # or .venv\Scripts\activate on Windows
 pip install -r requirements-dev.txt
 ruff check .                       # lint
-pytest -v                          # 23 tests, no network needed
+pytest -v                          # 26 tests, no network needed
 ```
 
 To also run the headless GUI smoke test (constructs the real window), use a
-virtual display:
+virtual display or the Qt offscreen platform:
 
 ```bash
 SMOKE_GUI=1 xvfb-run -a pytest -v
+# or without a display:
+SMOKE_GUI=1 QT_QPA_PLATFORM=offscreen pytest tests/test_gui_smoke.py -v
 ```
 
 What CI does on every push to `main` / pull request:
@@ -159,8 +164,8 @@ What CI does on every push to `main` / pull request:
 `VidGrab.exe`, `VidGrab.zip`, `VidGrab-linux` and `VidGrab-linux.tar.xz`:
 
 ```bash
-git tag v2.0.0
-git push origin v2.0.0
+git tag v2.1.0
+git push origin v2.1.0
 ```
 
 ## Usage
@@ -176,7 +181,7 @@ git push origin v2.0.0
 
 ### Local file mode
 
-1. Click **Local File** at the top of the Source card
+1. Click **Edit** in the sidebar
 2. Press **Browse…** and pick an MP4 / MP3 / MKV / WebM / etc.
 3. Optionally set **Flip** and **Trim**
 4. Choose the output folder

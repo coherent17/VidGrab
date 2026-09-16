@@ -57,7 +57,7 @@ jobs:
             ## What's inside
             - YouTube downloader (MP4 / MP3) via yt-dlp
             - Local file mode: flip & trim MP4/MP3/MKV straight from disk
-            - CustomTkinter dark/light GUI, internet status, progress + log view
+            - PySide6 (Qt) dark/light sidebar GUI, internet status, progress + log
           fail_on_unmatched_files: false
           files: |
             release/VidGrab.exe

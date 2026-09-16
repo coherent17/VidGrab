@@ -5,8 +5,8 @@
 
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(2, 0, 0, 0),
-    prodvers=(2, 0, 0, 0),
+    filevers=(2, 1, 0, 0),
+    prodvers=(2, 1, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -20,12 +20,12 @@ VSVersionInfo(
         u'040904B0',
         [StringStruct(u'CompanyName', u'VidGrab Project'),
          StringStruct(u'FileDescription', u'VidGrab - download, flip & trim media'),
-         StringStruct(u'FileVersion', u'2.0.0'),
+         StringStruct(u'FileVersion', u'2.1.0'),
          StringStruct(u'InternalName', u'VidGrab'),
          StringStruct(u'LegalCopyright', u'Copyright (c) 2026'),
          StringStruct(u'OriginalFilename', u'VidGrab.exe'),
          StringStruct(u'ProductName', u'VidGrab'),
-         StringStruct(u'ProductVersion', u'2.0.0')]
+         StringStruct(u'ProductVersion', u'2.1.0')]
       )
     ]),
     VarFileInfo([VarStruct(u'Translation', [1033, 1200])])

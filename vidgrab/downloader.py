@@ -18,6 +18,9 @@ TranslateFn = Callable[..., str]
 
 DEFAULT_MP3_BITRATE = "192"
 
+MIN_SPEED = 0.25
+MAX_SPEED = 4.0
+
 
 def _noop_tr(text: str, **kw: object) -> str:
     return text.format(**kw) if kw else text
@@ -84,6 +87,45 @@ def _ensure_ffmpeg_on_path(ffmpeg: str) -> None:
 
 # ── output locating ───────────────────────────────────────────────────────
 
+def _atempo_chain(speed: float) -> list[str]:
+    """ffmpeg filters that change audio tempo to *speed* (0.5x..2.0x each)."""
+    filters: list[str] = []
+    remaining = speed
+    while remaining > 2.0 and len(filters) < 8:
+        filters.append("atempo=2.0")
+        remaining /= 2.0
+    while remaining < 0.5 and len(filters) < 8:
+        filters.append("atempo=0.5")
+        remaining /= 0.5
+    filters.append(f"atempo={remaining:.6g}")
+    return filters
+
+
+def _validate_speed(
+    speed: float | None,
+    *,
+    translate: TranslateFn | None = None,
+) -> float | None:
+    """Normalize a speed factor; returns None for 1.0x (no change)."""
+    tr = translate or _noop_tr
+    if speed is None or speed == 1.0:
+        return None
+    if not MIN_SPEED <= speed <= MAX_SPEED:
+        raise RuntimeError(
+            tr(
+                "Speed must be between {lo}x and {hi}x.",
+                lo=MIN_SPEED,
+                hi=MAX_SPEED,
+            )
+        )
+    return speed
+
+
+def _speed_marker(speed: float | None) -> str:
+    """A suffix like '_2x' to tag outputs that were sped up."""
+    return f"_{speed:g}x" if speed is not None else ""
+
+
 def _locate_output(
     output_path: Path, title: str, fmt: str, suffix: str
 ) -> Path | None:
@@ -147,6 +189,7 @@ def _trim(
     start: float,
     end: float,
     video_filter: str | None = None,
+    speed: float | None = None,
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
     *,
@@ -160,14 +203,28 @@ def _trim(
     if end != float("inf"):
         args += ["-t", str(end - start)]
     args += ["-map", "0"]
-    if video_filter:
-        args += ["-vf", video_filter, "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"]
-        if dst.suffix.lower() in (".mp3", ".aac", ".m4a"):
-            args += ["-vn", "-c:a", "libmp3lame", "-b:a", DEFAULT_MP3_BITRATE]
-        else:
-            args += ["-c:a", "copy"]
-    else:
+
+    needs_encode = bool(video_filter) or speed is not None
+    if not needs_encode:
         args += ["-c", "copy"]
+    else:
+        is_audio_out = dst.suffix.lower() in (".mp3", ".aac", ".m4a")
+        if is_audio_out:
+            args += ["-vn", "-c:a", "libmp3lame", "-b:a", DEFAULT_MP3_BITRATE]
+            if speed is not None:
+                args += ["-af", ",".join(_atempo_chain(speed))]
+        else:
+            vf_parts: list[str] = []
+            if video_filter:
+                vf_parts.append(video_filter)
+            if speed is not None:
+                vf_parts.append(f"setpts=(PTS-STARTPTS)/{speed}+STARTPTS")
+            args += ["-vf", ",".join(vf_parts)]
+            args += ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"]
+            if speed is not None:
+                args += ["-c:a", "aac", "-b:a", "192k", "-af", ",".join(_atempo_chain(speed))]
+            else:
+                args += ["-c:a", "copy"]
     args.append(str(dst))
 
     if on_log:
@@ -256,6 +313,7 @@ def process_local_file(
     output_dir: str | Path,
     *,
     video_filter: str | None = None,
+    speed: float | None = None,
     section_start: str | None = None,
     section_end: str | None = None,
     on_progress: ProgressCallback | None = None,
@@ -263,11 +321,13 @@ def process_local_file(
     translate: TranslateFn | None = None,
 ) -> Path:
     """
-    Apply trim / flip to a local media file and write the result to *output_dir*.
+    Apply trim / flip / speed to a local media file and write the result to
+    *output_dir*.
 
     Returns the path to the processed file.
     """
     tr = translate or _noop_tr
+    speed = _validate_speed(speed, translate=translate)
     src = Path(input_path).resolve()
     if not src.is_file():
         raise FileNotFoundError(tr("File not found: {src}", src=src))
@@ -277,14 +337,14 @@ def process_local_file(
 
     ext = src.suffix  # keep original extension
     stem = src.stem
-    final_file = output_path / f"{stem}_processed{ext}"
+    final_file = output_path / f"{stem}_processed{_speed_marker(speed)}{ext}"
 
     do_trim = bool(section_start or section_end)
     start, end = 0.0, float("inf")
     if do_trim:
         start, end = _parse_trim(section_start, section_end, translate=translate)
 
-    needs_ffmpeg = do_trim or video_filter
+    needs_ffmpeg = do_trim or video_filter or speed is not None
     if not needs_ffmpeg:
         final_file.unlink(missing_ok=True)
         shutil.copy2(src, final_file)
@@ -312,6 +372,7 @@ def process_local_file(
         start,
         end,
         video_filter=video_filter,
+        speed=speed,
         on_progress=on_progress,
         on_log=on_log,
         translate=translate,
@@ -376,6 +437,7 @@ def download(
     fmt: str,
     *,
     video_filter: str | None = None,
+    speed: float | None = None,
     section_start: str | None = None,
     section_end: str | None = None,
     on_progress: ProgressCallback | None = None,
@@ -388,6 +450,8 @@ def download(
     Returns the path to the downloaded file.
     """
     tr = translate or _noop_tr
+    speed = _validate_speed(speed, translate=translate)
+    speed_m = _speed_marker(speed)
     if not url.strip():
         raise RuntimeError(tr("No URL provided."))
 
@@ -436,10 +500,10 @@ def download(
 
     if do_trim:
         suffix = ".trimtmp"
+    elif fmt == "mp4" and (video_filter or speed is not None):
+        suffix = ".proctmp"
     elif fmt == "mp3":
         suffix = ".mp3tmp"
-    elif video_filter:
-        suffix = ".proctmp"
     else:
         suffix = ""
 
@@ -481,7 +545,7 @@ def download(
     if out_file is None:
         raise RuntimeError(tr("Download finished but output file was not found."))
 
-    use_ffmpeg = do_trim or (video_filter and fmt == "mp4")
+    use_ffmpeg = do_trim or (video_filter and fmt == "mp4") or speed is not None
 
     if not use_ffmpeg:
         base = out_file.stem
@@ -489,7 +553,7 @@ def download(
             if base.endswith(tmp_suffix):
                 base = base[: -len(tmp_suffix)]
                 break
-        final_file = output_path / f"{base}.{fmt}"
+        final_file = output_path / f"{base}{speed_m}.{fmt}"
         if final_file != out_file:
             final_file.unlink(missing_ok=True)
             out_file.replace(final_file)
@@ -505,7 +569,7 @@ def download(
         if base.endswith(tmp_suffix):
             base = base[: -len(tmp_suffix)]
             break
-    final_file = output_path / f"{base}.{ext}"
+    final_file = output_path / f"{base}{speed_m}.{ext}"
 
     # If the section download already cut the video, don't cut it again.
     trim_start, trim_end = (
@@ -520,6 +584,7 @@ def download(
         trim_start,
         trim_end,
         video_filter=video_filter if fmt == "mp4" else None,
+        speed=speed,
         on_progress=on_progress,
         on_log=on_log,
         translate=translate,
@@ -538,6 +603,7 @@ def download_both(
     output_dir: str | Path,
     *,
     video_filter: str | None = None,
+    speed: float | None = None,
     section_start: str | None = None,
     section_end: str | None = None,
     on_progress: ProgressCallback | None = None,
@@ -547,7 +613,8 @@ def download_both(
     """
     Download a video once as MP4, then derive the MP3 from it locally.
 
-    Avoids downloading the same video twice when both formats are requested.
+    The MP4 carries the sped-up audio, so the derived MP3 keeps the speed
+    without a second encode.
 
     Returns (mp4_path, mp3_path).
     """
@@ -556,6 +623,7 @@ def download_both(
         output_dir,
         "mp4",
         video_filter=video_filter,
+        speed=speed,
         section_start=section_start,
         section_end=section_end,
         on_progress=on_progress,

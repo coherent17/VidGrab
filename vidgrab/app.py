@@ -35,6 +35,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QStackedWidget,
     QStatusBar,
     QTextEdit,
@@ -343,6 +345,16 @@ QStatusBar {
     font-size: 11px;
     color: #5c6b84;
     padding: 5px 12px;
+}
+QScrollArea#page_scroll {
+    background: transparent;
+    border: none;
+}
+QScrollArea#page_scroll > QWidget#qt_scrollarea_viewport {
+    background: transparent;
+}
+QScrollArea#page_scroll > QWidget#qt_scrollarea_viewport > QWidget {
+    background: transparent;
 }
 QScrollBar:vertical {
     background: transparent;
@@ -653,6 +665,16 @@ QStatusBar {
     color: #64748b;
     padding: 5px 12px;
 }
+QScrollArea#page_scroll {
+    background: transparent;
+    border: none;
+}
+QScrollArea#page_scroll > QWidget#qt_scrollarea_viewport {
+    background: transparent;
+}
+QScrollArea#page_scroll > QWidget#qt_scrollarea_viewport > QWidget {
+    background: transparent;
+}
 QScrollBar:vertical {
     background: transparent;
     width: 9px;
@@ -895,6 +917,7 @@ class _Worker(QThread):
         try:
             common = {
                 "video_filter": self._kw.get("video_filter"),
+                "speed": self._kw.get("speed"),
                 "section_start": self._kw.get("section_start"),
                 "section_end": self._kw.get("section_end"),
                 "on_progress": self._cb_progress,
@@ -1222,6 +1245,7 @@ class VidGrabWindow(QMainWindow):
         frw.addWidget(self._vflip)
         frw.addStretch()
         vl.addLayout(frw)
+        self._dl_speed_lbl, self._speed = _add_speed_row(vl)
         row2.addWidget(flip)
 
         trim, trim_title, tcv = self._card("TRIM", "trim_card", "trim")
@@ -1263,7 +1287,7 @@ class VidGrabWindow(QMainWindow):
         self._dl_browse = bb
         svl.addLayout(sr)
         lay.addWidget(save)
-        return page
+        return _wrap_scroll(page)
 
     # ── edit form ──────────────────────────────────────────────────────
 
@@ -1302,6 +1326,7 @@ class VidGrabWindow(QMainWindow):
         frw.addWidget(self._evflip)
         frw.addStretch()
         vl.addLayout(frw)
+        self._ed_speed_lbl, self._espeed = _add_speed_row(vl)
         row2.addWidget(flip)
 
         trim, trim_title, tcv = self._card("TRIM", "trim_card", "trim")
@@ -1343,7 +1368,7 @@ class VidGrabWindow(QMainWindow):
         self._ed_browse2 = bb2
         svl.addLayout(sr)
         lay.addWidget(save)
-        return page
+        return _wrap_scroll(page)
 
     # ── settings form ──────────────────────────────────────────────────
 
@@ -1417,7 +1442,8 @@ class VidGrabWindow(QMainWindow):
         self._log = QTextEdit()
         self._log.setObjectName("log")
         self._log.setReadOnly(True)
-        self._log.setMinimumHeight(60)
+        self._log.setMinimumHeight(70)
+        self._log.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
         lay.addWidget(self._log, stretch=1)
 
         prow = QHBoxLayout()
@@ -1511,6 +1537,7 @@ class VidGrabWindow(QMainWindow):
         self._dl_format_title.setText(t("FORMAT"))
         self._dl_flip_title.setText(t("FLIP"))
         self._dl_trim_title.setText(t("TRIM"))
+        self._dl_speed_lbl.setText(t("Speed:"))
         self._dl_save_title.setText(t("SAVE TO"))
         self._url.setPlaceholderText(t("Paste a YouTube link\u2026"))
         self._hflip.setText(t("Horizontal"))
@@ -1527,6 +1554,7 @@ class VidGrabWindow(QMainWindow):
         self._ed_source_title.setText(t("SOURCE"))
         self._ed_flip_title.setText(t("FLIP"))
         self._ed_trim_title.setText(t("TRIM"))
+        self._ed_speed_lbl.setText(t("Speed:"))
         self._ed_save_title.setText(t("SAVE TO"))
         self._file.setPlaceholderText(t("Choose a local video or audio file\u2026"))
         self._ehflip.setText(t("Horizontal"))
@@ -1721,17 +1749,18 @@ class VidGrabWindow(QMainWindow):
 
         self._set_busy(True)
         filt = _build_filter(self._hflip, self._vflip)
+        speed = _read_speed(self._speed)
         start = self._ts.text().strip() or None
         end = self._te.text().strip() or None
         out = self._out.text()
 
         if self._mp4.isChecked() and self._mp3.isChecked():
             self._run("download_both", url=url, output_dir=out,
-                      video_filter=filt, section_start=start, section_end=end)
+                      video_filter=filt, speed=speed, section_start=start, section_end=end)
         else:
             fmt = "mp3" if self._mp3.isChecked() else "mp4"
             self._run("download", url=url, output_dir=out, fmt=fmt,
-                      video_filter=filt, section_start=start, section_end=end)
+                      video_filter=filt, speed=speed, section_start=start, section_end=end)
 
     def _start_local_file(self) -> None:
         path = self._file.text().strip()
@@ -1757,11 +1786,12 @@ class VidGrabWindow(QMainWindow):
 
         self._set_busy(True)
         filt = _build_filter(self._ehflip, self._evflip)
+        speed = _read_speed(self._espeed)
         start = self._ets.text().strip() or None
         end = self._ete.text().strip() or None
         out = self._eout.text()
         self._run("local_file", input_path=path, output_dir=out,
-                  video_filter=filt, section_start=start, section_end=end)
+                  video_filter=filt, speed=speed, section_start=start, section_end=end)
 
     def _run(self, task: str, **kwargs) -> None:
         self._worker = _Worker(task, translate=self._t, **kwargs)
@@ -1845,6 +1875,62 @@ def _colored_check(text: str, color: str) -> QCheckBox:
         f"border-color: {color}; image: url({check}); }}"
     )
     return cb
+
+
+_SPEED_PRESETS = ["0.5\u00d7", "0.75\u00d7", "1\u00d7", "1.25\u00d7", "1.5\u00d7", "1.75\u00d7", "2\u00d7"]
+
+
+def _add_speed_row(vl: QVBoxLayout) -> tuple[QLabel, QComboBox]:
+    """Add a 'Speed: [presets ▼]' row to a card layout; returns (label, combo)."""
+    row = QHBoxLayout()
+    row.setSpacing(8)
+    lbl = QLabel("Speed:")
+    combo = QComboBox()
+    combo.addItems(_SPEED_PRESETS)
+    combo.setCurrentText("1\u00d7")
+    combo.setCursor(QCursor(_HAND))
+    row.addWidget(lbl)
+    row.addWidget(combo)
+    row.addStretch()
+    vl.addLayout(row)
+    return lbl, combo
+
+
+def _read_speed(combo: QComboBox) -> float | None:
+    """Read the selected preset; returns None when speed is 1.0x (no change)."""
+    text = combo.currentText().rstrip("\u00d7x").strip()
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    return None if value == 1.0 else value
+
+
+class _FitScrollArea(QScrollArea):
+    """QScrollArea whose sizeHint tracks its child, so the default window
+    fits the page; smaller windows gracefully show a scrollbar instead of
+    compressing the cards."""
+
+    def sizeHint(self) -> QSize:
+        hint = super().sizeHint()
+        child = self.widget()
+        if child is not None:
+            frame = 2 * self.frameWidth()
+            return QSize(
+                max(hint.width(), child.sizeHint().width() + frame),
+                max(hint.height(), child.sizeHint().height() + frame),
+            )
+        return hint
+
+
+def _wrap_scroll(page: QWidget) -> QScrollArea:
+    """Wrap a form page so it scrolls instead of collapsing on small windows."""
+    scroll = _FitScrollArea()
+    scroll.setObjectName("page_scroll")
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QFrame.NoFrame)
+    scroll.setWidget(page)
+    return scroll
 
 
 def _build_filter(hflip: QCheckBox, vflip: QCheckBox) -> str | None:

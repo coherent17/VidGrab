@@ -44,6 +44,7 @@ TRANS: dict[str, dict[str, str]] = {
     "MP3 (audio)":     {"en": "MP3 (audio)",     "zh": "MP3 (音訊)"},
     "Start:":          {"en": "Start:",          "zh": "開始:"},
     "End:":            {"en": "End:",            "zh": "結束:"},
+    "Speed:":          {"en": "Speed:",          "zh": "速度:"},
     "Paste":           {"en": "Paste",           "zh": "貼上"},
     "Browse…":         {"en": "Browse…",         "zh": "瀏覽…"},
     "Clear":           {"en": "Clear",           "zh": "清除"},
@@ -232,6 +233,10 @@ TRANS.update({
               "開始 {s} 秒，結束 {e} 秒。",
     },
     "Extracting audio…": {"en": "Extracting audio…", "zh": "正在提取音訊…"},
+    "Speed must be between {lo}x and {hi}x.": {
+        "en": "Speed must be between {lo}x and {hi}x.",
+        "zh": "速度必須介於 {lo}x 與 {hi}x 之間。",
+    },
     "Saved: {name}":     {"en": "Saved: {name}",     "zh": "已儲存: {name}"},
     "Complete":          {"en": "Complete",          "zh": "完成"},
     "Copied: {name}":    {"en": "Copied: {name}",    "zh": "已複製: {name}"},

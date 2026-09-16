@@ -158,6 +158,115 @@ def test_version_is_importable() -> None:
     assert __version__.count(".") == 2
 
 
+# ── speed ────────────────────────────────────────────────────────────────
+
+def test_atempo_chain_single() -> None:
+    assert downloader._atempo_chain(1.5) == ["atempo=1.5"]
+
+
+def test_atempo_chain_fast() -> None:
+    assert downloader._atempo_chain(4.0) == ["atempo=2.0", "atempo=2"]
+
+
+def test_atempo_chain_odd_fast() -> None:
+    assert downloader._atempo_chain(3.0) == ["atempo=2.0", "atempo=1.5"]
+
+
+def test_atempo_chain_slow() -> None:
+    assert downloader._atempo_chain(0.25) == ["atempo=0.5", "atempo=0.5"]
+
+
+def test_validate_speed_normalizes_identity() -> None:
+    assert downloader._validate_speed(None) is None
+    assert downloader._validate_speed(1.0) is None
+    assert downloader._validate_speed(1.75) == 1.75
+
+
+def test_validate_speed_out_of_range_raises() -> None:
+    with pytest.raises(RuntimeError, match="Speed must be between"):
+        downloader._validate_speed(8.0)
+
+
+def test_speed_marker() -> None:
+    assert downloader._speed_marker(None) == ""
+    assert downloader._speed_marker(1.5) == "_1.5x"
+    assert downloader._speed_marker(2.0) == "_2x"
+
+
+def test_process_local_file_speed_builds_ffmpeg_args(tmp_path, monkeypatch) -> None:
+    """Speed on a video re-encodes with setpts + atempo, and tags the name."""
+    calls: list[list[str]] = []
+
+    class Proc:
+        returncode = 0
+        stderr = ""
+
+    def fake_run(cmd, **kw):
+        calls.append(list(cmd))
+        return Proc()
+
+    monkeypatch.setattr(downloader, "find_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(downloader.subprocess, "run", fake_run)
+
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(b"fake")
+    out = downloader.process_local_file(src, tmp_path, speed=2.0)
+    assert out.name == "clip_processed_2x.mp4"
+    assert calls
+    cmd = calls[0]
+    joined = " ".join(str(a) for a in cmd)
+    assert "setpts=(PTS-STARTPTS)/2.0+STARTPTS" in joined
+    assert "atempo=2" in joined and "-af" in cmd
+    assert "-c:v" in cmd and "libx264" in cmd
+
+
+def test_process_local_file_speed_audio_only(tmp_path, monkeypatch) -> None:
+    """Speed on an audio file only applies atempo, no video encode."""
+    calls: list[list[str]] = []
+
+    class Proc:
+        returncode = 0
+        stderr = ""
+
+    def fake_run(cmd, **kw):
+        calls.append(list(cmd))
+        return Proc()
+
+    monkeypatch.setattr(downloader, "find_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(downloader.subprocess, "run", fake_run)
+
+    src = tmp_path / "song.mp3"
+    src.write_bytes(b"fake")
+    out = downloader.process_local_file(src, tmp_path, speed=0.75)
+    assert out.name == "song_processed_0.75x.mp3"
+    cmd = calls[0]
+    assert "-vn" in cmd and "-af" in cmd and "atempo=0.75" in cmd
+    assert "-vf" not in cmd
+
+
+@requires_ffmpeg
+def test_process_local_file_speed_real(tmp_path) -> None:
+    """A 2 s clip at 2.0x comes out ~1 s long."""
+    import json
+    import subprocess as sp
+
+    src = tmp_path / "clip.mp4"
+    _make_video(src, seconds="2", with_audio=True)
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        pytest.skip("ffprobe not installed")
+    out = downloader.process_local_file(src, tmp_path, speed=2.0)
+    assert out.is_file()
+    data = json.loads(
+        sp.run(
+            [ffprobe, "-v", "quiet", "-show_format", "-print_format", "json", str(out)],
+            check=True, capture_output=True, text=True,
+        ).stdout
+    )
+    duration = float(data["format"]["duration"])
+    assert 0.4 < duration < 1.4
+
+
 # ── misc ──────────────────────────────────────────────────────────────────
 
 def test_locate_output_no_double_dot_bug(tmp_path) -> None:

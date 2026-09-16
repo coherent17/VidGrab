@@ -11,6 +11,7 @@ from pathlib import Path
 
 from PySide6.QtCore import (
     QEasingCurve,
+    QProcess,
     QPropertyAnimation,
     QSize,
     Qt,
@@ -47,12 +48,15 @@ from PySide6.QtWidgets import (
 
 from vidgrab import __version__
 from vidgrab.downloader import (
+    _parse_trim,
     default_output_dir,
     download,
     download_both,
     find_ffmpeg,
+    find_ffplay,
     get_app_dir,
     get_bundle_dir,
+    preview_args,
     process_local_file,
 )
 from vidgrab.i18n import LANGUAGES, make_translator
@@ -985,6 +989,7 @@ class _Worker(QThread):
             common = {
                 "video_filter": self._kw.get("video_filter"),
                 "speed": self._kw.get("speed"),
+                "quality": self._kw.get("quality"),
                 "section_start": self._kw.get("section_start"),
                 "section_end": self._kw.get("section_end"),
                 "on_progress": self._cb_progress,
@@ -1002,7 +1007,8 @@ class _Worker(QThread):
                 )
             elif self._task == "local_file":
                 result = process_local_file(
-                    self._kw["input_path"], self._kw["output_dir"], **common,
+                    self._kw["input_path"], self._kw["output_dir"],
+                    **{k: v for k, v in common.items() if k != "quality"},
                 )
             else:
                 raise RuntimeError(f"Unknown task: {self._task}")
@@ -1147,10 +1153,12 @@ class VidGrabWindow(QMainWindow):
         self._internet_online: bool | None = None
         self._worker: _Worker | None = None
         self._card_titles: list[tuple[QLabel, str]] = []
+        self._preview_proc: QProcess | None = None
 
         self.setWindowTitle("VidGrab")
         self.setMinimumSize(920, 680)
         self.resize(1040, 760)
+        self.setAcceptDrops(True)
 
         self._apply_theme()
         self._build_ui()
@@ -1266,8 +1274,8 @@ class VidGrabWindow(QMainWindow):
     def _build_download_form(self) -> QWidget:
         page = QWidget()
         lay = QVBoxLayout(page)
-        lay.setContentsMargins(20, 14, 20, 6)
-        lay.setSpacing(14)
+        lay.setContentsMargins(20, 12, 20, 6)
+        lay.setSpacing(12)
 
         src, src_title, sl = self._card("SOURCE", "source_card", "source")
         self._dl_source_title = src_title
@@ -1293,12 +1301,22 @@ class VidGrabWindow(QMainWindow):
         self._mp4 = _colored_check("MP4 (video)", "#10b981")
         self._mp4.setChecked(True)
         self._mp3 = _colored_check("MP3 (audio)", "#f59e0b")
+        self._mp4.toggled.connect(self._populate_quality)
+        self._mp3.toggled.connect(self._populate_quality)
+        self._quality_lbl = QLabel("Quality:")
+        self._quality = QComboBox()
+        self._quality.setCursor(QCursor(_HAND))
+        self._quality.setMinimumWidth(150)
         fr = QHBoxLayout()
-        fr.setSpacing(18)
+        fr.setSpacing(12)
         fr.addWidget(self._mp4)
         fr.addWidget(self._mp3)
+        fr.addSpacing(14)
+        fr.addWidget(self._quality_lbl)
+        fr.addWidget(self._quality)
         fr.addStretch()
         fl.addLayout(fr)
+        self._populate_quality()
         lay.addWidget(fmt)
 
         row2 = QHBoxLayout()
@@ -1367,8 +1385,8 @@ class VidGrabWindow(QMainWindow):
     def _build_edit_form(self) -> QWidget:
         page = QWidget()
         lay = QVBoxLayout(page)
-        lay.setContentsMargins(20, 14, 20, 6)
-        lay.setSpacing(14)
+        lay.setContentsMargins(20, 12, 20, 6)
+        lay.setSpacing(12)
 
         src, src_title, sl = self._card("SOURCE", "source_card", "source")
         self._ed_source_title = src_title
@@ -1418,6 +1436,12 @@ class VidGrabWindow(QMainWindow):
         tr.addSpacing(10)
         tr.addWidget(self._ete_lbl)
         tr.addWidget(self._ete)
+        pr = QPushButton("\u25b6 Preview")
+        pr.setObjectName("secondary")
+        pr.setCursor(QCursor(_HAND))
+        pr.clicked.connect(self._preview)
+        self._ed_preview = pr
+        tr.addWidget(pr)
         tr.addStretch()
         tcv.addLayout(tr)
         row2.addWidget(trim)
@@ -1629,6 +1653,8 @@ class VidGrabWindow(QMainWindow):
         self._dl_browse.setText(t("Browse\u2026"))
         self._dl_paste.setToolTip(t("tooltip_paste"))
         self._dl_browse.setToolTip(t("tooltip_browse_out"))
+        self._quality_lbl.setText(t("Quality:"))
+        self._populate_quality()
         # edit page
         self._ed_source_title.setText(t("SOURCE"))
         self._ed_flip_title.setText(t("FLIP"))
@@ -1640,6 +1666,7 @@ class VidGrabWindow(QMainWindow):
         self._evflip.setText(t("Vertical"))
         self._ets_lbl.setText(t("Start:"))
         self._ete_lbl.setText(t("End:"))
+        self._ed_preview.setText(t("\u25b6 Preview"))
         self._ed_browse.setText(t("Browse\u2026"))
         self._ed_browse2.setText(t("Browse\u2026"))
         self._ed_browse.setToolTip(t("tooltip_browse_file"))
@@ -1829,17 +1856,44 @@ class VidGrabWindow(QMainWindow):
         self._set_busy(True)
         filt = _build_filter(self._hflip, self._vflip)
         speed = _read_speed(self._speed)
+        quality = self._quality.currentData()
         start = self._ts.text().strip() or None
         end = self._te.text().strip() or None
         out = self._out.text()
 
         if self._mp4.isChecked() and self._mp3.isChecked():
             self._run("download_both", url=url, output_dir=out,
-                      video_filter=filt, speed=speed, section_start=start, section_end=end)
+                      video_filter=filt, speed=speed, quality=quality,
+                      section_start=start, section_end=end)
         else:
             fmt = "mp3" if self._mp3.isChecked() else "mp4"
             self._run("download", url=url, output_dir=out, fmt=fmt,
-                      video_filter=filt, speed=speed, section_start=start, section_end=end)
+                      video_filter=filt, speed=speed, quality=quality,
+                      section_start=start, section_end=end)
+
+    def _populate_quality(self) -> None:
+        """Fill the Quality combo from the checked format (video vs audio)."""
+        video = self._mp4.isChecked()
+        prev = self._quality.currentData()
+        self._quality.blockSignals(True)
+        self._quality.clear()
+        if video:
+            self._quality.addItem(self._t("Best available"), None)
+            for label, token in (
+                ("4K (2160p)", "2160p"),
+                ("1440p (QHD)", "1440p"),
+                ("1080p (FHD)", "1080p"),
+                ("720p (HD)", "720p"),
+                ("480p (SD)", "480p"),
+                ("360p", "360p"),
+            ):
+                self._quality.addItem(label, token)
+        else:
+            for bitrate in ("320", "256", "192", "128"):
+                self._quality.addItem(f"{bitrate} kbps", bitrate)
+        idx = self._quality.findData(prev)
+        self._quality.setCurrentIndex(idx if idx >= 0 else (2 if not video else 0))
+        self._quality.blockSignals(False)
 
     def _start_local_file(self) -> None:
         path = self._file.text().strip()
@@ -1871,6 +1925,63 @@ class VidGrabWindow(QMainWindow):
         out = self._eout.text()
         self._run("local_file", input_path=path, output_dir=out,
                   video_filter=filt, speed=speed, section_start=start, section_end=end)
+
+    # ── preview ────────────────────────────────────────────────────────
+
+    def _preview(self) -> None:
+        """Play a live scratch-render of the current trim/flip/speed settings."""
+        if self._busy:
+            return
+        path = self._file.text().strip()
+        if not path or not Path(path).is_file():
+            QMessageBox.warning(self, self._t("No file"), self._t("Please select a local media file."))
+            return
+        ffplay = find_ffplay()
+        if ffplay is None:
+            QMessageBox.information(
+                self,
+                self._t("ffplay not found"),
+                self._t(
+                    "Install ffmpeg (which includes ffplay) or rebuild "
+                    "with an embedded copy to preview clips."
+                ),
+            )
+            return
+        filt = _build_filter(self._ehflip, self._evflip)
+        speed = _read_speed(self._espeed)
+        try:
+            start, end = _parse_trim(
+                self._ets.text().strip() or None,
+                self._ete.text().strip() or None,
+                translate=self._t,
+            )
+        except RuntimeError as exc:
+            QMessageBox.warning(self, self._t("Preview"), str(exc))
+            return
+        if self._preview_proc is not None:
+            self._preview_proc.kill()
+            self._preview_proc.waitForFinished(1000)
+        args = [ffplay, *preview_args(path, start, end, filt, speed)]
+        self._append_log(" ".join(args))
+        self._preview_proc = QProcess(self)
+        self._preview_proc.setProcessChannelMode(QProcess.SeparateChannels)
+        self._preview_proc.start(args[0], args[1:])
+
+    # ── drag & drop ────────────────────────────────────────────────────
+
+    def dragEnterEvent(self, event) -> None:
+        md = event.mimeData()
+        if md.hasUrls() and any(u.isLocalFile() for u in md.urls()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event) -> None:
+        for url in event.mimeData().urls():
+            if url.isLocalFile():
+                self._file.setText(url.toLocalFile())
+                self._sidebar._buttons[1].click()
+                break
 
     def _run(self, task: str, **kwargs) -> None:
         self._worker = _Worker(task, translate=self._t, **kwargs)

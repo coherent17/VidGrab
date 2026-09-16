@@ -267,6 +267,56 @@ def test_process_local_file_speed_real(tmp_path) -> None:
     assert 0.4 < duration < 1.4
 
 
+# ── quality selection ───────────────────────────────────────────────────
+
+def test_ytdl_options_video_quality_best(tmp_path) -> None:
+    opts = downloader._ytdl_options("https://x", tmp_path, "mp4", ffmpeg=None)
+    assert opts["format"] == "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+
+
+def test_ytdl_options_video_quality_1080p(tmp_path) -> None:
+    opts = downloader._ytdl_options("https://x", tmp_path, "mp4",
+                                    ffmpeg=None, quality="1080p")
+    assert "[height<=1080]" in opts["format"]
+
+
+def test_ytdl_options_audio_quality_bitrate(tmp_path) -> None:
+    opts = downloader._ytdl_options("https://x", tmp_path, "mp3",
+                                    ffmpeg=None, quality="320")
+    pp = opts["postprocessors"][0]
+    assert pp["preferredcodec"] == "mp3" and pp["preferredquality"] == "320"
+
+
+def test_ytdl_options_audio_default_bitrate(tmp_path) -> None:
+    opts = downloader._ytdl_options("https://x", tmp_path, "mp3", ffmpeg=None)
+    assert opts["postprocessors"][0]["preferredquality"] == "192"
+
+
+# ── preview args ────────────────────────────────────────────────────────
+
+def test_preview_args_plain() -> None:
+    args = downloader.preview_args("clip.mp4", 0.0, float("inf"), None, None)
+    assert args == ["-autoexit", "-t", "6.0", "clip.mp4"]
+
+
+def test_preview_args_filters() -> None:
+    args = downloader.preview_args("clip.mp4", 5.0, 20.0, "hflip", 2.0)
+    assert args[0:6] == ["-autoexit", "-ss", "5.0", "-t", "6.0", "-vf"]
+    joined = " ".join(args)
+    assert "hflip,setpts=(PTS-STARTPTS)/2.0+STARTPTS" in joined
+    assert "-af" in args and "atempo=2" in joined
+
+
+def test_find_ffplay_falls_back_to_path(monkeypatch) -> None:
+    class FakeFFmpeg:
+        parent = None
+        is_file = lambda self: False
+
+    monkeypatch.setattr(downloader, "find_ffmpeg", lambda: None)
+    monkeypatch.setattr(downloader.shutil, "which", lambda name: "/usr/bin/ffplay")
+    assert downloader.find_ffplay() == "/usr/bin/ffplay"
+
+
 # ── misc ──────────────────────────────────────────────────────────────────
 
 def test_locate_output_no_double_dot_bug(tmp_path) -> None:

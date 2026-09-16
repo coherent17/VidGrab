@@ -78,6 +78,16 @@ def find_ffmpeg() -> str | None:
     return shutil.which(ffmpeg_cmd)
 
 
+def find_ffplay() -> str | None:
+    """Locate ffplay next to ffmpeg (same folder), then PATH."""
+    ffmpeg = find_ffmpeg()
+    if ffmpeg:
+        peer = Path(ffmpeg).parent / ("ffplay.exe" if sys.platform == "win32" else "ffplay")
+        if peer.is_file():
+            return str(peer)
+    return shutil.which("ffplay.exe" if sys.platform == "win32" else "ffplay")
+
+
 def _ensure_ffmpeg_on_path(ffmpeg: str) -> None:
     """Put the bundled ffmpeg folder on PATH so yt-dlp can find its tools."""
     _ffmpeg_dir = os.path.dirname(ffmpeg)
@@ -86,6 +96,37 @@ def _ensure_ffmpeg_on_path(ffmpeg: str) -> None:
 
 
 # ── output locating ───────────────────────────────────────────────────────
+
+def preview_args(
+    path: str | Path,
+    start: float,
+    end: float,
+    video_filter: str | None,
+    speed: float | None,
+    limit: float = 6.0,
+) -> list[str]:
+    """ffplay argv that previews the trim with speed/flip applied live.
+
+    Runs without encoding: ffplay decodes and shows the first *limit*
+    seconds of the selected section through the same filters used by
+    `_trim`, so the preview matches the final output."""
+    args = ["-autoexit"]
+    if start:
+        args += ["-ss", str(start)]
+    length = min(limit, (end - start) if end != float("inf") else limit)
+    args += ["-t", str(max(length, 0.01))]
+    vf_parts = []
+    if video_filter:
+        vf_parts.append(video_filter)
+    if speed is not None:
+        vf_parts.append(f"setpts=(PTS-STARTPTS)/{speed}+STARTPTS")
+    if vf_parts:
+        args += ["-vf", ",".join(vf_parts)]
+    if speed is not None:
+        args += ["-af", ",".join(_atempo_chain(speed))]
+    args.append(str(path))
+    return args
+
 
 def _atempo_chain(speed: float) -> list[str]:
     """ffmpeg filters that change audio tempo to *speed* (0.5x..2.0x each)."""
@@ -190,6 +231,7 @@ def _trim(
     end: float,
     video_filter: str | None = None,
     speed: float | None = None,
+    audio_bitrate: str | None = None,
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
     *,
@@ -210,7 +252,7 @@ def _trim(
     else:
         is_audio_out = dst.suffix.lower() in (".mp3", ".aac", ".m4a")
         if is_audio_out:
-            args += ["-vn", "-c:a", "libmp3lame", "-b:a", DEFAULT_MP3_BITRATE]
+            args += ["-vn", "-c:a", "libmp3lame", "-b:a", audio_bitrate or DEFAULT_MP3_BITRATE]
             if speed is not None:
                 args += ["-af", ",".join(_atempo_chain(speed))]
         else:
@@ -269,6 +311,7 @@ def derive_mp3(
     source: str | Path,
     output_dir: str | Path,
     *,
+    audio_bitrate: str | None = None,
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
     translate: TranslateFn | None = None,
@@ -293,7 +336,7 @@ def derive_mp3(
     _run_ffmpeg(
         [
             ffmpeg, "-y", "-i", str(src), "-vn", "-map", "0:a:0",
-            "-c:a", "libmp3lame", "-b:a", DEFAULT_MP3_BITRATE, str(out),
+            "-c:a", "libmp3lame", "-b:a", audio_bitrate or DEFAULT_MP3_BITRATE, str(out),
         ],
         on_log=on_log,
         error_prefix=tr("ffmpeg failed to extract MP3 audio"),
@@ -394,6 +437,7 @@ def _ytdl_options(
     suffix: str = "",
     *,
     ffmpeg: str | None,
+    quality: str | None = None,
     download_sections: str | None = None,
     progress_hook: Callable[[dict], None] | None = None,
 ) -> dict:
@@ -420,13 +464,26 @@ def _ytdl_options(
                 {
                     "key": "FFmpegExtractAudio",
                     "preferredcodec": "mp3",
-                    "preferredquality": DEFAULT_MP3_BITRATE,
+                    "preferredquality": quality or DEFAULT_MP3_BITRATE,
                 }
             ],
         }
+    height = None
+    if quality:
+        try:
+            height = int(quality.rstrip("p"))
+        except ValueError:
+            height = None
+    if height:
+        fmt_sel = (
+            f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/"
+            f"best[height<={height}][ext=mp4]/best[height<={height}]"
+        )
+    else:
+        fmt_sel = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
     return {
         **common,
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "format": fmt_sel,
         "merge_output_format": "mp4",
     }
 
@@ -438,6 +495,7 @@ def download(
     *,
     video_filter: str | None = None,
     speed: float | None = None,
+    quality: str | None = None,
     section_start: str | None = None,
     section_end: str | None = None,
     on_progress: ProgressCallback | None = None,
@@ -521,6 +579,7 @@ def download(
             fmt,
             suffix,
             ffmpeg=ffmpeg,
+            quality=quality,
             download_sections=sections if use_sections else None,
             progress_hook=progress_hook,
         )
@@ -585,6 +644,7 @@ def download(
         trim_end,
         video_filter=video_filter if fmt == "mp4" else None,
         speed=speed,
+        audio_bitrate=quality if fmt == "mp3" else None,
         on_progress=on_progress,
         on_log=on_log,
         translate=translate,
@@ -604,6 +664,7 @@ def download_both(
     *,
     video_filter: str | None = None,
     speed: float | None = None,
+    quality: str | None = None,
     section_start: str | None = None,
     section_end: str | None = None,
     on_progress: ProgressCallback | None = None,
@@ -624,6 +685,7 @@ def download_both(
         "mp4",
         video_filter=video_filter,
         speed=speed,
+        quality=quality,
         section_start=section_start,
         section_end=section_end,
         on_progress=on_progress,

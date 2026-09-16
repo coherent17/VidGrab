@@ -37,9 +37,30 @@ jobs:
           mkdir -p ffmpeg/linux
           cp ffmpeg-*-amd64-static/ffmpeg  ffmpeg/linux/ffmpeg
           cp ffmpeg-*-amd64-static/ffprobe ffmpeg/linux/ffprobe
-          cp ffmpeg-*-amd64-static/ffplay  ffmpeg/linux/ffplay
-          chmod +x ffmpeg/linux/ffmpeg ffmpeg/linux/ffprobe ffmpeg/linux/ffplay
+          chmod +x ffmpeg/linux/ffmpeg ffmpeg/linux/ffprobe
           rm -f ffmpeg-release-amd64-static.tar.xz
+
+      # johnvansickle's static builds no longer ship ffplay (since 7.0.x),
+      # so pull that single binary from BtbN's static GPL builds instead.
+      - name: Download static ffplay
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --connect-timeout 20 \
+            https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz \
+            -o ffmpeg-master-latest-linux64-gpl.tar.xz
+          head -c 6 ffmpeg-master-latest-linux64-gpl.tar.xz | grep -q $'\xfd7zXZ\x00' || {
+            echo "ERROR: downloaded file is not a valid XZ archive"
+            file ffmpeg-master-latest-linux64-gpl.tar.xz || true
+            exit 1
+          }
+          tar -xJf ffmpeg-master-latest-linux64-gpl.tar.xz
+          FFPLAY_SRC=$(find ffmpeg-master-latest-linux64-gpl -type f -name ffplay | head -1)
+          if [ -z "$FFPLAY_SRC" ]; then
+            echo "ERROR: ffplay not found in BtbN archive"
+            exit 1
+          fi
+          cp "$FFPLAY_SRC" ffmpeg/linux/ffplay
+          chmod +x ffmpeg/linux/ffplay
+          rm -f ffmpeg-master-latest-linux64-gpl.tar.xz
 
       - name: Generate icon
         run: .venv/bin/python scripts/generate_icon.py

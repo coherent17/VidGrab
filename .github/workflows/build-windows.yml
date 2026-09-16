@@ -21,10 +21,13 @@ jobs:
           Expand-Archive -Path "ffmpeg.zip" -DestinationPath "ffmpeg-unpacked" -Force
           $ffmpeg = Get-ChildItem -Recurse "ffmpeg-unpacked" -Filter "ffmpeg.exe" | Select-Object -First 1
           $ffprobe = Get-ChildItem -Recurse "ffmpeg-unpacked" -Filter "ffprobe.exe" | Select-Object -First 1
+          $ffplay = Get-ChildItem -Recurse "ffmpeg-unpacked" -Filter "ffplay.exe" | Select-Object -First 1
           if (-not $ffmpeg -or -not $ffprobe) { throw "ffmpeg.exe or ffprobe.exe not found in archive" }
+          if (-not $ffplay) { throw "ffplay.exe not found in archive" }
           New-Item -ItemType Directory -Force "ffmpeg\win" | Out-Null
           Copy-Item $ffmpeg.FullName "ffmpeg\win\ffmpeg.exe"
           Copy-Item $ffprobe.FullName "ffmpeg\win\ffprobe.exe"
+          Copy-Item $ffplay.FullName "ffmpeg\win\ffplay.exe"
 
       - name: Install Python deps
         run: |

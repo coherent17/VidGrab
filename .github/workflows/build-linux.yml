@@ -37,7 +37,8 @@ jobs:
           mkdir -p ffmpeg/linux
           cp ffmpeg-*-amd64-static/ffmpeg  ffmpeg/linux/ffmpeg
           cp ffmpeg-*-amd64-static/ffprobe ffmpeg/linux/ffprobe
-          chmod +x ffmpeg/linux/ffmpeg ffmpeg/linux/ffprobe
+          cp ffmpeg-*-amd64-static/ffplay  ffmpeg/linux/ffplay
+          chmod +x ffmpeg/linux/ffmpeg ffmpeg/linux/ffprobe ffmpeg/linux/ffplay
           rm -f ffmpeg-release-amd64-static.tar.xz
 
       - name: Generate icon

@@ -48,15 +48,22 @@ jobs:
           body: |
             Auto-built from tag ${{ github.ref_name }}.
 
+            ## What's new in 2.1
+            - **Speed control** — dedicated slider changes playback speed from 0.25× to 4× on downloads and local files (`setpts` + `atempo`, zero artifacts)
+            - **Quality picker** — choose resolution (up to 4K) for MP4 or bitrate (128–320 kbps) for MP3
+            - **Live preview** — ▶ Preview on the Process page plays your trim/flip/speed settings through ffplay before you commit
+            - **Drag & drop** — drop a local file anywhere to load it into Process
+            - **繁体中文 (Traditional Chinese)** localization for the entire UI
+
             ## Downloads
-            - `VidGrab.exe` — single self-contained Windows executable (ffmpeg embedded)
+            - `VidGrab.exe` — single self-contained Windows executable (ffmpeg + ffplay embedded)
             - `VidGrab.zip` — same exe, zipped for transport
-            - `VidGrab-linux` — self-contained Linux binary (ffmpeg embedded, x86_64)
+            - `VidGrab-linux` — self-contained Linux binary (ffmpeg + ffplay embedded, x86_64)
             - `VidGrab-linux.tar.xz` — same binary, compressed
 
             ## What's inside
-            - YouTube downloader (MP4 / MP3) via yt-dlp
-            - Local file mode: flip & trim MP4/MP3/MKV straight from disk
+            - YouTube downloader (MP4 / MP3 / both) via yt-dlp
+            - Local file mode: flip, trim & speed MP4/MP3/MKV straight from disk
             - PySide6 (Qt) dark/light sidebar GUI, internet status, progress + log
           fail_on_unmatched_files: false
           files: |

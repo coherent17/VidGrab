@@ -23,10 +23,10 @@ for _name in ("icon.ico", "icon.png", "NotoSansTC-Regular.otf"):
 
 # --- ffmpeg: platform-aware, with legacy fallback ------------------------
 if sys.platform == "win32":
-    _ffmpeg_names = ("ffmpeg.exe", "ffprobe.exe")
+    _ffmpeg_names = ("ffmpeg.exe", "ffprobe.exe", "ffplay.exe")
     _platform_subdir = "win"
 else:
-    _ffmpeg_names = ("ffmpeg", "ffprobe")
+    _ffmpeg_names = ("ffmpeg", "ffprobe", "ffplay")
     _platform_subdir = "linux"
 
 for _name in _ffmpeg_names:

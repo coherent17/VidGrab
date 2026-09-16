@@ -49,6 +49,7 @@ from vidgrab.downloader import (
     download_both,
     find_ffmpeg,
     get_app_dir,
+    get_bundle_dir,
     process_local_file,
 )
 from vidgrab.i18n import LANGUAGES, make_translator
@@ -61,7 +62,9 @@ from vidgrab.network import ConnectionStatus, check_internet
 
 DARK_QSS = """
 * {
-    font-family: "Segoe UI", "Noto Sans", "Ubuntu", "Cantarell", sans-serif;
+    font-family: "Segoe UI", "Noto Sans", "Noto Sans CJK TC", "Noto Sans TC",
+        "Source Han Sans TC", "PingFang TC", "Microsoft JhengHei",
+        "WenQuanYi Zen Hei", "Droid Sans Fallback", "Ubuntu", "Cantarell", sans-serif;
 }
 QMainWindow {
     background-color: #0b0f14;
@@ -142,28 +145,11 @@ QGroupBox {
     background-color: #111827;
     border: 1px solid #1f2839;
     border-radius: 12px;
-    margin-top: 16px;
-    padding: 16px 14px 14px 14px;
+    padding: 12px 14px;
     font-size: 12px;
     font-weight: 600;
     color: #8b93ab;
 }
-QGroupBox::title {
-    subcontrol-origin: margin;
-    subcontrol-position: top left;
-    left: 14px;
-    top: -7px;
-    background-color: #0b0f14;
-    border-radius: 4px;
-    padding: 1px 8px;
-    letter-spacing: 1px;
-}
-QGroupBox#source_card::title   { color: #f43f5e; }
-QGroupBox#format_card::title  { color: #10b981; }
-QGroupBox#flip_card::title    { color: #06b6d4; }
-QGroupBox#trim_card::title    { color: #8b5cf6; }
-QGroupBox#save_card::title    { color: #4f7cff; }
-QGroupBox#settings_card::title { color: #8b5cf6; }
 
 /* ── inputs ── */
 QLineEdit {
@@ -385,7 +371,9 @@ QToolTip {
 
 LIGHT_QSS = """
 * {
-    font-family: "Segoe UI", "Noto Sans", "Ubuntu", "Cantarell", sans-serif;
+    font-family: "Segoe UI", "Noto Sans", "Noto Sans CJK TC", "Noto Sans TC",
+        "Source Han Sans TC", "PingFang TC", "Microsoft JhengHei",
+        "WenQuanYi Zen Hei", "Droid Sans Fallback", "Ubuntu", "Cantarell", sans-serif;
 }
 QMainWindow {
     background-color: #eef1f6;
@@ -465,28 +453,11 @@ QGroupBox {
     background-color: #f8fafc;
     border: 1px solid #d3daea;
     border-radius: 12px;
-    margin-top: 16px;
-    padding: 16px 14px 14px 14px;
+    padding: 12px 14px;
     font-size: 12px;
     font-weight: 600;
     color: #64748b;
 }
-QGroupBox::title {
-    subcontrol-origin: margin;
-    subcontrol-position: top left;
-    left: 14px;
-    top: -7px;
-    background-color: #eef1f6;
-    border-radius: 4px;
-    padding: 1px 8px;
-    letter-spacing: 1px;
-}
-QGroupBox#source_card::title   { color: #e11d48; }
-QGroupBox#format_card::title  { color: #059669; }
-QGroupBox#flip_card::title    { color: #0891b2; }
-QGroupBox#trim_card::title    { color: #7c3aed; }
-QGroupBox#save_card::title    { color: #4f7cff; }
-QGroupBox#settings_card::title { color: #7c3aed; }
 
 /* ── inputs ── */
 QLineEdit {
@@ -704,6 +675,17 @@ QToolTip {
 """
 
 _THEMES: dict[str, str] = {"dark": DARK_QSS, "light": LIGHT_QSS}
+
+_CARD_ACCENTS: dict[str, dict[str, str]] = {
+    "dark": {
+        "source": "#f43f5e", "format": "#10b981", "flip": "#06b6d4",
+        "trim": "#8b5cf6", "save": "#4f7cff", "settings": "#8b5cf6",
+    },
+    "light": {
+        "source": "#e11d48", "format": "#059669", "flip": "#0891b2",
+        "trim": "#7c3aed", "save": "#4f7cff", "settings": "#7c3aed",
+    },
+}
 
 # ── config ─────────────────────────────────────────────────────────────────
 
@@ -1011,6 +993,15 @@ class _Sidebar(QWidget):
             btn.setIcon(_icon(kind, color, 18))
             btn.setIconSize(QSize(18, 18))
             btn.setText(f"  {t(key)}")
+            btn.setToolTip(
+                t(
+                    {
+                        "download": "tooltip_page_download",
+                        "scissors": "tooltip_page_edit",
+                        "gear": "tooltip_page_settings",
+                    }[kind]
+                )
+            )
 
     def select(self, idx: int) -> None:
         self._buttons[idx].setChecked(True)
@@ -1057,6 +1048,7 @@ class VidGrabWindow(QMainWindow):
         self._busy = False
         self._internet_online: bool | None = None
         self._worker: _Worker | None = None
+        self._card_titles: list[tuple[QLabel, str]] = []
 
         self.setWindowTitle("VidGrab")
         self.setMinimumSize(920, 680)
@@ -1151,16 +1143,36 @@ class VidGrabWindow(QMainWindow):
 
     # ── download form ──────────────────────────────────────────────────
 
+    def _card(self, text: str, objname: str, kind: str) -> tuple[QGroupBox, QLabel, QVBoxLayout]:
+        """Create a card (QGroupBox) with an accent header label + content layout.
+
+        Returns (groupbox, title_label, content_vbox)."""
+        g = QGroupBox()
+        g.setObjectName(objname)
+        vl = QVBoxLayout(g)
+        vl.setContentsMargins(14, 10, 14, 12)
+        vl.setSpacing(8)
+        t = QLabel(text)
+        self._style_card_title(t, kind)
+        vl.addWidget(t)
+        self._card_titles.append((t, kind))
+        return g, t, vl
+
+    def _style_card_title(self, label: QLabel, kind: str) -> None:
+        accent = _CARD_ACCENTS[self._theme][kind]
+        label.setStyleSheet(
+            f"color:{accent}; background-color:transparent; font-size:11px; "
+            "font-weight:700; letter-spacing:1px; margin:0; padding:0;"
+        )
+
     def _build_download_form(self) -> QWidget:
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(20, 14, 20, 6)
         lay.setSpacing(14)
 
-        src = QGroupBox("SOURCE")
-        src.setObjectName("source_card")
-        self._dl_source = src
-        sl = QVBoxLayout(src)
+        src, src_title, sl = self._card("SOURCE", "source_card", "source")
+        self._dl_source_title = src_title
         row = QHBoxLayout()
         self._url = QLineEdit()
         self._url.setPlaceholderText("Paste a YouTube link\u2026")
@@ -1178,10 +1190,8 @@ class VidGrabWindow(QMainWindow):
         lay.addWidget(src)
         lay.addStretch(1)
 
-        fmt = QGroupBox("FORMAT")
-        fmt.setObjectName("format_card")
-        self._dl_format = fmt
-        fl = QHBoxLayout(fmt)
+        fmt, fmt_title, fl = self._card("FORMAT", "format_card", "format")
+        self._dl_format_title = fmt_title
         self._mp4 = _colored_check("MP4 (video)", "#10b981")
         self._mp4.setChecked(True)
         self._mp3 = _colored_check("MP3 (audio)", "#f59e0b")
@@ -1191,20 +1201,18 @@ class VidGrabWindow(QMainWindow):
         lay.addWidget(fmt)
 
         row2 = QHBoxLayout()
-        flip = QGroupBox("FLIP")
-        flip.setObjectName("flip_card")
-        self._dl_flip = flip
-        vl = QVBoxLayout(flip)
+        flip, flip_title, vl = self._card("FLIP", "flip_card", "flip")
+        self._dl_flip_title = flip_title
         self._hflip = QCheckBox("Horizontal")
         self._vflip = QCheckBox("Vertical")
         vl.addWidget(self._hflip)
         vl.addWidget(self._vflip)
         row2.addWidget(flip)
 
-        trim = QGroupBox("TRIM")
-        trim.setObjectName("trim_card")
-        self._dl_trim = trim
-        tl = QFormLayout(trim)
+        trim, trim_title, tcv = self._card("TRIM", "trim_card", "trim")
+        self._dl_trim_title = trim_title
+        tl = QFormLayout()
+        tl.setSpacing(8)
         self._ts = QLineEdit()
         self._ts.setPlaceholderText("0:00")
         self._ts.setMaximumWidth(110)
@@ -1215,14 +1223,13 @@ class VidGrabWindow(QMainWindow):
         self._te_lbl = QLabel("End:")
         tl.addRow(self._ts_lbl, self._ts)
         tl.addRow(self._te_lbl, self._te)
+        tcv.addLayout(tl)
         row2.addWidget(trim)
         lay.addLayout(row2)
         lay.addStretch(1)
 
-        save = QGroupBox("SAVE TO")
-        save.setObjectName("save_card")
-        self._dl_save = save
-        svl = QHBoxLayout(save)
+        save, save_title, svl = self._card("SAVE TO", "save_card", "save")
+        self._dl_save_title = save_title
         self._out = QLineEdit(str(default_output_dir()))
         self._out.setClearButtonEnabled(True)
         svl.addWidget(self._out, stretch=1)
@@ -1244,10 +1251,8 @@ class VidGrabWindow(QMainWindow):
         lay.setContentsMargins(20, 14, 20, 6)
         lay.setSpacing(14)
 
-        src = QGroupBox("SOURCE")
-        src.setObjectName("source_card")
-        self._ed_source = src
-        sl = QVBoxLayout(src)
+        src, src_title, sl = self._card("SOURCE", "source_card", "source")
+        self._ed_source_title = src_title
         row = QHBoxLayout()
         self._file = QLineEdit()
         self._file.setPlaceholderText("Choose a local video or audio file\u2026")
@@ -1265,20 +1270,18 @@ class VidGrabWindow(QMainWindow):
         lay.addStretch(1)
 
         row2 = QHBoxLayout()
-        flip = QGroupBox("FLIP")
-        flip.setObjectName("flip_card")
-        self._ed_flip = flip
-        vl = QVBoxLayout(flip)
+        flip, flip_title, vl = self._card("FLIP", "flip_card", "flip")
+        self._ed_flip_title = flip_title
         self._ehflip = QCheckBox("Horizontal")
         self._evflip = QCheckBox("Vertical")
         vl.addWidget(self._ehflip)
         vl.addWidget(self._evflip)
         row2.addWidget(flip)
 
-        trim = QGroupBox("TRIM")
-        trim.setObjectName("trim_card")
-        self._ed_trim = trim
-        tl = QFormLayout(trim)
+        trim, trim_title, tcv = self._card("TRIM", "trim_card", "trim")
+        self._ed_trim_title = trim_title
+        tl = QFormLayout()
+        tl.setSpacing(8)
         self._ets = QLineEdit()
         self._ets.setPlaceholderText("0:00")
         self._ets.setMaximumWidth(110)
@@ -1289,14 +1292,13 @@ class VidGrabWindow(QMainWindow):
         self._ete_lbl = QLabel("End:")
         tl.addRow(self._ets_lbl, self._ets)
         tl.addRow(self._ete_lbl, self._ete)
+        tcv.addLayout(tl)
         row2.addWidget(trim)
         lay.addLayout(row2)
         lay.addStretch(1)
 
-        save = QGroupBox("SAVE TO")
-        save.setObjectName("save_card")
-        self._ed_save = save
-        svl = QHBoxLayout(save)
+        save, save_title, svl = self._card("SAVE TO", "save_card", "save")
+        self._ed_save_title = save_title
         self._eout = QLineEdit(str(default_output_dir()))
         self._eout.setClearButtonEnabled(True)
         svl.addWidget(self._eout, stretch=1)
@@ -1318,10 +1320,10 @@ class VidGrabWindow(QMainWindow):
         lay.setContentsMargins(20, 14, 20, 6)
         lay.setSpacing(12)
 
-        g1 = QGroupBox("APPEARANCE")
-        g1.setObjectName("settings_card")
-        self._settings_card = g1
-        fl = QFormLayout(g1)
+        g1, a_title, fl = self._card("APPEARANCE", "settings_card", "settings")
+        self._settings_title = a_title
+        afl = QFormLayout()
+        afl.setSpacing(8)
         self._theme_combo = QComboBox()
         self._theme_combo.addItems(["Dark", "Light"])
         self._theme_combo.setCurrentText(self._theme.capitalize())
@@ -1339,14 +1341,13 @@ class VidGrabWindow(QMainWindow):
         self._lang_combo.currentIndexChanged.connect(self._on_lang_change)
         self._theme_lbl = QLabel("Theme:")
         self._lang_lbl = QLabel("Language:")
-        fl.addRow(self._theme_lbl, self._theme_combo)
-        fl.addRow(self._lang_lbl, self._lang_combo)
+        afl.addRow(self._theme_lbl, self._theme_combo)
+        afl.addRow(self._lang_lbl, self._lang_combo)
+        fl.addLayout(afl)
         lay.addWidget(g1)
 
-        g2 = QGroupBox("ABOUT")
-        g2.setObjectName("settings_card")
-        self._about_card = g2
-        al = QVBoxLayout(g2)
+        g2, b_title, al = self._card("ABOUT", "settings_card", "settings")
+        self._about_title = b_title
         self._about_lbl = QLabel()
         self._about_lbl.setWordWrap(True)
         self._about_lbl.setTextFormat(Qt.RichText)
@@ -1433,6 +1434,8 @@ class VidGrabWindow(QMainWindow):
         check = _checkmark_path()
         qss = _THEMES[self._theme]
         self.setStyleSheet(qss.replace("@CHECK@", check))
+        for label, kind in self._card_titles:
+            self._style_card_title(label, kind)
 
     def _toggle_theme(self) -> None:
         self._set_theme("light" if self._theme == "dark" else "dark")
@@ -1464,12 +1467,18 @@ class VidGrabWindow(QMainWindow):
         self._theme_btn.setText(
             t("\u263e Dark") if self._theme == "light" else t("\u2600 Light")
         )
+        self._theme_btn.setToolTip(t("tooltip_switch_theme"))
+        self._action.setToolTip(
+            t("tooltip_action_download")
+            if self._stack.currentIndex() == 0
+            else t("tooltip_action_edit")
+        )
         # download page
-        self._dl_source.setTitle(t("SOURCE"))
-        self._dl_format.setTitle(t("FORMAT"))
-        self._dl_flip.setTitle(t("FLIP"))
-        self._dl_trim.setTitle(t("TRIM"))
-        self._dl_save.setTitle(t("SAVE TO"))
+        self._dl_source_title.setText(t("SOURCE"))
+        self._dl_format_title.setText(t("FORMAT"))
+        self._dl_flip_title.setText(t("FLIP"))
+        self._dl_trim_title.setText(t("TRIM"))
+        self._dl_save_title.setText(t("SAVE TO"))
         self._url.setPlaceholderText(t("Paste a YouTube link\u2026"))
         self._hflip.setText(t("Horizontal"))
         self._vflip.setText(t("Vertical"))
@@ -1479,11 +1488,13 @@ class VidGrabWindow(QMainWindow):
         self._te_lbl.setText(t("End:"))
         self._dl_paste.setText(t("Paste"))
         self._dl_browse.setText(t("Browse\u2026"))
+        self._dl_paste.setToolTip(t("tooltip_paste"))
+        self._dl_browse.setToolTip(t("tooltip_browse_out"))
         # edit page
-        self._ed_source.setTitle(t("SOURCE"))
-        self._ed_flip.setTitle(t("FLIP"))
-        self._ed_trim.setTitle(t("TRIM"))
-        self._ed_save.setTitle(t("SAVE TO"))
+        self._ed_source_title.setText(t("SOURCE"))
+        self._ed_flip_title.setText(t("FLIP"))
+        self._ed_trim_title.setText(t("TRIM"))
+        self._ed_save_title.setText(t("SAVE TO"))
         self._file.setPlaceholderText(t("Choose a local video or audio file\u2026"))
         self._ehflip.setText(t("Horizontal"))
         self._evflip.setText(t("Vertical"))
@@ -1491,17 +1502,20 @@ class VidGrabWindow(QMainWindow):
         self._ete_lbl.setText(t("End:"))
         self._ed_browse.setText(t("Browse\u2026"))
         self._ed_browse2.setText(t("Browse\u2026"))
+        self._ed_browse.setToolTip(t("tooltip_browse_file"))
+        self._ed_browse2.setToolTip(t("tooltip_browse_out"))
         # settings page
-        self._settings_card.setTitle(t("APPEARANCE"))
+        self._settings_title.setText(t("APPEARANCE"))
         self._theme_lbl.setText(t("Theme:"))
         self._lang_lbl.setText(t("Language:"))
-        self._about_card.setTitle(t("ABOUT"))
+        self._about_title.setText(t("ABOUT"))
         self._about_lbl.setText(
             t("about_text", ver=__version__)
         )
         # bottom
         self._log_lbl.setText(t("LOG"))
         self._clear_btn.setText(t("Clear"))
+        self._clear_btn.setToolTip(t("tooltip_clear"))
         if not self._busy:
             self._status_lbl.setText(t("Ready"))
             self._action.setText(self._action_label(self._stack.currentIndex()))
@@ -1812,6 +1826,42 @@ def _build_filter(hflip: QCheckBox, vflip: QCheckBox) -> str | None:
 # ── entry point ────────────────────────────────────────────────────────────
 
 
+_APP_FONT_FAMILIES = [
+    "Segoe UI", "Noto Sans", "Noto Sans CJK TC", "Noto Sans TC",
+    "Source Han Sans TC", "PingFang TC", "Microsoft JhengHei",
+    "WenQuanYi Zen Hei", "Droid Sans Fallback", "Ubuntu", "Cantarell",
+    "sans-serif",
+]
+
+_BUNDLED_FONTS = (
+    "NotoSansTC-Regular.otf",
+    "NotoSansCJKtc-Regular.otf",
+    "SourceHanSansTC-Regular.otf",
+)
+
+
+def _register_bundled_fonts() -> None:
+    """Load a bundled CJK font (if shipped next to the app) so Chinese renders.
+
+    Safe no-op when no bundled font is present; Qt still falls back to any
+    system CJK font like Noto Sans CJK TC or Microsoft JhengHei.
+    """
+    from PySide6.QtGui import QFontDatabase
+
+    checked: set[str] = set()
+    for root in (get_bundle_dir(), get_app_dir()):
+        for fname in _BUNDLED_FONTS:
+            p = root / "assets" / fname
+            if str(p) in checked:
+                continue
+            checked.add(str(p))
+            if p.is_file():
+                try:
+                    QFontDatabase.addApplicationFont(str(p))
+                except Exception:  # noqa: BLE001, S110 - best effort
+                    pass
+
+
 def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("VidGrab")
@@ -1819,10 +1869,10 @@ def main() -> None:
     app.setWindowIcon(_app_icon())
     app.setStyle("Fusion")
 
+    _register_bundled_fonts()
+
     font = QFont()
-    font.setFamilies(
-        ["Segoe UI", "Noto Sans", "Ubuntu", "Cantarell", "sans-serif"]
-    )
+    font.setFamilies(_APP_FONT_FAMILIES)
     app.setFont(font)
 
     window = VidGrabWindow()

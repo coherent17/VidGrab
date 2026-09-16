@@ -159,6 +159,47 @@ TRANS: dict[str, dict[str, str]] = {
               "Please wait for it to complete before closing.",
         "zh": "下載或處理任務仍在執行中。\n請等待完成後再關閉。",
     },
+    # ── tooltips ──
+    "tooltip_switch_theme": {
+        "en": "Switch between dark and light theme",
+        "zh": "切換深色與淺色主題",
+    },
+    "tooltip_page_download": {
+        "en": "Download a video from YouTube",
+        "zh": "從 YouTube 下載影片",
+    },
+    "tooltip_page_edit": {
+        "en": "Trim or flip a local media file",
+        "zh": "裁剪或翻轉本地媒體檔案",
+    },
+    "tooltip_page_settings": {
+        "en": "Theme, language and about",
+        "zh": "主題、語言與關於",
+    },
+    "tooltip_paste": {
+        "en": "Paste the URL from the clipboard (Ctrl+V)",
+        "zh": "從剪貼簿貼上網址（Ctrl+V）",
+    },
+    "tooltip_browse_out": {
+        "en": "Choose the output folder",
+        "zh": "選擇輸出資料夾",
+    },
+    "tooltip_browse_file": {
+        "en": "Select a local media file",
+        "zh": "選擇本地媒體檔案",
+    },
+    "tooltip_clear": {
+        "en": "Clear the log (Ctrl+L)",
+        "zh": "清除記錄（Ctrl+L）",
+    },
+    "tooltip_action_download": {
+        "en": "Start downloading",
+        "zh": "開始下載",
+    },
+    "tooltip_action_edit": {
+        "en": "Start processing",
+        "zh": "開始處理",
+    },
 }
 
 # ── downloader messages ─────────────────────────────────────────────────────

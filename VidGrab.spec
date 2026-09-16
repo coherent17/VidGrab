@@ -16,7 +16,7 @@ ROOT = Path(SPECPATH)
 
 # --- icon / assets -------------------------------------------------------
 _datas: list[tuple[str, str]] = []
-for _name in ("icon.ico", "icon.png"):
+for _name in ("icon.ico", "icon.png", "NotoSansTC-Regular.otf"):
     _src = str(ROOT / "assets" / _name)
     if os.path.isfile(_src):
         _datas.append((_src, "assets"))

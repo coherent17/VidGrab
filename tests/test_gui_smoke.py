@@ -77,7 +77,7 @@ def test_lang_toggle(qapp, tmp_path, monkeypatch) -> None:
         win._lang_combo.setCurrentIndex(1)  # 繁體中文
         assert win._lang == "zh"
         assert "\u6dfa\u8272" in win._theme_btn.text()  # 淺色
-        assert "\u5916\u89c0" in win._settings_card.title()  # 外觀
+        assert "\u5916\u89c0" in win._settings_title.text()  # 外觀
         assert "\u8a18\u9304" in win._log_lbl.text()  # 記錄
         cfg = appmod._load_config()
         assert cfg["lang"] == "zh"

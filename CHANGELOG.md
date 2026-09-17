@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.3.1
+
+- **Fix — inline preview missing from packaged builds**: the Edit-page preview player is back in `VidGrab.exe` / `VidGrab-linux` — the PyInstaller spec excluded `PySide6.QtMultimedia`, so the release binary only offered the ffplay pop-out preview (source builds were unaffected). QtMultimedia is now bundled again, and a hidden `--selftest` flag lets CI verify `multimedia` availability in the packaged binary
+
 ## 2.3.0
 
 - **Playlist & channel downloads**: paste any playlist/channel URL and download every video in the selected quality (MP4/MP3) with `01 - …` numbering and per-video progress

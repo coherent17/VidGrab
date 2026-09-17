@@ -48,6 +48,9 @@ jobs:
           body: |
             Auto-built from tag ${{ github.ref_name }}.
 
+            ## Fixed in 2.3.1
+            - The **inline preview player** on the Edit page now ships in the packaged Windows/Linux binaries. In 2.3.0 the build excluded QtMultimedia, so the release binary only had the ffplay pop-out preview — source builds were unaffected.
+
             ## What's new in 2.3
             - **Playlist & channel downloads** — paste any playlist/channel URL and grab every video in your chosen quality (MP4/MP3), numbered `01 – …`, with per-video progress
             - **Video info card** — the download page shows the title, uploader, duration and available resolutions (or video count for playlists) before you download

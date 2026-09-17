@@ -2702,6 +2702,15 @@ def main() -> None:
     app.setFont(font)
 
     window = VidGrabWindow()
+
+    # Hidden build-verification flag: construct the full UI headlessly and
+    # report whether QtMultimedia (inline preview) is available in a packaged
+    # or source build, then exit. Used by CI to catch exclusion mistakes.
+    if "--selftest" in sys.argv:
+        print(f"VIDGRAB_SELFTEST multimedia={int(_QT_MULTIMEDIA_OK)}", flush=True)
+        window.close()
+        return
+
     window.show()
     sys.exit(app.exec())
 

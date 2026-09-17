@@ -40,6 +40,14 @@ jobs:
       - name: Build single-file exe
         run: pyinstaller VidGrab.spec --noconfirm
 
+      - name: Selftest (multimedia availability in packaged binary)
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $out = & .\dist\VidGrab.exe --selftest 2>&1 | Out-String
+          Write-Output $out
+          if ($out -notmatch "multimedia=1") { throw "multimedia selftest failed" }
+
       - name: Show artifact sizes
         shell: pwsh
         run: Get-ChildItem "dist" | Select-Object Name, Length

@@ -105,6 +105,32 @@ def test_lang_toggle_ja_ko(qapp, tmp_path, monkeypatch) -> None:
         win.close()
 
 
+def test_edit_page_inline_preview(qapp, monkeypatch) -> None:
+    """The Edit page shows an in-window player with a scrubber when multimedia is present."""
+    from vidgrab import app as appmod
+
+    monkeypatch.setattr(
+        "vidgrab.app.check_internet",
+        lambda timeout=2.5: type("S", (), {"online": True, "reason": "mock"})(),
+    )
+    win = appmod.VidGrabWindow()
+    try:
+        win._switch_page(1)
+        if appmod._QT_MULTIMEDIA_OK:
+            assert win._ed_preview_title is not None
+            assert bool(win._ed_preview_title.text())
+            assert win._ed_player is not None
+            assert win._ed_video_lbl is not None
+            assert win._ed_sink is not None
+            assert win._ed_play_btn is not None and not win._ed_play_btn.isEnabled()
+            assert win._ed_seek is not None and not win._ed_seek.isEnabled()
+            assert win._ed_time_lbl is not None
+        else:
+            assert win._ed_player is None
+    finally:
+        win.close()
+
+
 def test_bundled_fonts_register(qapp) -> None:
     from pathlib import Path
 

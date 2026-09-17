@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
+import time
+import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
@@ -440,10 +444,13 @@ def _ytdl_options(
     quality: str | None = None,
     download_sections: str | None = None,
     progress_hook: Callable[[dict], None] | None = None,
+    noplaylist: bool = True,
+    outtmpl: str | None = None,
 ) -> dict:
     common: dict = {
-        "outtmpl": str(output_path / f"%(title)s{suffix}.%(ext)s"),
-        "noplaylist": True,
+        "outtmpl": outtmpl
+        or str(output_path / f"%(title)s{suffix}.%(ext)s"),
+        "noplaylist": noplaylist,
         "quiet": True,
         "no_warnings": True,
         "format_sort": ["proto:https"],
@@ -486,6 +493,274 @@ def _ytdl_options(
         "format": fmt_sel,
         "merge_output_format": "mp4",
     }
+
+
+# ── media metadata probe ───────────────────────────────────────────────_
+
+_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 VidGrab"
+)
+
+
+def _fetch_thumbnail(url: str | None, dest_dir: Path) -> str | None:
+    """Download *url* into *dest_dir* (cached by URL hash); returns local path."""
+    if not url or "://" not in url:
+        return None
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        name = hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
+        target = dest_dir / f"{name}.jpg"
+        if not target.is_file():
+            req = urllib.request.Request(url, headers={"User-Agent": _UA})
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                data = resp.read()
+            if len(data) < 50:
+                return url
+            target.write_bytes(data)
+        return str(target)
+    except (OSError, ValueError):
+        return None
+
+
+def _codec_short(codec: str) -> str:
+    c = codec.lower()
+    if c.startswith("avc"):
+        return "H.264"
+    if c.startswith(("vp09", "vp9")):
+        return "VP9"
+    if c.startswith("av01"):
+        return "AV1"
+    if c.startswith("hev"):
+        return "H.265"
+    if c in ("none", "mp4a"):
+        return c
+    return codec
+
+
+def _human_size(size: float) -> str:
+    value = float(size)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if value < 1024 or unit == "GiB":
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} GiB"
+
+
+def _format_label(fmt: dict) -> str:
+    """A compact human-readable label for one yt-dlp format dict."""
+    parts: list[str] = []
+    height = fmt.get("height")
+    note = fmt.get("format_note")
+    if height:
+        parts.append(f"{height}p")
+    elif note:
+        parts.append(note)
+    vcodec = fmt.get("vcodec")
+    if vcodec and vcodec != "none":
+        parts.append(_codec_short(vcodec))
+    size = fmt.get("filesize") or fmt.get("filesize_approx")
+    if size:
+        parts.append(_human_size(size))
+    return " \u00b7 ".join(parts)
+
+
+def _height_key(label: str | None) -> int:
+    match = re.search(r"(\d+)p", label or "")
+    return int(match.group(1)) if match else 0
+
+
+def _summarize(info: dict, thumb_dir: Path | None = None) -> dict:
+    """Turn a raw yt-dlp extract_info dict into a compact UI summary."""
+    entries = info.get("entries")
+    is_playlist = info.get("_type") == "playlist" or isinstance(
+        entries, (list, tuple)
+    )
+    result: dict = {
+        "is_playlist": bool(is_playlist),
+        "title": info.get("title") or info.get("id") or "",
+        "uploader": (
+            info.get("uploader")
+            or info.get("channel")
+            or info.get("uploader_id")
+            or ""
+        ),
+        "duration": info.get("duration"),
+        "thumbnail": info.get("thumbnail"),
+        "playlist_count": info.get("playlist_count"),
+        "formats": [],
+    }
+    if is_playlist and result["playlist_count"] is None:
+        result["playlist_count"] = len(entries) if entries else None
+    if not is_playlist:
+        seen: set[int] = set()
+        for fmt in info.get("formats") or []:
+            height = fmt.get("height")
+            if not height or height in seen:
+                continue
+            seen.add(height)
+            label = _format_label(fmt)
+            if label:
+                result["formats"].append(label)
+        result["formats"].sort(key=_height_key, reverse=True)
+    if thumb_dir:
+        local = _fetch_thumbnail(result.get("thumbnail"), Path(thumb_dir))
+        if local:
+            result["thumbnail_local"] = local
+    return result
+
+
+def probe(
+    url: str,
+    *,
+    thumb_dir: Path | None = None,
+    translate: TranslateFn | None = None,
+) -> dict:
+    """Fetch (without downloading) metadata for *url* — videos and playlists.
+
+    Playlist URLs are flattened so even huge playlists resolve quickly.
+    Returns the :func:`_summarize` dict; the thumbnail is cached locally
+    when *thumb_dir* is provided."""
+    tr = translate or _noop_tr
+    if not url.strip():
+        raise RuntimeError(tr("No URL provided."))
+    opts: dict = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "extract_flat": "in_playlist",
+        "extractor_args": {"youtube": {"player_client": ["android"]}},
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+    if info is None:
+        raise RuntimeError(tr("Could not fetch video information."))
+    return _summarize(info, thumb_dir=thumb_dir)
+
+
+# ── playlist downloads ─────────────────────────────────────────────────
+
+
+def _new_files(output_path: Path, after: float) -> list[Path]:
+    """Media files created in *output_path* on or after time *after*."""
+    exts = (".mp4", ".mp3", ".webm", ".mkv", ".m4a")
+    files = []
+    try:
+        entries = list(output_path.iterdir())
+    except OSError:
+        return files
+    for p in entries:
+        if (
+            not p.is_file()
+            or p.suffix.lower() not in exts
+            or p.name.endswith((".part", ".ytdl"))
+        ):
+            continue
+        try:
+            if p.stat().st_mtime >= after - 1.0:
+                files.append(p)
+        except OSError:
+            continue
+    return files
+
+
+def _playlist_order(path: Path) -> int:
+    match = re.match(r"^(\d+) - ", path.name)
+    return int(match.group(1)) if match else 10**9
+
+
+def download_playlist(
+    url: str,
+    output_dir: str | Path,
+    fmt: str,
+    *,
+    quality: str | None = None,
+    on_progress: ProgressCallback | None = None,
+    on_log: LogCallback | None = None,
+    translate: TranslateFn | None = None,
+) -> list[Path]:
+    """
+    Download every video in a playlist (or channel) as MP4 / MP3.
+
+    Trim, flip and speed are *not* applied — each entry is downloaded in
+    the selected format and quality. Returns the list of saved files,
+    ordered by playlist position."""
+    tr = translate or _noop_tr
+    if not url.strip():
+        raise RuntimeError(tr("No URL provided."))
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    ffmpeg = find_ffmpeg()
+    if ffmpeg:
+        _ensure_ffmpeg_on_path(ffmpeg)
+    if fmt == "mp3" and not ffmpeg:
+        raise RuntimeError(
+            tr(
+                "ffmpeg is required for MP3 downloads. "
+                "Place ffmpeg.exe in an 'ffmpeg' folder next to the app, "
+                "or install ffmpeg and add it to PATH."
+            )
+        )
+
+    log = (lambda msg: None) if on_log is None else on_log
+
+    def progress_hook(data: dict) -> None:
+        if not on_progress:
+            return
+        status = data.get("status")
+        if status != "downloading":
+            if status == "finished":
+                on_progress(tr("Processing…"), 95.0)
+            return
+        total = data.get("total_bytes") or data.get("total_bytes_estimate")
+        downloaded = data.get("downloaded_bytes", 0)
+        info = data.get("info_dict") or {}
+        current = info.get("playlist_index")
+        total_n = info.get("playlist_count")
+        if total:
+            pct = min(100.0, downloaded / total * 100)
+            if current and total_n:
+                on_progress(
+                    tr("Downloading video {n} of {total}…", n=current, total=total_n),
+                    pct,
+                )
+            else:
+                on_progress(tr("Downloading… {pct:.1f}%", pct=pct), pct)
+        else:
+            if current and total_n:
+                on_progress(
+                    tr("Downloading video {n} of {total}…", n=current, total=total_n),
+                    0.0,
+                )
+            else:
+                on_progress(tr("Downloading…"), None)
+
+    t0 = time.time()
+    opts = _ytdl_options(
+        url,
+        output_path,
+        fmt,
+        ffmpeg=ffmpeg,
+        quality=quality,
+        progress_hook=progress_hook,
+        noplaylist=False,
+        outtmpl=str(output_path / "%(playlist_index)02d - %(title)s.%(ext)s"),
+    )
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+    if info is None:
+        raise RuntimeError(tr("Could not fetch video information."))
+
+    files = sorted(_new_files(output_path, t0), key=_playlist_order)
+    if not files:
+        raise RuntimeError(tr("Download finished but output file was not found."))
+    for f in files:
+        log(tr("Saved: {name}", name=f.name))
+    if on_progress:
+        on_progress(tr("Complete"), 100.0)
+    return files
 
 
 def download(

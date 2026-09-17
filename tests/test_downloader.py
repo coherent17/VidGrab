@@ -324,3 +324,266 @@ def test_locate_output_no_double_dot_bug(tmp_path) -> None:
     d = tmp_path
     (d / "song.mp3").write_bytes(b"audio")
     assert downloader._locate_output(d, "song", "mp3", "") == d / "song.mp3"
+
+
+# ── format labels ──────────────────────────────────────────────────────────
+
+def test_format_label_height_codec_size() -> None:
+    label = downloader._format_label(
+        {"height": 1080, "vcodec": "avc1.640028", "filesize": 12_000_000}
+    )
+    assert label == "1080p \u00b7 H.264 \u00b7 11.4 MiB"
+
+
+def test_format_label_skips_empty_entries() -> None:
+    assert downloader._format_label({}) == ""
+    assert downloader._format_label({"height": 1080}) == "1080p"
+
+
+def test_height_key_parses_resolution() -> None:
+    assert downloader._height_key("2160p \u00b7 AV1 \u00b7 23.8 MiB") == 2160
+    assert downloader._height_key("nothing") == 0
+
+
+# ── probe ─────────────────────────────────────────────────────────────────
+
+def _video_info() -> dict:
+    return {
+        "id": "abc123",
+        "title": "Cool Video",
+        "uploader": "Channel Name",
+        "duration": 125,
+        "thumbnail": "https://example.com/thumb.jpg",
+        "formats": [
+            {"height": 720, "vcodec": "avc1.64001f", "filesize": 5_000_000},
+            {"height": 2160, "vcodec": "av01.0.05M", "filesize_approx": 25_000_000},
+            {"height": 720, "vcodec": "vp09.00.20", "filesize": 9_000_000},
+            {"height": 1080, "vcodec": "avc1.6d0028", "filesize": 12_000_000},
+        ],
+    }
+
+
+def _fake_ydl(info, monkeypatch):
+    calls = {}
+
+    class Fake:
+        last_opts = None
+
+        def __init__(self, opts):
+            Fake.last_opts = opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def extract_info(self, url, download=False):
+            calls["url"] = url
+            calls["download"] = download
+            return info
+
+    monkeypatch.setattr(downloader.yt_dlp, "YoutubeDL", Fake)
+    return calls
+
+
+def test_probe_video_makes_summary(monkeypatch) -> None:
+    calls = _fake_ydl(_video_info(), monkeypatch)
+    result = downloader.probe("https://youtu.be/abc123")
+    assert calls["url"] == "https://youtu.be/abc123"
+    assert calls["download"] is False
+    assert result["is_playlist"] is False
+    assert result["title"] == "Cool Video"
+    assert result["uploader"] == "Channel Name"
+    assert result["duration"] == 125
+    assert result["playlist_count"] is None
+    assert result["formats"] == [
+        "2160p \u00b7 AV1 \u00b7 23.8 MiB",
+        "1080p \u00b7 H.264 \u00b7 11.4 MiB",
+        "720p \u00b7 H.264 \u00b7 4.8 MiB",
+    ]
+    assert "thumbnail_local" not in result
+
+
+def test_probe_uses_flat_extraction(monkeypatch) -> None:
+    _fake_ydl(_video_info(), monkeypatch)
+    downloader.probe("https://youtu.be/abc123", thumb_dir=None)
+    opts = downloader.yt_dlp.YoutubeDL.last_opts
+    assert opts["extract_flat"] == "in_playlist"
+    assert opts["noplaylist"] is True
+
+
+def test_probe_playlist_detects_count(monkeypatch) -> None:
+    info = {
+        "_type": "playlist",
+        "title": "My Mix",
+        "entries": [{"id": "a"}, {"id": "b"}, {"id": "c"}],
+    }
+    _fake_ydl(info, monkeypatch)
+    result = downloader.probe("https://www.youtube.com/playlist?list=PLx")
+    assert result["is_playlist"] is True
+    assert result["playlist_count"] == 3
+    assert result["formats"] == []
+
+
+def test_probe_empty_url_raises(monkeypatch) -> None:
+    _fake_ydl(_video_info(), monkeypatch)
+    with pytest.raises(RuntimeError, match="No URL"):
+        downloader.probe("   ")
+
+
+def test_probe_stores_thumbnail_local(tmp_path, monkeypatch) -> None:
+    _fake_ydl(_video_info(), monkeypatch)
+    thumb = tmp_path / "thumb_cache" / "abc.jpg"
+    monkeypatch.setattr(downloader, "_fetch_thumbnail", lambda url, d: str(thumb))
+    result = downloader.probe("https://youtu.be/abc123", thumb_dir=tmp_path)
+    assert result["thumbnail_local"] == str(thumb)
+
+
+def test_fetch_thumbnail_caches_by_url(tmp_path, monkeypatch) -> None:
+    calls: list = []
+
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b"j" * 100
+
+    def fake_open(req, timeout=12):
+        calls.append(req)
+        return FakeResp()
+
+    monkeypatch.setattr(downloader.urllib.request, "urlopen", fake_open)
+    path = downloader._fetch_thumbnail("https://example.com/t.jpg", tmp_path)
+    assert path is not None
+    assert Path(path).is_file()
+    again = downloader._fetch_thumbnail("https://example.com/t.jpg", tmp_path)
+    assert again == path
+    assert len(calls) == 1
+
+
+def test_fetch_thumbnail_tiny_payload_falls_back_to_url(tmp_path, monkeypatch) -> None:
+    class Tiny:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b"x" * 10
+
+    monkeypatch.setattr(downloader.urllib.request, "urlopen", lambda req, timeout=12: Tiny())
+    out = downloader._fetch_thumbnail("https://example.com/t.jpg", tmp_path)
+    assert out == "https://example.com/t.jpg"
+
+
+def test_fetch_thumbnail_network_error_returns_none(tmp_path, monkeypatch) -> None:
+    def boom(req, timeout=12):
+        raise OSError("offline")
+
+    monkeypatch.setattr(downloader.urllib.request, "urlopen", boom)
+    assert downloader._fetch_thumbnail("https://example.com/t.jpg", tmp_path) is None
+
+
+# ── playlist download ──────────────────────────────────────────────────────
+
+def test_download_playlist_numbers_and_returns(tmp_path, monkeypatch) -> None:
+    created: list[Path] = []
+
+    class Fake:
+        last_opts = None
+
+        def __init__(self, opts):
+            Fake.last_opts = opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def extract_info(self, url, download):
+            out_dir = Path(str(Fake.last_opts["outtmpl"]).split("%(")[0])
+            for index, title in enumerate((("One", "Two")), 1):
+                p: Path = out_dir / f"{index:02d} - {title}.mp4"
+                p.write_bytes(b"x")
+                created.append(p)
+            return {"_type": "playlist", "title": "PL", "entries": [{}, {}]}
+
+    monkeypatch.setattr(downloader.yt_dlp, "YoutubeDL", Fake)
+    result = downloader.download_playlist(
+        "https://www.youtube.com/playlist?list=PLx", tmp_path, "mp4"
+    )
+    assert Fake.last_opts["noplaylist"] is False
+    assert Fake.last_opts["outtmpl"].endswith(
+        "%(playlist_index)02d - %(title)s.%(ext)s"
+    )
+    assert result == created
+    assert result[0].name == "01 - One.mp4"
+
+
+def test_download_playlist_no_new_files_raises(tmp_path, monkeypatch) -> None:
+    class Fake:
+        def __init__(self, opts):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def extract_info(self, url, download):
+            return {"_type": "playlist", "title": "PL", "entries": []}
+
+    monkeypatch.setattr(downloader.yt_dlp, "YoutubeDL", Fake)
+    with pytest.raises(RuntimeError, match="output file was not found"):
+        downloader.download_playlist("https://x/list", tmp_path, "mp4")
+
+
+def test_download_playlist_mp3_requires_ffmpeg(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(downloader, "find_ffmpeg", lambda: None)
+    with pytest.raises(RuntimeError, match="ffmpeg is required"):
+        downloader.download_playlist("https://x/list", tmp_path, "mp3")
+
+
+def test_download_playlist_empty_url_raises(tmp_path) -> None:
+    with pytest.raises(RuntimeError, match="No URL"):
+        downloader.download_playlist("   ", tmp_path, "mp4")
+
+
+def test_new_files_filters_partials(tmp_path) -> None:
+    import time
+
+    after = time.time()
+    (tmp_path / "01 - a.mp4").write_bytes(b"x")
+    (tmp_path / "02 - b.mp4.part").write_bytes(b"x")
+    (tmp_path / "03 - c.mp4.ytdl").write_bytes(b"x")
+    (tmp_path / "04 - d.mp3").write_bytes(b"x")
+    assert sorted(downloader._new_files(tmp_path, after)) == sorted(
+        [tmp_path / "01 - a.mp4", tmp_path / "04 - d.mp3"]
+    )
+
+
+def test_playlist_order_index() -> None:
+    assert downloader._playlist_order(Path("02 - x.mp4")) == 2
+    assert downloader._playlist_order(Path("no index.mp4")) == 10**9
+
+
+def test_ytdl_options_noplaylist_default(tmp_path) -> None:
+    opts = downloader._ytdl_options("https://x", tmp_path, "mp4", ffmpeg=None)
+    assert opts["noplaylist"] is True
+
+
+def test_ytdl_options_playlist_outtmpl(tmp_path) -> None:
+    opts = downloader._ytdl_options(
+        "https://x", tmp_path, "mp4", ffmpeg=None,
+        noplaylist=False, outtmpl="%(playlist_index)02d - %(title)s.%(ext)s",
+    )
+    assert opts["noplaylist"] is False
+    assert opts["outtmpl"] == "%(playlist_index)02d - %(title)s.%(ext)s"

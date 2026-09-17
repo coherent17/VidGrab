@@ -1934,7 +1934,9 @@ class VidGrabWindow(QMainWindow):
                 # Re-applying the global stylesheet can leave the popup stuck
                 # open on some platforms; always force it closed afterwards.
                 self._lang_combo.hidePopup()
-        self._lang_combo.view().scrollTo(self._lang_combo.currentIndex())
+        self._lang_combo.view().scrollTo(
+            self._lang_combo.model().index(self._lang_combo.currentIndex(), 0)
+        )
 
     def _apply_language(self) -> None:
         t = self._t

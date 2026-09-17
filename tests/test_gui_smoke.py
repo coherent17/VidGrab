@@ -78,7 +78,7 @@ def test_lang_toggle(qapp, tmp_path, monkeypatch) -> None:
         assert win._lang == "zh"
         assert "\u6dfa\u8272" in win._theme_btn.text()  # 淺色
         assert "\u5916\u89c0" in win._settings_title.text()  # 外觀
-        assert "\u8a18\u9304" in win._log_lbl.text()  # 記錄
+        assert "\u8a18\u9304" in win._log_title.text()  # 記錄
         cfg = appmod._load_config()
         assert cfg["lang"] == "zh"
         assert cfg["theme"] == "dark"
@@ -95,10 +95,10 @@ def test_lang_toggle_ja_ko(qapp, tmp_path, monkeypatch) -> None:
     try:
         win._lang_combo.setCurrentIndex(win._lang_combo.findData("ja"))
         assert win._lang == "ja"
-        assert "\u30ed\u30b0" in win._log_lbl.text()  # 記錄 -> ログ
+        assert "\u30ed\u30b0" in win._log_title.text()  # 記錄 -> ログ
         win._lang_combo.setCurrentIndex(win._lang_combo.findData("ko"))
         assert win._lang == "ko"
-        assert "\ub85c\uadf8" in win._log_lbl.text()  # 記錄 -> 로그
+        assert "\ub85c\uadf8" in win._log_title.text()  # 記錄 -> 로그
         cfg = appmod._load_config()
         assert cfg["lang"] == "ko"
     finally:

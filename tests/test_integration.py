@@ -23,10 +23,20 @@ YT_CANDIDATES = [
     "https://www.youtube.com/watch?v=BaW_jenozKc",  # youtube-dl test clip
 ]
 
+# YouTube answers requests from datacenter IPs (GitHub runners) with a
+# "Sign in to confirm you're not a bot" wall; that is not a test failure,
+# so skip instead of failing.
+_BOT_BLOCK = "Sign in to confirm you"
+
 
 def _integration_enabled() -> bool:
     import os
     return os.environ.get("VIDGRAB_INTEGRATION") == "1"
+
+
+def _maybe_skip_bot_block(exc: Exception) -> None:
+    if _BOT_BLOCK in f"{exc}":
+        pytest.skip("YouTube bot-check blocked the runner IP")
 
 
 pytestmark = pytest.mark.skipif(
@@ -71,6 +81,7 @@ def src_mp4(tmp_path_factory: pytest.TempPathFactory) -> Path:
             if mp4.exists() and mp4.stat().st_size > 10_000:
                 return mp4
         except Exception as exc:  # noqa: BLE001 - try the next candidate
+            _maybe_skip_bot_block(exc)
             errors.append(f"{url}: {type(exc).__name__}: {exc}")
     raise AssertionError(f"All YT candidates failed: {'; '.join(errors)}")
 
@@ -105,5 +116,9 @@ def test_trim_section(src_mp4: Path, tmp_path: Path) -> None:
 
 
 def test_download_mp3(tmp_path: Path) -> None:
-    mp3 = downloader.download(YT_CANDIDATES[0], tmp_path, "mp3")
+    try:
+        mp3 = downloader.download(YT_CANDIDATES[0], tmp_path, "mp3")
+    except Exception as exc:  # translate external failures
+        _maybe_skip_bot_block(exc)
+        raise
     assert mp3.exists() and mp3.suffix == ".mp3" and mp3.stat().st_size > 5_000

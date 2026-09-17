@@ -14,10 +14,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Download ffmpeg (gyan essentials)
+      - name: Download ffmpeg (BtbN static)
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile "ffmpeg.zip"
+          # GitHub-hosted mirror (gyan.dev is flaky from CI: intermittent 503s)
+          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile "ffmpeg.zip"
           Expand-Archive -Path "ffmpeg.zip" -DestinationPath "ffmpeg-unpacked" -Force
           $ffmpeg = Get-ChildItem -Recurse "ffmpeg-unpacked" -Filter "ffmpeg.exe" | Select-Object -First 1
           $ffprobe = Get-ChildItem -Recurse "ffmpeg-unpacked" -Filter "ffprobe.exe" | Select-Object -First 1

@@ -29,6 +29,12 @@ for _name in (
 
 _win_icon = str(ROOT / "assets" / "icon.ico")
 
+# --- country flag icons (language picker) ---------------------------------
+_flags_dir = ROOT / "assets" / "flags"
+if _flags_dir.is_dir():
+    for _f in sorted(_flags_dir.glob("*.png")):
+        _datas.append((str(_f), "assets/flags"))
+
 # --- ffmpeg: platform-aware, with legacy fallback ------------------------
 if sys.platform == "win32":
     _ffmpeg_names = ("ffmpeg.exe", "ffprobe.exe", "ffplay.exe")

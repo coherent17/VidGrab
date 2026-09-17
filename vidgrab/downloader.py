@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -446,6 +447,7 @@ def _ytdl_options(
     progress_hook: Callable[[dict], None] | None = None,
     noplaylist: bool = True,
     outtmpl: str | None = None,
+    player_client: str = "tv_embedded",
 ) -> dict:
     common: dict = {
         "outtmpl": outtmpl
@@ -454,7 +456,10 @@ def _ytdl_options(
         "quiet": True,
         "no_warnings": True,
         "format_sort": ["proto:https"],
-        "extractor_args": {"youtube": {"player_client": ["android"]}},
+        # tv_embedded exposes the full height ladder (up to 2160p); the
+        # android client caps out at 360p but is far more reliable, so it is
+        # used as the fallback in download() when YouTube answers 403.
+        "extractor_args": {"youtube": {"player_client": [player_client]}},
     }
     if progress_hook is not None:
         common["progress_hooks"] = [progress_hook]
@@ -523,6 +528,24 @@ def _fetch_thumbnail(url: str | None, dest_dir: Path) -> str | None:
         return None
 
 
+def fetch_dislikes(video_id: str, timeout: float = 8.0) -> int | None:
+    """Best-effort dislike count via the public returnyoutubedislike API.
+
+    YouTube removed public dislike counts, so this is an optional extra; any
+    failure returns ``None`` and the UI simply skips the dislike line."""
+    if not video_id:
+        return None
+    url = f"https://returnyoutubedislikeapi.com/votes?videoId={video_id}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": _UA})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+        value = data.get("dislikes")
+        return int(value) if isinstance(value, (int, float)) else None
+    except (OSError, ValueError):
+        return None
+
+
 def _codec_short(codec: str) -> str:
     c = codec.lower()
     if c.startswith("avc"):
@@ -578,6 +601,7 @@ def _summarize(info: dict, thumb_dir: Path | None = None) -> dict:
     )
     result: dict = {
         "is_playlist": bool(is_playlist),
+        "id": info.get("id"),
         "title": info.get("title") or info.get("id") or "",
         "uploader": (
             info.get("uploader")
@@ -589,6 +613,9 @@ def _summarize(info: dict, thumb_dir: Path | None = None) -> dict:
         "thumbnail": info.get("thumbnail"),
         "playlist_count": info.get("playlist_count"),
         "formats": [],
+        "like_count": info.get("like_count"),
+        "comment_count": info.get("comment_count"),
+        "dislike_count": info.get("dislike_count"),
     }
     if is_playlist and result["playlist_count"] is None:
         result["playlist_count"] = len(entries) if entries else None
@@ -629,7 +656,7 @@ def probe(
         "no_warnings": True,
         "noplaylist": True,
         "extract_flat": "in_playlist",
-        "extractor_args": {"youtube": {"player_client": ["android"]}},
+        "extractor_args": {"youtube": {"player_client": ["tv_embedded"]}},
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
@@ -738,20 +765,34 @@ def download_playlist(
                 on_progress(tr("Downloading…"), None)
 
     t0 = time.time()
-    opts = _ytdl_options(
-        url,
-        output_path,
-        fmt,
-        ffmpeg=ffmpeg,
-        quality=quality,
-        progress_hook=progress_hook,
-        noplaylist=False,
-        outtmpl=str(output_path / "%(playlist_index)02d - %(title)s.%(ext)s"),
-    )
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
+
+    def extract(client: str) -> None:
+        opts = _ytdl_options(
+            url,
+            output_path,
+            fmt,
+            ffmpeg=ffmpeg,
+            quality=quality,
+            progress_hook=progress_hook,
+            noplaylist=False,
+            outtmpl=str(output_path / "%(playlist_index)02d - %(title)s.%(ext)s"),
+            player_client=client,
+        )
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.extract_info(url, download=True)
+
+    info = None
+    last_exc: Exception | None = None
+    for client in ("tv_embedded", "android"):
+        try:
+            extract(client)
+            info = object()
+            break
+        except Exception as exc:  # noqa: BLE001 - try the next client
+            last_exc = exc
+            log(tr("Download failed with {client} ({exc}); retrying.", client=client, exc=exc))
     if info is None:
-        raise RuntimeError(tr("Could not fetch video information."))
+        raise RuntimeError(tr("Download failed: {exc}", exc=last_exc))
 
     files = sorted(_new_files(output_path, t0), key=_playlist_order)
     if not files:
@@ -840,14 +881,10 @@ def download(
     else:
         suffix = ""
 
-    # If trim is requested and ffmpeg is available, download only the wanted
-    # section (HTTP range requests) instead of the whole video first.
-    section_used = False
-    sections = None
-    if do_trim and ffmpeg:
-        sections = f"*{int(start)}-{int(end) if end != float('inf') else 'inf'}"
-
-    def extract(use_sections: bool) -> dict:
+    # Always fetch the full video and cut locally with ffmpeg: YouTube's media
+    # servers answer ranged (download_sections) requests with HTTP 403 or fall
+    # back to the full file, so range-based downloads are unreliable.
+    def extract(client: str) -> dict:
         opts = _ytdl_options(
             url,
             output_path,
@@ -855,8 +892,8 @@ def download(
             suffix,
             ffmpeg=ffmpeg,
             quality=quality,
-            download_sections=sections if use_sections else None,
             progress_hook=progress_hook,
+            player_client=client,
         )
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -864,15 +901,21 @@ def download(
                 raise RuntimeError(tr("Could not fetch video information."))
             return info
 
-    if sections:
+    # tv_embedded gives the full resolution but YouTube can 403 its media
+    # URLs; android is low-res but reliable, so it acts as the last resort.
+    info = None
+    last_exc: Exception | None = None
+    for client in ("tv_embedded", "android"):
         try:
-            info = extract(True)
-            section_used = True
-        except Exception as exc:  # noqa: BLE001 - fall back to full download
-            log(tr("Section download unavailable ({exc}); downloading in full.", exc=exc))
-            info = extract(False)
-    else:
-        info = extract(False)
+            info = extract(client)
+            break
+        except Exception as exc:  # noqa: BLE001 - try the next client
+            last_exc = exc
+            log(tr("Download failed with {client} ({exc}); retrying.", client=client, exc=exc))
+    if info is None:
+        raise RuntimeError(
+            tr("Download failed: {exc}", exc=last_exc)
+        )
 
     title = info.get("title", "download")
     out_file = _locate_output(output_path, title, fmt, suffix)
@@ -905,18 +948,13 @@ def download(
             break
     final_file = output_path / f"{base}{speed_m}.{ext}"
 
-    # If the section download already cut the video, don't cut it again.
-    trim_start, trim_end = (
-        (0.0, float("inf")) if section_used else (start, end)
-    )
-
     final_file.unlink(missing_ok=True)
     _trim(
         ffmpeg or "",
         out_file,
         final_file,
-        trim_start,
-        trim_end,
+        start,
+        end,
         video_filter=video_filter if fmt == "mp4" else None,
         speed=speed,
         audio_bitrate=quality if fmt == "mp3" else None,

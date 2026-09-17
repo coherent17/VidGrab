@@ -11,6 +11,7 @@ from pathlib import Path
 
 from PySide6.QtCore import (
     QProcess,
+    QPropertyAnimation,
     QSize,
     Qt,
     QThread,
@@ -18,7 +19,15 @@ from PySide6.QtCore import (
     QUrl,
     Signal,
 )
-from PySide6.QtGui import QColor, QCursor, QFont, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import (
+    QColor,
+    QCursor,
+    QFont,
+    QIcon,
+    QPainter,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -51,6 +60,7 @@ from vidgrab.downloader import (
     download,
     download_both,
     download_playlist,
+    fetch_dislikes,
     find_ffmpeg,
     find_ffplay,
     get_app_dir,
@@ -59,7 +69,7 @@ from vidgrab.downloader import (
     probe,
     process_local_file,
 )
-from vidgrab.i18n import LANGUAGES, make_translator
+from vidgrab.i18n import FLAGS, LANGUAGES, make_translator
 from vidgrab.network import ConnectionStatus, check_internet
 
 try:
@@ -212,7 +222,9 @@ QComboBox QAbstractItemView {
     border: 1px solid #1f2839;
     color: #e8edf6;
     selection-background-color: #1a2744;
-    border-radius: 6px;
+    /* border-radius on the popup view keeps the combo from closing on item
+       click in some Qt versions — keep it square to stay reliable. */
+    border-radius: 0px;
     padding: 4px;
 }
 
@@ -404,6 +416,11 @@ QLabel#status {
 }
 
 /* ── log ── */
+QWidget#log_inner {
+    background-color: #0a0f16;
+    border: 1px solid #1f2839;
+    border-radius: 12px;
+}
 QTextEdit#log {
     background-color: #0d1219;
     border: 1px solid #1f2839;
@@ -616,7 +633,8 @@ QComboBox QAbstractItemView {
     border: 1px solid #d3daea;
     color: #1e293b;
     selection-background-color: #eef1f6;
-    border-radius: 6px;
+    /* square popup: rounded views can leave the combo open after a click */
+    border-radius: 0px;
     padding: 4px;
 }
 
@@ -808,6 +826,11 @@ QLabel#status {
 }
 
 /* ── log ── */
+QWidget#log_inner {
+    background-color: #ffffff;
+    border: 1px solid #d9dfec;
+    border-radius: 12px;
+}
 QTextEdit#log {
     background-color: #f8fafc;
     border: 1px solid #d9dfec;
@@ -955,6 +978,18 @@ def _fmt_duration(seconds: float) -> str:
     return f"{minutes}:{secs:02d}"
 
 
+def _fmt_count(n: int) -> str:
+    """Compact count for metric-style numbers: 19393948 -> 19.4M."""
+    value = float(n)
+    if value >= 1_000_000_000:
+        return f"{value / 1_000_000_000:.1f}B".rstrip("0").rstrip(".")
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M".rstrip("0").rstrip(".")
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}K".rstrip("0").rstrip(".")
+    return str(int(value))
+
+
 # ── vector icons ────────────────────────────────────────────────────────────
 
 _HAND = Qt.PointingHandCursor
@@ -1079,6 +1114,15 @@ def _icon_path() -> Path:
     return get_app_dir() / "assets" / "icon.png"
 
 
+def _flag_icon(lang_code: str) -> QIcon:
+    """Bundled color flag icon for a language code (PNG, not emoji)."""
+    cc = FLAGS.get(lang_code, "us")
+    p = get_app_dir() / "assets" / "flags" / f"{cc}.png"
+    if p.is_file():
+        return QIcon(str(p))
+    return QIcon()
+
+
 def _app_icon() -> QIcon:
     p = _icon_path()
     if p.is_file():
@@ -1126,6 +1170,10 @@ class _Worker(QThread):
                     thumb_dir=self._kw.get("thumb_dir"),
                     translate=self._kw.get("translate"),
                 )
+                if result.get("is_playlist") is False and result.get("dislike_count") is None:
+                    dislike = fetch_dislikes(result.get("id") or "")
+                    if dislike is not None:
+                        result["dislike_count"] = dislike
                 self.probed.emit(result)
                 return
             common = {
@@ -1300,8 +1348,8 @@ class VidGrabWindow(QMainWindow):
         self._probe_data: dict | None = None
 
         self.setWindowTitle("VidGrab")
-        self.setMinimumSize(1024, 720)
-        self.resize(1280, 880)
+        self.setMinimumSize(1180, 820)
+        self.resize(1500, 1000)
         self.setAcceptDrops(True)
 
         self._apply_theme()
@@ -1340,7 +1388,7 @@ class VidGrabWindow(QMainWindow):
         self._stack.addWidget(self._build_edit_form())
         self._stack.addWidget(self._build_settings_form())
         content.addWidget(self._stack, stretch=4)
-        content.addWidget(self._build_bottom())
+        content.addWidget(self._build_bottom(), stretch=1)
         body.addLayout(content, stretch=1)
         root.addLayout(body, stretch=1)
 
@@ -1740,7 +1788,8 @@ class VidGrabWindow(QMainWindow):
         self._lang_combo = QComboBox()
         self._lang_combo.setCursor(QCursor(_HAND))
         for code, name in LANGUAGES.items():
-            self._lang_combo.addItem(name, code)
+            label = name.split(" ", 1)[1] if " " in name else name
+            self._lang_combo.addItem(_flag_icon(code), label, code)
         idx = self._lang_combo.findData(self._lang)
         if idx >= 0:
             self._lang_combo.setCurrentIndex(idx)
@@ -1766,33 +1815,34 @@ class VidGrabWindow(QMainWindow):
     # ── shared bottom (log + progress + button) ────────────────────────
 
     def _build_bottom(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        lay.setContentsMargins(20, 4, 20, 12)
-        lay.setSpacing(8)
+        """LOG card: titled like the other sections; the log well and Clear
+        sit side-by-side (mirroring the SAVE TO block). Wrapped with the same
+        page margins so its outer box aligns with SOURCE / FORMAT / SAVE TO."""
+        g, log_title, ll = self._card("LOG", "log_card", "settings")
+        self._log_title = log_title
 
-        hdr = QHBoxLayout()
-        hdr.setSpacing(8)
-        self._log_lbl = QLabel("LOG")
-        self._log_lbl.setObjectName("section")
-        self._log_lbl.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
-        hdr.addWidget(self._log_lbl)
-        hdr.addStretch()
-        cb = QPushButton("Clear")
-        cb.setObjectName("secondary")
-        cb.setMinimumWidth(56)
-        cb.setCursor(QCursor(_HAND))
-        cb.clicked.connect(self._clear_log)
-        self._clear_btn = cb
-        hdr.addWidget(cb)
-        lay.addLayout(hdr)
-
+        well_row = QHBoxLayout()
+        well_row.setSpacing(10)
+        inner = QWidget()
+        inner.setObjectName("log_inner")
+        il = QVBoxLayout(inner)
+        il.setContentsMargins(6, 6, 6, 6)
         self._log = QTextEdit()
         self._log.setObjectName("log")
         self._log.setReadOnly(True)
-        self._log.setMinimumHeight(50)
+        self._log.setMinimumHeight(100)
         self._log.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
-        lay.addWidget(self._log, stretch=1)
+        il.addWidget(self._log)
+        well_row.addWidget(inner, stretch=1)
+        cb = QPushButton("Clear")
+        cb.setObjectName("secondary")
+        cb.setMinimumWidth(64)
+        cb.setFixedHeight(30)
+        cb.setCursor(QCursor(_HAND))
+        cb.clicked.connect(self._clear_log)
+        self._clear_btn = cb
+        well_row.addWidget(cb, alignment=Qt.AlignTop)
+        ll.addLayout(well_row)
 
         prow = QHBoxLayout()
         prow.setSpacing(10)
@@ -1806,7 +1856,7 @@ class VidGrabWindow(QMainWindow):
         self._status_lbl.setMinimumWidth(110)
         self._status_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         prow.addWidget(self._status_lbl)
-        lay.addLayout(prow)
+        ll.addLayout(prow)
 
         self._action = QPushButton("\u2b07  Download")
         self._action.setObjectName("primary")
@@ -1814,8 +1864,13 @@ class VidGrabWindow(QMainWindow):
         self._action.setCursor(QCursor(_HAND))
         self._action.setEnabled(False)
         self._action.clicked.connect(self._start_action)
-        lay.addWidget(self._action)
+        ll.addWidget(self._action)
 
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(20, 4, 20, 12)
+        lay.setSpacing(0)
+        lay.addWidget(g)
         return w
 
     # ── page switching ─────────────────────────────────────────────────
@@ -1866,13 +1921,20 @@ class VidGrabWindow(QMainWindow):
     # ── language ───────────────────────────────────────────────────────
 
     def _on_lang_change(self) -> None:
+        self._lang_combo.hidePopup()
         code = self._lang_combo.currentData()
         if code and code != self._lang:
             self._lang = code
             self._t = make_translator(code)
-            self._apply_language()
-            self._apply_theme()
-            _save_config(self._theme, self._lang)
+            try:
+                self._apply_language()
+                self._apply_theme()
+                _save_config(self._theme, self._lang)
+            finally:
+                # Re-applying the global stylesheet can leave the popup stuck
+                # open on some platforms; always force it closed afterwards.
+                self._lang_combo.hidePopup()
+        self._lang_combo.view().scrollTo(self._lang_combo.currentIndex())
 
     def _apply_language(self) -> None:
         t = self._t
@@ -1940,11 +2002,12 @@ class VidGrabWindow(QMainWindow):
             t("about_text", ver=__version__)
         )
         # bottom
-        self._log_lbl.setText(t("LOG"))
+        self._log_title.setText(t("LOG"))
         self._clear_btn.setText(t("Clear"))
         self._clear_btn.setToolTip(t("tooltip_clear"))
         if not self._busy:
             self._status_lbl.setText(t("Ready"))
+            self._status_lbl.setStyleSheet("")
             self._action.setText(self._action_label(self._stack.currentIndex()))
         # status bar
         self._update_ffmpeg_status()
@@ -2061,6 +2124,15 @@ class VidGrabWindow(QMainWindow):
             if formats:
                 top = formats[0].split(" \u00b7 ", 1)[0]
                 meta.append(self._t("Up to {res}", res=top))
+            likes = result.get("like_count")
+            if likes:
+                meta.append(self._t("Likes: {n}", n=_fmt_count(likes)))
+            dislikes = result.get("dislike_count")
+            if dislikes:
+                meta.append(self._t("Dislikes: {n}", n=_fmt_count(dislikes)))
+            comments = result.get("comment_count")
+            if comments:
+                meta.append(self._t("Comments: {n}", n=_fmt_count(comments)))
             self._playlist_cb.setVisible(False)
         self._info_meta.setText("  \u00b7  ".join(meta))
         self._info_thumb.setPixmap(QPixmap())
@@ -2166,6 +2238,7 @@ class VidGrabWindow(QMainWindow):
         if busy:
             self._progress.setMaximum(0)
             self._progress.setValue(0)
+            self._status_lbl.setStyleSheet("")
             idx = self._stack.currentIndex()
             self._action.setText(
                 self._t("\u2b07  Downloading\u2026")
@@ -2469,13 +2542,23 @@ class VidGrabWindow(QMainWindow):
 
     def _on_result(self, result: object) -> None:
         self._set_busy(False)
-        self._progress.setMaximum(100)
-        self._progress.setValue(100)
-        self._status_lbl.setText(self._t("Done"))
         if isinstance(result, (tuple, list)):
-            paths = "\n".join(str(p) for p in result)
+            files = list(result)
         else:
-            paths = str(result)
+            files = [str(result)]
+        # Animate the bar to a full, green "done" state.
+        self._progress.setMaximum(100)
+        self._progress.setValue(0)
+        anim = QPropertyAnimation(self._progress, b"value", self)
+        anim.setDuration(400)
+        anim.setStartValue(0)
+        anim.setEndValue(100)
+        anim.start()
+        self._progress_anim = anim
+        self._status_lbl.setText(self._t("Done"))
+        self._status_lbl.setStyleSheet("color: #10b981; font-weight:700;")
+
+        paths = "\n".join(files)
         QMessageBox.information(
             self, self._t("Success"),
             self._t("Saved to:\n{paths}", paths=paths),
@@ -2486,6 +2569,7 @@ class VidGrabWindow(QMainWindow):
         self._progress.setMaximum(100)
         self._progress.setValue(0)
         self._status_lbl.setText(self._t("Failed"))
+        self._status_lbl.setStyleSheet("color: #ef4444; font-weight:700;")
         self._append_log(f"Error: {msg}")
         QMessageBox.critical(self, self._t("Something went wrong"), msg)
 

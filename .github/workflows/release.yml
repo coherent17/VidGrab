@@ -48,6 +48,13 @@ jobs:
           body: |
             Auto-built from tag ${{ github.ref_name }}.
 
+            ## What's new in 2.3.2
+            - **Full-resolution downloads** — video info now shows up to 2160p (it was capped at 360p) and downloads use the high-quality client direct; uploads that get rejected fall back to a reliable low-res client instead of failing
+            - **Likes / dislikes / comments** — the info card shows the social counts (dislikes supplied best-effort by the Return YouTube Dislike dataset)
+            - **Reliable trims** — trims now always fetch the full video and cut with ffmpeg locally; YouTube's ranged-section downloads previously got HTTP 403 or silently saved the whole file
+            - **New LOG section** — aligned card with a side-by-side Clear button, interactive green "done" progress, and a larger default window
+            - **Flag icons bundled** — all 12 language flags now ship as PNGs so they render on every OS
+
             ## Fixed in 2.3.1
             - The **inline preview player** on the Edit page now ships in the packaged Windows/Linux binaries. In 2.3.0 the build excluded QtMultimedia, so the release binary only had the ffplay pop-out preview — source builds were unaffected.
 

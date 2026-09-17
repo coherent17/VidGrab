@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.3.2
+
+- **Full-resolution downloads**: info card and downloads now probe with the `tv_embedded` player client, so video info shows up to 2160p instead of capping at 360p (and 1080p MP4 is a direct mp4 download)
+- **Likes / dislikes / comments**: the info card now shows those counts (dislikes best-effort from the Return YouTube Dislike dataset, skipped gracefully when unavailable)
+- **Reliable trims**: trimming now always downloads the full video and cuts locally with ffmpeg — YouTube's ranged (section) downloads either got HTTP 403 or silently returned the full file, which saved untrimmed videos
+- **Download fallback**: if the high-quality client's media URLs are rejected (403), the download retries with the low-res-but-reliable fallback client instead of failing
+- **Packaged Linux fix**: the Linux binary had `multimedia=0` on clean runners because QtMultimedia links PulseAudio/ALSA/xcb — release and CI builds now install those libraries, and a new CI `integration` job exercises real YouTube downloads on every push
+- **Bigger window** and a redesigned **LOG section** — a proper card, side-by-side Clear button, aligned with the other sections
+- **Interactive finish**: the progress bar animates to a green 100% when a download or processing job completes (upload button shows the saved path)
+- **Flag icons bundled**: all 12 language flags ship as bundled PNGs (no color-emoji font needed)
+
 ## 2.3.1
 
 - **Fix — inline preview missing from packaged builds**: the Edit-page preview player is back in `VidGrab.exe` / `VidGrab-linux` — the PyInstaller spec excluded `PySide6.QtMultimedia`, so the release binary only offered the ffplay pop-out preview (source builds were unaffected). QtMultimedia is now bundled again, and a hidden `--selftest` flag lets CI verify `multimedia` availability in the packaged binary

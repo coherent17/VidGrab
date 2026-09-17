@@ -48,11 +48,12 @@ jobs:
           body: |
             Auto-built from tag ${{ github.ref_name }}.
 
-            ## What's new in 2.2
-            - **New brand icon** — a futuristic cyber-chip design: chamfered tile, electric blue→cyan→violet→magenta gradient, neon outline + glow, play triangle with a download chevron, and the "VidGrab" wordmark (icon shown in the README)
-            - **日本語 (Japanese) and 한국어 (Korean)** — full UI localization for 4 languages total; Noto Sans CJK JP/KR fonts bundled so text renders perfectly on any OS
-            - **Makefile** — `setup`/`run`/`lint`/`test`/`build`/`clean`/`icon` targets replace `run.sh`
-            - **Repo polish** — build scripts consolidated under `scripts/`, session notes moved to `docs/`, `version_info.txt` derived from `_version.py`, single `requirements.txt`, zip artifact dropped
+            ## What's new in 2.3
+            - **Playlist & channel downloads** — paste any playlist/channel URL and grab every video in your chosen quality (MP4/MP3), numbered `01 – …`, with per-video progress
+            - **Video info card** — the download page shows the title, uploader, duration and available resolutions (or video count for playlists) before you download
+            - **Auto-detect on paste** — pasting a YouTube link instantly probes the video and fills the info card (debounced ~700 ms while typing)
+            - **In-window preview player** — the Edit page plays the loaded file with a seek timeline showing the exact second, so you can pinpoint trim start/end times
+            - **Localization × 12** — Español, Français, Deutsch, Português, Italiano, Русский, Tiếng Việt and Indonesia on top of English, 繁體中文, 日本語 and 한국어, each shown with its flag
 
             ## Downloads
             - `VidGrab.exe` — single self-contained Windows executable (ffmpeg + ffplay embedded)

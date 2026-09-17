@@ -5,6 +5,7 @@
 - **Playlist & channel downloads**: paste any playlist/channel URL and download every video in the selected quality (MP4/MP3) with `01 - …` numbering and per-video progress
 - **Video info card**: a preview card on the download page shows the title, uploader, duration and available resolutions (or video count for playlists) before you download
 - **Auto-detect on paste**: pasting a YouTube link instantly probes the video and fills the info card (debounced ~700 ms while typing)
+- **In-window media preview**: the Edit page now includes a preview card — an inline video/sound player with a seek timeline showing the current second, so you can read off the exact trim start/end times; dragging the scrubber jumps straight to that frame
 - **Localization × 12**: the picker now includes Español, Français, Deutsch, Português, Italiano, Русский, Tiếng Việt and Indonesia (each shown with its flag), on top of English, 繁體中文, 日本語 and 한국어
 
 ## 2.2.0

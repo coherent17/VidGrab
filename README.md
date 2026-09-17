@@ -21,6 +21,7 @@ Built with Python, PySide6 (Qt), yt-dlp and ffmpeg, packaged with PyInstaller
 - **Auto-detect on paste** — info card updates by itself ~700 ms after pasting or finishing typing
 - **Flip**, **trim**, and **speed (0.25×–4×)** for downloads and local files
 - **Live preview** — hear/see your flip/trim/speed settings before committing
+- **In-window preview player** — the Edit page plays the loaded file with a seek timeline showing the exact second, so you know where to trim
 - **Local file mode** — edit MP4/MP3/MKV/WebM by drag & drop or Browse
 - Offline indicator, dark/light theme, keyboard shortcuts (Ctrl+V paste, Ctrl+L clear log, F1 about)
 

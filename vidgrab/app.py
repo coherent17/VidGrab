@@ -10,13 +10,12 @@ import threading
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QEasingCurve,
     QProcess,
-    QPropertyAnimation,
     QSize,
     Qt,
     QThread,
     QTimer,
+    QUrl,
     Signal,
 )
 from PySide6.QtGui import QColor, QCursor, QFont, QIcon, QPainter, QPen, QPixmap
@@ -27,7 +26,6 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
-    QGraphicsOpacityEffect,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -63,6 +61,13 @@ from vidgrab.downloader import (
 )
 from vidgrab.i18n import LANGUAGES, make_translator
 from vidgrab.network import ConnectionStatus, check_internet
+
+try:
+    from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoSink
+    _QT_MULTIMEDIA_OK = True
+except Exception:  # noqa: BLE001 - Qt may be built without multimedia
+    QAudioOutput = QMediaPlayer = QVideoSink = None  # type: ignore[assignment]
+    _QT_MULTIMEDIA_OK = False
 
 # ── palette ────────────────────────────────────────────────────────────────
 #
@@ -241,6 +246,40 @@ QLabel#speed_value {
 QLabel#speed_marker {
     color: #7d8ba1;
     font-size: 11px;
+    background: transparent;
+}
+
+/* ── inline preview player ── */
+QLabel#preview_video {
+    background-color: #02040a;
+    border: 1px solid #253050;
+    border-radius: 10px;
+    color: #5a6b8c;
+    font-size: 13px;
+}
+QSlider#seek_slider::groove:horizontal {
+    height: 6px;
+    border-radius: 3px;
+    background: #1f2839;
+}
+QSlider#seek_slider::sub-page:horizontal {
+    height: 6px;
+    border-radius: 3px;
+    background: #4f7cff;
+}
+QSlider#seek_slider::handle:horizontal {
+    width: 16px;
+    height: 16px;
+    margin: -5px 0;
+    border-radius: 8px;
+    background: #7fa4ff;
+}
+QSlider#seek_slider::handle:horizontal:hover {
+    background: #a9c2ff;
+}
+QLabel#time_lbl {
+    color: #7d8ba1;
+    font-size: 12px;
     background: transparent;
 }
 
@@ -614,6 +653,40 @@ QLabel#speed_marker {
     background: transparent;
 }
 
+/* ── inline preview player ── */
+QLabel#preview_video {
+    background-color: #ffffff;
+    border: 1px solid #d3daea;
+    border-radius: 10px;
+    color: #94a3b8;
+    font-size: 13px;
+}
+QSlider#seek_slider::groove:horizontal {
+    height: 6px;
+    border-radius: 3px;
+    background: #d3daea;
+}
+QSlider#seek_slider::sub-page:horizontal {
+    height: 6px;
+    border-radius: 3px;
+    background: #4f7cff;
+}
+QSlider#seek_slider::handle:horizontal {
+    width: 16px;
+    height: 16px;
+    margin: -5px 0;
+    border-radius: 8px;
+    background: #3b66e5;
+}
+QSlider#seek_slider::handle:horizontal:hover {
+    background: #5a80ef;
+}
+QLabel#time_lbl {
+    color: #64748b;
+    font-size: 12px;
+    background: transparent;
+}
+
 QCheckBox {
     color: #334155;
     font-size: 13px;
@@ -819,10 +892,12 @@ _CARD_ACCENTS: dict[str, dict[str, str]] = {
     "dark": {
         "source": "#f43f5e", "format": "#10b981", "flip": "#06b6d4",
         "speed": "#f59e0b", "trim": "#8b5cf6", "save": "#4f7cff", "settings": "#8b5cf6",
+        "preview": "#06b6d4",
     },
     "light": {
         "source": "#e11d48", "format": "#059669", "flip": "#0891b2",
         "speed": "#d97706", "trim": "#7c3aed", "save": "#4f7cff", "settings": "#7c3aed",
+        "preview": "#0891b2",
     },
 }
 
@@ -1193,28 +1268,18 @@ class _Sidebar(QWidget):
 
 
 class _FadeStack(QStackedWidget):
-    """QStackedWidget with a fade animation on index change."""
+    """QStackedWidget for the main pages.
+
+    Pages switch instantly. A per-page opacity fade was removed: a
+    QGraphicsOpacityEffect over the stack forces a software compositing
+    pass that can draw all pages on top of one another (and destroy
+    performance) on systems with broken GL."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._effect = QGraphicsOpacityEffect(self)
-        self._effect.setOpacity(1.0)
-        self.setGraphicsEffect(self._effect)
-        self._anim = QPropertyAnimation(self._effect, b"opacity")
-        self._anim.setDuration(180)
-        self._anim.setEasingCurve(QEasingCurve.InOutQuad)
-        self._prev = 0
 
     def setCurrentIndex(self, idx: int) -> None:
-        if idx == self._prev:
-            return super().setCurrentIndex(idx)
-        self._anim.stop()
-        self._effect.setOpacity(0.0)
         super().setCurrentIndex(idx)
-        self._anim.setStartValue(0.0)
-        self._anim.setEndValue(1.0)
-        self._anim.start()
-        self._prev = idx
 
 
 # ── main window ────────────────────────────────────────────────────────────
@@ -1235,8 +1300,8 @@ class VidGrabWindow(QMainWindow):
         self._probe_data: dict | None = None
 
         self.setWindowTitle("VidGrab")
-        self.setMinimumSize(920, 680)
-        self.resize(1040, 760)
+        self.setMinimumSize(1024, 720)
+        self.resize(1280, 880)
         self.setAcceptDrops(True)
 
         self._apply_theme()
@@ -1512,7 +1577,13 @@ class VidGrabWindow(QMainWindow):
         self._ed_browse = bb
         sl.addLayout(row)
         lay.addWidget(src)
-        lay.addStretch(1)
+
+        body = QHBoxLayout()
+        body.setSpacing(12)
+
+        # left column — flip, trim, speed, save
+        left = QVBoxLayout()
+        left.setSpacing(12)
 
         row2 = QHBoxLayout()
         flip, flip_title, vl = self._card("FLIP", "flip_card", "flip")
@@ -1553,15 +1624,13 @@ class VidGrabWindow(QMainWindow):
         tr.addStretch()
         tcv.addLayout(tr)
         row2.addWidget(trim)
-        lay.addLayout(row2)
-        lay.addStretch(1)
+        left.addLayout(row2)
 
         speed, speed_title, svl = self._card("SPEED", "speed_card", "speed")
         self._ed_speed_title = speed_title
         self._espeed, _sv2, srow = _build_speed_row()
         svl.addLayout(srow)
-        lay.addWidget(speed)
-        lay.addStretch(1)
+        left.addWidget(speed)
 
         save, save_title, svl = self._card("SAVE TO", "save_card", "save")
         self._ed_save_title = save_title
@@ -1578,7 +1647,75 @@ class VidGrabWindow(QMainWindow):
         sr.addWidget(bb2)
         self._ed_browse2 = bb2
         svl.addLayout(sr)
-        lay.addWidget(save)
+        left.addWidget(save)
+        left.addStretch(1)
+
+        # right column — inline preview player
+        if _QT_MULTIMEDIA_OK:
+            preview, preview_title, pvl = self._card(
+                "PREVIEW", "preview_card", "preview"
+            )
+            preview.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+            self._ed_preview_title = preview_title
+
+            self._ed_video_lbl = QLabel("\u25b6")
+            self._ed_video_lbl.setObjectName("preview_video")
+            self._ed_video_lbl.setFixedSize(480, 300)
+            self._ed_video_lbl.setAlignment(Qt.AlignCenter)
+            self._ed_video_lbl.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            pvl.addWidget(self._ed_video_lbl)
+
+            ctrl = QWidget()
+            cl = QHBoxLayout(ctrl)
+            cl.setContentsMargins(0, 0, 0, 0)
+            cl.setSpacing(10)
+            self._ed_play_btn = QPushButton("\u25b6")
+            self._ed_play_btn.setObjectName("secondary")
+            self._ed_play_btn.setFixedSize(46, 32)
+            self._ed_play_btn.setCursor(QCursor(_HAND))
+            self._ed_play_btn.setEnabled(False)
+            self._ed_play_btn.clicked.connect(self._toggle_play)
+            self._ed_seek = QSlider(Qt.Orientation.Horizontal)
+            self._ed_seek.setObjectName("seek_slider")
+            self._ed_seek.setRange(0, 1)
+            self._ed_seek.setEnabled(False)
+            self._ed_seek.setCursor(QCursor(_HAND))
+            self._ed_seek.sliderPressed.connect(self._scrub_start)
+            self._ed_seek.sliderReleased.connect(self._scrub_end)
+            self._ed_seek.sliderMoved.connect(self._scrub_pos)
+            self._ed_time_lbl = QLabel("0:00 / 0:00")
+            self._ed_time_lbl.setObjectName("time_lbl")
+            self._ed_time_lbl.setMinimumWidth(96)
+            self._ed_time_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            cl.addWidget(self._ed_play_btn)
+            cl.addWidget(self._ed_seek, stretch=1)
+            cl.addWidget(self._ed_time_lbl)
+            pvl.addWidget(ctrl)
+
+            self._ed_player = QMediaPlayer(self)
+            self._ed_audio = QAudioOutput(self)
+            self._ed_player.setAudioOutput(self._ed_audio)
+            self._ed_sink = QVideoSink()
+            self._ed_sink.videoFrameChanged.connect(self._on_video_frame)
+            self._ed_player.setVideoSink(self._ed_sink)
+            self._ed_player.positionChanged.connect(self._on_media_position)
+            self._ed_player.durationChanged.connect(self._on_media_duration)
+            self._ed_player.mediaStatusChanged.connect(self._on_media_status)
+            self._ed_player.playbackStateChanged.connect(self._on_playback_state)
+            self._scrubbing = False
+            self._ed_media_timer = QTimer(self)
+            self._ed_media_timer.setSingleShot(True)
+            self._ed_media_timer.setInterval(450)
+            self._ed_media_timer.timeout.connect(self._load_edit_media)
+            self._file.textChanged.connect(lambda _t: self._ed_media_timer.start())
+        else:
+            self._ed_preview_title = None
+            self._ed_player = None
+
+        body.addLayout(left, stretch=3)
+        if _QT_MULTIMEDIA_OK:
+            body.addWidget(preview, stretch=2)
+        lay.addLayout(body)
         return _wrap_scroll(page)
 
     # ── settings form ──────────────────────────────────────────────────
@@ -1685,6 +1822,10 @@ class VidGrabWindow(QMainWindow):
 
     def _switch_page(self, idx: int) -> None:
         self._stack.setCurrentIndex(idx)
+        # Force a full repaint: on some Wayland/software renderers the
+        # previous page's pixels are left in the framebuffer, making pages
+        # look like they overlap ("collapsed together").
+        self._stack.repaint()
         if idx < 2:
             self._action.setVisible(True)
             self._action.setText(self._action_label(idx))
@@ -1774,6 +1915,8 @@ class VidGrabWindow(QMainWindow):
         self._populate_quality()
         # edit page
         self._ed_source_title.setText(t("SOURCE"))
+        if self._ed_preview_title is not None:
+            self._ed_preview_title.setText(t("PREVIEW"))
         self._ed_flip_title.setText(t("FLIP"))
         self._ed_trim_title.setText(t("TRIM"))
         self._ed_speed_title.setText(t("SPEED"))
@@ -2197,6 +2340,96 @@ class VidGrabWindow(QMainWindow):
         self._preview_proc.setProcessChannelMode(QProcess.SeparateChannels)
         self._preview_proc.start(args[0], args[1:])
 
+    # ── inline media player ────────────────────────────────────────────
+
+    def _load_edit_media(self) -> None:
+        """(Re)load the file shown in the SOURCE field into the preview player."""
+        player = self._ed_player
+        if player is None:
+            return
+        self._ed_media_timer.stop()
+        path = self._file.text().strip()
+        if not path or not Path(path).is_file():
+            player.setSource(QUrl())
+            self._ed_video_lbl.setPixmap(QPixmap())
+            self._ed_seek.setRange(0, 1)
+            self._ed_seek.setEnabled(False)
+            self._ed_play_btn.setEnabled(False)
+            self._ed_play_btn.setText("\u25b6")
+            self._ed_time_lbl.setText("0:00 / 0:00")
+            return
+        self._ed_video_lbl.setPixmap(QPixmap())
+        player.setSource(QUrl.fromLocalFile(str(Path(path))))
+        self._ed_play_btn.setEnabled(True)
+
+    def _fmt_ms(self, ms: int) -> str:
+        return _fmt_duration(ms / 1000.0)
+
+    def _on_video_frame(self, frame) -> None:
+        """Draw a decoded video frame onto the preview QLabel (raster-safe:
+        QVideoWidget needs a working OpenGL context, which is unavailable on
+        many Linux/WSLg setups — this path renders with plain Qt painting).
+
+        Frames are scaled into a fixed preview box so the display never
+        re-sizes as frames arrive."""
+        img = frame.toImage()
+        if img.isNull():
+            return
+        lbl = self._ed_video_lbl
+        pix = QPixmap.fromImage(img)
+        box = lbl.size()
+        if box.width() <= 1 or box.height() <= 1:
+            box = QSize(480, 300)
+        if pix.width() > box.width() or pix.height() > box.height():
+            pix = pix.scaled(box, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        lbl.setPixmap(pix)
+
+    def _on_media_position(self, ms: int) -> None:
+        if self._scrubbing:
+            return
+        total = self._ed_seek.maximum()
+        self._ed_seek.setValue(ms)
+        self._ed_time_lbl.setText(f"{self._fmt_ms(ms)} / {self._fmt_ms(total)}")
+
+    def _on_media_duration(self, ms: int) -> None:
+        self._ed_seek.setRange(0, max(0, ms))
+        self._ed_seek.setEnabled(ms > 0)
+        self._ed_time_lbl.setText(f"0:00 / {self._fmt_ms(ms)}")
+
+    def _on_media_status(self, status) -> None:
+        if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            if self._ed_player is not None:
+                self._ed_player.setPosition(0)
+            self._ed_play_btn.setText("\u25b6")
+
+    def _on_playback_state(self, state) -> None:
+        self._ed_play_btn.setText(
+            "\u23f8" if state == QMediaPlayer.PlaybackState.PlayingState else "\u25b6"
+        )
+
+    def _toggle_play(self) -> None:
+        player = self._ed_player
+        if player is None or not player.source().isValid():
+            return
+        if player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            player.pause()
+        else:
+            player.play()
+
+    def _scrub_start(self) -> None:
+        self._scrubbing = True
+
+    def _scrub_end(self) -> None:
+        self._scrubbing = False
+        if self._ed_player is not None:
+            self._ed_player.setPosition(self._ed_seek.value())
+
+    def _scrub_pos(self, ms: int) -> None:
+        if self._ed_player is not None:
+            self._ed_player.setPosition(ms)
+        total = self._ed_seek.maximum()
+        self._ed_time_lbl.setText(f"{self._fmt_ms(ms)} / {self._fmt_ms(total)}")
+
     # ── drag & drop ────────────────────────────────────────────────────
 
     def dragEnterEvent(self, event) -> None:
@@ -2285,6 +2518,9 @@ class VidGrabWindow(QMainWindow):
         for worker in list(self._probe_workers):
             if worker.isRunning():
                 worker.wait(3000)
+        if self._ed_player is not None:
+            self._ed_player.pause()
+            self._ed_player.setSource(QUrl())
         event.accept()
 
 

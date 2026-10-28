@@ -274,6 +274,12 @@ def test_ytdl_options_video_quality_best(tmp_path) -> None:
     assert opts["format"] == "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
 
 
+def test_ytdl_options_prefer_h264_at_same_resolution(tmp_path) -> None:
+    opts = downloader._ytdl_options("https://x", tmp_path, "mp4", ffmpeg=None, quality="720p")
+    sort = opts["format_sort"]
+    assert sort.index("res") < sort.index("vcodec:h264")
+
+
 def test_ytdl_options_video_quality_1080p(tmp_path) -> None:
     opts = downloader._ytdl_options("https://x", tmp_path, "mp4",
                                     ffmpeg=None, quality="1080p")
@@ -293,29 +299,6 @@ def test_ytdl_options_audio_default_bitrate(tmp_path) -> None:
 
 
 # ── preview args ────────────────────────────────────────────────────────
-
-def test_preview_args_plain() -> None:
-    args = downloader.preview_args("clip.mp4", 0.0, float("inf"), None, None)
-    assert args == ["-autoexit", "-t", "6.0", "clip.mp4"]
-
-
-def test_preview_args_filters() -> None:
-    args = downloader.preview_args("clip.mp4", 5.0, 20.0, "hflip", 2.0)
-    assert args[0:6] == ["-autoexit", "-ss", "5.0", "-t", "6.0", "-vf"]
-    joined = " ".join(args)
-    assert "hflip,setpts=(PTS-STARTPTS)/2.0+STARTPTS" in joined
-    assert "-af" in args and "atempo=2" in joined
-
-
-def test_find_ffplay_falls_back_to_path(monkeypatch) -> None:
-    class FakeFFmpeg:
-        parent = None
-        is_file = lambda self: False
-
-    monkeypatch.setattr(downloader, "find_ffmpeg", lambda: None)
-    monkeypatch.setattr(downloader.shutil, "which", lambda name: "/usr/bin/ffplay")
-    assert downloader.find_ffplay() == "/usr/bin/ffplay"
-
 
 # ── misc ──────────────────────────────────────────────────────────────────
 

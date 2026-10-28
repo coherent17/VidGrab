@@ -3,8 +3,8 @@
 
 ffmpeg is embedded from a platform folder (`ffmpeg/win/ffmpeg.exe` on
 Windows, `ffmpeg/linux/ffmpeg` on Linux, legacy `ffmpeg/` as fallback)
-and extracted to sys._MEIPASS/ffmpeg at runtime. Assets (icon) are
-bundled too.
+and extracted to sys._MEIPASS/ffmpeg at runtime. Assets (icon, CJK font,
+flags) are bundled too.
 """
 
 import os
@@ -16,13 +16,8 @@ ROOT = Path(SPECPATH)
 
 # --- icon / assets -------------------------------------------------------
 _datas: list[tuple[str, str]] = []
-for _name in (
-    "icon.ico",
-    "icon.png",
-    "NotoSansTC-Regular.otf",
-    "NotoSansJP-Regular.otf",
-    "NotoSansKR-Regular.otf",
-):
+# NotoSansTC renders the zh UI and burned-in Chinese subtitles (Studio).
+for _name in ("icon.ico", "icon.png", "NotoSansTC-Regular.otf"):
     _src = str(ROOT / "assets" / _name)
     if os.path.isfile(_src):
         _datas.append((_src, "assets"))
@@ -37,10 +32,10 @@ if _flags_dir.is_dir():
 
 # --- ffmpeg: platform-aware, with legacy fallback ------------------------
 if sys.platform == "win32":
-    _ffmpeg_names = ("ffmpeg.exe", "ffprobe.exe", "ffplay.exe")
+    _ffmpeg_names = ("ffmpeg.exe", "ffprobe.exe")
     _platform_subdir = "win"
 else:
-    _ffmpeg_names = ("ffmpeg", "ffprobe", "ffplay")
+    _ffmpeg_names = ("ffmpeg", "ffprobe")
     _platform_subdir = "linux"
 
 for _name in _ffmpeg_names:
@@ -63,7 +58,13 @@ a = Analysis(
         "vidgrab",
         "vidgrab.app",
         "vidgrab.downloader",
+        "vidgrab.downloads_panel",
+        "vidgrab.i18n",
+        "vidgrab.jobs",
         "vidgrab.network",
+        "vidgrab.preview",
+        "vidgrab.studio",
+        "vidgrab.studio_page",
         "PySide6.QtCore",
         "PySide6.QtGui",
         "PySide6.QtMultimedia",
@@ -106,10 +107,6 @@ a = Analysis(
         "PySide6.QtWebEngineCore",
         "PySide6.QtWebEngineWidgets",
         "PySide6.QtWebSockets",
-        "PySide6.Qt3DAnimation",
-        # customtkinter remnants
-        "customtkinter",
-        "darkdetect",
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

@@ -3,16 +3,30 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  check-version:
+    # The tag must match vidgrab/_version.py so the app, the exe resource and
+    # the release all report the same version.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches vidgrab/_version.py
+        run: |
+          APP=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' vidgrab/_version.py)
+          TAG="${GITHUB_REF_NAME#v}"
+          echo "app=$APP tag=$TAG"
+          [ "$APP" = "$TAG" ] || { echo "::error::tag v$TAG does not match _version.py ($APP)"; exit 1; }
+
   build:
+    needs: check-version
     uses: ./.github/workflows/build-windows.yml
 
   build-linux:
+    needs: check-version
     uses: ./.github/workflows/build-linux.yml
 
   release:
@@ -35,47 +49,41 @@ jobs:
 
       - name: Prepare release assets
         run: |
-          mv release-linux/VidGrab "release/VidGrab-linux"
-          mv release-linux/VidGrab-linux.tar.xz "release/VidGrab-linux.tar.xz"
-          chmod +x "release/VidGrab-linux"
+          mv release/VidGrab.exe "release/VidGrab-windows-x64.exe"
+          mv release-linux/VidGrab "release/VidGrab-linux-x64"
+          mv release-linux/VidGrab-linux.tar.xz "release/VidGrab-linux-x64.tar.xz"
+          chmod +x "release/VidGrab-linux-x64"
+          (cd release && sha256sum * > SHA256SUMS.txt)
           ls -lh release
+          cat release/SHA256SUMS.txt
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          # the section between "## <version>" and the next "## " heading
+          awk -v v="$VER" '
+            $0 ~ "^## " { if (found) exit; if ($2 == v) { found = 1; next } }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "Release ${GITHUB_REF_NAME}." > notes.md
+          cat >> notes.md <<'EOF'
+
+          ### Downloads
+
+          | Platform | File |
+          |----------|------|
+          | Windows 10/11 (x64) | `VidGrab-windows-x64.exe` — double-click to run |
+          | Linux (x64, glibc ≥ 2.35) | `VidGrab-linux-x64` — `chmod +x` then run (or the `.tar.xz`) |
+
+          Both are single, self-contained executables with ffmpeg / ffprobe embedded — nothing else to install.
+          Verify downloads with `SHA256SUMS.txt`.
+          EOF
+          cat notes.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: VidGrab ${{ github.ref_name }}
-          body: |
-            Auto-built from tag ${{ github.ref_name }}.
-
-            ## What's new in 2.3.2
-            - **Full-resolution downloads** — video info now shows up to 2160p (it was capped at 360p) and downloads use the high-quality client direct; uploads that get rejected fall back to a reliable low-res client instead of failing
-            - **Likes / dislikes / comments** — the info card shows the social counts (dislikes supplied best-effort by the Return YouTube Dislike dataset)
-            - **Reliable trims** — trims now always fetch the full video and cut with ffmpeg locally; YouTube's ranged-section downloads previously got HTTP 403 or silently saved the whole file
-            - **New LOG section** — aligned card with a side-by-side Clear button, interactive green "done" progress, and a larger default window
-            - **Flag icons bundled** — all 12 language flags now ship as PNGs so they render on every OS
-
-            ## Fixed in 2.3.1
-            - The **inline preview player** on the Edit page now ships in the packaged Windows/Linux binaries. In 2.3.0 the build excluded QtMultimedia, so the release binary only had the ffplay pop-out preview — source builds were unaffected.
-
-            ## What's new in 2.3
-            - **Playlist & channel downloads** — paste any playlist/channel URL and grab every video in your chosen quality (MP4/MP3), numbered `01 – …`, with per-video progress
-            - **Video info card** — the download page shows the title, uploader, duration and available resolutions (or video count for playlists) before you download
-            - **Auto-detect on paste** — pasting a YouTube link instantly probes the video and fills the info card (debounced ~700 ms while typing)
-            - **In-window preview player** — the Edit page plays the loaded file with a seek timeline showing the exact second, so you can pinpoint trim start/end times
-            - **Localization × 12** — Español, Français, Deutsch, Português, Italiano, Русский, Tiếng Việt and Indonesia on top of English, 繁體中文, 日本語 and 한국어, each shown with its flag
-
-            ## Downloads
-            - `VidGrab.exe` — single self-contained Windows executable (ffmpeg + ffplay embedded)
-            - `VidGrab-linux` — self-contained Linux binary (ffmpeg + ffplay embedded, x86_64)
-            - `VidGrab-linux.tar.xz` — same binary, compressed
-
-            ## What's inside
-            - YouTube downloader (MP4 / MP3 / both) via yt-dlp
-            - Local file mode: flip, trim & speed MP4/MP3/MKV straight from disk
-            - PySide6 (Qt) dark/light sidebar GUI, internet status, progress + log
-          fail_on_unmatched_files: false
-          files: |
-            release/VidGrab.exe
-            release/VidGrab-linux
-            release/VidGrab-linux.tar.xz
+          body_path: notes.md
+          files: release/*

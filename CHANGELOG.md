@@ -1,5 +1,35 @@
 # Changelog
 
+## 3.0.0
+
+- **Studio (new)** — an editor-style workspace that replaces the Edit page. It fits the window with no scrolling:
+  - **Layout**: a large preview on top that plays the finished result (play / pause), an **Inspector** beside it (project, subtitle or music settings), and a **timeline** below in which **every clip has its own row**, plus Subtitles and Music rows. Thumbnails show for video and waveforms for audio
+  - **Trimming with two handles**: drag a clip's left handle to choose where it starts and its right handle to choose where it ends. The preview shows the frame under the handle, and the faint area shows the rest of the source. Drag a clip up or down to reorder it
+  - **Music medley**: join different songs, or sections of songs, into one MP3 / M4A / WAV with an optional crossfade
+  - **Video montage**: join different videos into one MP4. Clips of any size or orientation are fitted to one frame (match the first clip, 1080p / 720p / 480p, vertical 9:16 or square), and clips without sound get silence
+  - **Subtitles**: add a line at the playhead, then **drag it in the viewer to position it**. Drag or resize its block on the timeline to retime it. Import / export `.srt`, and set size and colour. Burned in as ASS so the render matches the preview; Chinese renders with the bundled Noto Sans CJK TC
+  - **Subtitle colours**: pick the text colour and a background box (none / transparent, black, dark gray, white, yellow, or any custom colour) with adjustable opacity. The preview shows exactly what gets rendered
+  - **Subtitle tools**: a 3×3 quick-position grid (alongside dragging), split a line at the playhead, duplicate a line, font choice (bundled CJK font or any installed font, which is handed to ffmpeg so the render matches), bold, and fade in / out
+  - **Background music**: mix a song under the montage with separate music / original-audio volume, looping and an end fade-out
+  - Drop files anywhere in the window to add them. Rendering shows real progress
+- **Edit page removed**: trimming now lives in the Studio. Flip / speed remain on the Download page. The ffplay-based preview and the bundled `ffplay` binary are gone
+- **Download queue + recent downloads (replaces the log)**: paste several links at once; each download gets a row with thumbnail, progress, speed and ETA, and **Cancel / Retry**. Finished downloads are remembered across restarts with **Send to Studio** (adds the file, and its subtitles, to the Studio timeline). Technical details now go to `vidgrab.log` in the config folder instead of the window
+- **MP4 downloads prefer H.264**: at the chosen resolution VidGrab now picks H.264 over AV1. YouTube often serves AV1 in MP4, which many players (and the Studio preview) can't decode. 1440p / 4K, which exist only as VP9 / AV1, are still downloaded at full resolution
+- **Connection status keeps updating**: the online check used to run once at startup, so starting offline left Download disabled until a restart. It now re-checks every 5 s while offline and every 30 s while online
+- **Several links at once**: pasting a list of links (Ctrl+V or Paste) shows each one in the Video Info card with its thumbnail, title and length (or video count for playlists, with a per-playlist "Download whole playlist" box). Drop any link with ✕ before pressing Download
+- **YouTube subtitles**: optionally download a video's captions (Traditional / Simplified Chinese, English, Japanese; uploaded or auto-generated) as `.srt`, or burn them into the video. Timings follow the trim / speed settings
+- **Download page redesigned**: a link bar with Paste and a large Download button, the video card beside a compact options card, and progress + log below. Nothing scrolls
+- **Navigation rail**: the 212 px sidebar became an 84 px icon rail
+- **Chinese subtitle text**: a Paste button next to the subtitle text (WSL can't pass the Windows IME to Linux apps). ibus is enabled automatically when installed
+- **Redesigned UI**: violet→cyan theme, page headers, rounded cards with accent bars, pill navigation, drawn chevrons and icons (no emoji-font dependency), all generated from one stylesheet template shared by dark and light
+- **Languages**: the UI now ships in **English and 繁體中文** only (the other 10 languages, their flags and the JP/KR fonts were removed; a saved language that no longer exists falls back to English)
+- **Release / CI**:
+  - release assets are now `VidGrab-windows-x64.exe`, `VidGrab-linux-x64` (+ `.tar.xz`) and `SHA256SUMS.txt`, with notes taken from this changelog
+  - the release fails if the tag doesn't match `vidgrab/_version.py`
+  - the Linux binary is built on Ubuntu 22.04, so it runs on older distros
+  - CI also runs the tests on Windows
+  - each build renders Studio projects with the exact ffmpeg it bundles
+
 ## 2.3.2
 
 - **Full-resolution downloads**: info card and downloads now probe with the `tv_embedded` player client, so video info shows up to 2160p instead of capping at 360p (and 1080p MP4 is a direct mp4 download)

@@ -1,0 +1,52 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+VidGrab — a PySide6 (Qt) desktop app that downloads YouTube videos/playlists/channels as MP4/MP3 via yt-dlp (optionally flipped / trimmed / sped up) and joins clips in an editor-style Studio (music medley, or video montage with positioned burned-in subtitles and background music) via ffmpeg. Pages: Download, Studio, Settings. UI languages: English and Traditional Chinese only. Shipped as a single-file PyInstaller binary for Windows and Linux with ffmpeg/ffprobe embedded.
+
+## Commands
+
+```bash
+make setup      # create .venv + install requirements.txt (one-time)
+make run        # python -m vidgrab
+make lint       # ruff check vidgrab tests scripts   (CI runs `ruff check .`)
+make test       # SMOKE_GUI=1 QT_QPA_PLATFORM=offscreen pytest -v
+make build      # write_version_info.py + PyInstaller VidGrab.spec → dist/VidGrab
+make icon       # regenerate assets/icon.{png,ico} + docs/icon.png from vidgrab/icon.py
+```
+
+Single test: `.venv/bin/python -m pytest tests/test_downloader.py::test_name -v`
+
+Test gating via environment variables:
+- `SMOKE_GUI=1` (+ `QT_QPA_PLATFORM=offscreen`) — enables `tests/test_gui_smoke.py`; skipped otherwise.
+- `VIDGRAB_INTEGRATION=1` — enables `tests/test_integration.py` (real YouTube downloads + ffmpeg). Skips itself when YouTube bot-blocks the IP. CI runs it only on pushes to main.
+- ffmpeg-dependent tests in `test_downloader.py` skip when ffmpeg/ffprobe aren't on PATH.
+
+## Architecture
+
+- `vidgrab/downloader.py` — all non-GUI logic, Qt-free and unit-testable. Public entry points: `probe()` (info card metadata), `download()`, `download_both()` (MP4+MP3 single pass), `download_playlist()`, `derive_mp3()`. `process_local_file()` has no UI caller any more; it stays as the tested entry point for the shared `_trim` post-processing. Each takes `on_progress`, `on_log` callbacks and a `translate` function so user-facing messages are localized without importing Qt or i18n state.
+- `vidgrab/studio.py` — Qt-free Studio engine: `compose_audio()` / `compose_video()` build **one** ffmpeg `-filter_complex` graph (per-clip `-ss/-t` inputs → normalize → `concat` or chained `acrossfade` → optional `subtitles` → optional `amix` music bed) and parse `-progress pipe:1` for real progress. `build_*_command()` are pure and unit-tested. Subtitles are written as **ASS** (`format_ass`) with `PlayRes` = output size. Cues with `x`/`y` get `\\an5\\pos()`, and sizes are given against libass's 288-line reference (`subtitle_scale`). They are burned in by running ffmpeg with `cwd` set to a temp dir that holds `subs.ass` and a `fonts/` copy of the bundled Noto Sans CJK TC. That avoids the subtitles filter's Windows path-escaping problems and fontconfig lookups.
+- `vidgrab/app.py` — the entire GUI: one `_QSS_TEMPLATE` rendered with `_PALETTES["dark"|"light"]` (`@TOKEN@` substitution) into `DARK_QSS`/`LIGHT_QSS`; `_Worker(QThread)` dispatches a named task (`probe`, `download`, `download_both`, `download_playlist`, `compose_video`, `compose_audio`) and relays results via Qt signals. Pages are indexed by `PAGE_DOWNLOAD/STUDIO/SETTINGS` (header text in `_PAGE_HEADERS`). The bottom log / progress / Download panel (`_bottom`) is shown only on the Download page.
+- `vidgrab/jobs.py` — Qt-free `DownloadJob` + `run_job()`: one queued download, which is the media (`download` / `download_both` / `download_playlist`) plus optional captions (`downloader.fetch_subtitles`). Captions are retimed for trim/speed (`studio.retime_cues`) and either saved as `.srt` or burned in through `studio.compose_video`.
+- `vidgrab/downloads_panel.py` — the Downloads list on the Download page: `DownloadItem` rows (queued / running / done / failed / cancelled) with Send to Studio, Cancel and Retry; finished items persist in `<config>/history.json`. The queue logic itself lives in `VidGrabWindow` (`_queue`, `_run_next_job`, `_dl_worker`): one job at a time, oldest first. Cancelling sets `_Worker.cancel()`, and the next progress callback raises `downloader.DownloadCancelled` (a yt-dlp `DownloadCancelled` subclass, so yt-dlp lets it through; the client-fallback loops re-raise it). There's no log in the UI: `_append_log` writes `<config>/vidgrab.log`.
+- `vidgrab/studio_page.py` — `StudioPage`: toolbar, preview + Inspector (project / subtitle / music pages), and `TrackTimeline`. The timeline is painted, with **one row per clip** plus Subtitles and Music rows. Each clip block has start/end trim handles; the scale is frozen while dragging, and the dimmed "ghost" shows the rest of the source. Dragging a block vertically reorders; subtitle blocks move and resize. Thumbnails and waveforms come from `studio.thumbnail_png` / `studio.waveform`. It owns the project model (`_MediaClip` list + `SubtitleCue` list; selection is `("clip"|"cue", index)`). It talks to the window only through a small host interface on `VidGrabWindow` (`t`, `icon`, `log`, `pick_*`, `ffmpeg_ok`, `default_output_dir`) and emits `render_requested(task, kwargs)`. Widgets register for re-translation via `_tr()`.
+- `vidgrab/preview.py` — `StudioPreview`: one `QMediaPlayer` painted through a `QVideoSink` onto `VideoCanvas`, because QVideoWidget needs OpenGL, which WSLg and many Linux setups lack. It always previews the whole montage: it chains segments, switching source at each out-point, and overlays subtitles. While a trim handle moves, the page reloads the segments and seeks to the frame under the handle. Subtitles which can be dragged (`cue_moved` emits x/y fractions). The canvas converts libass font size (line height) to Qt pixel size (em) so the preview matches the render. Avoid emoji in UI text: there is no emoji font on many systems, so icons are drawn with `_icon()`. Config (theme, language) persists as JSON in a per-user config dir (`_config_dir()`).
+- `vidgrab/i18n.py` — `TRANS[lang][english_source_string]`; the English string *is* the key. `test_i18n.py` enforces that `zh` has exactly the English key set, so **any new or changed user-facing string must be added to both the `en` and `zh` tables**. Language switching re-applies text via `_apply_language()` / `retranslate()`.
+- `vidgrab/network.py` — offline indicator probe. `vidgrab/icon.py` — programmatic icon drawing.
+- `vidgrab/_version.py` — single source of truth for the version; `scripts/write_version_info.py` derives the Windows `version_info.txt` from it.
+
+### Download pipeline gotchas (from history; don't regress)
+- yt-dlp uses player client `tv_embedded` first (full resolution ladder), falling back to `android` (≤360p but reliable) when YouTube returns 403.
+- Trims always download the full video then cut locally with ffmpeg — YouTube range requests (`download_sections`) 403 or silently return the full file.
+- Intermediate files use temp suffixes (`.mp3tmp`, `.proctmp`, `.trimtmp`) and are renamed at the end, so MP3 extraction never clobbers an existing `.mp4` of the same title. `_locate_output()` finds the produced file by title/suffix.
+- `find_ffmpeg()` search order: `sys._MEIPASS/ffmpeg/{win,linux}/…`, then `ffmpeg/` next to the exe, then PATH. Studio's `find_ffprobe()` looks beside ffmpeg first.
+
+## Packaging & release
+
+- `VidGrab.spec` embeds ffmpeg binaries from `ffmpeg/win/` or `ffmpeg/linux/` (legacy `ffmpeg/` fallback) plus `assets/` (icons, flags, NotoSans CJK fonts) and QtMultimedia. ffmpeg binaries are **never committed** — CI fails if any are tracked; see `ffmpeg/README.txt` for sources. CI workflows download them at build time.
+- Release = bump `vidgrab/_version.py`, add a `## <version>` section to `CHANGELOG.md`, then push a matching `v*` tag. `release.yml` fails on a tag/version mismatch, then builds both platforms and publishes `VidGrab-windows-x64.exe`, `VidGrab-linux-x64[.tar.xz]` and `SHA256SUMS.txt`. The notes come from that changelog section.
+- The Linux binary is built on `ubuntu-22.04` on purpose (glibc floor); don't bump it to `ubuntu-latest`. Its runner needs PulseAudio/ALSA/xcb libs or QtMultimedia (inline preview) silently drops out; the `--selftest` step catches that.
+- `fetch_subtitles` must request **exact** caption codes (`SUBTITLE_LANGS`). Wildcards such as `en-.*` also match YouTube's auto-translated tracks and trigger HTTP 429; `ignoreerrors` keeps the tracks that did download.
+- Both build workflows run `tests/test_studio.py` against the ffmpeg they are about to embed (libass/amix/acrossfade must be present).

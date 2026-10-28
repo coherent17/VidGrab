@@ -21,10 +21,7 @@ def test_no_stray_keys_outside_english() -> None:
 
 def test_languages_include_flags() -> None:
     codes = list(LANGUAGES)
-    assert codes == [
-        "en", "zh", "ja", "ko", "es", "fr",
-        "de", "pt", "it", "ru", "vi", "id",
-    ]
+    assert codes == ["en", "zh"]
     for label in LANGUAGES.values():
         assert " " in label
         flag, _, name = label.partition(" ")
@@ -37,18 +34,9 @@ def test_fallback_to_english() -> None:
     assert translate("fr", "{count} videos", count=3).startswith("3")
 
 
-def test_format_strings_render_in_sample_languages() -> None:
-    spot = {
-        "de": "Playlist herunterladen ({count} videos)",
-        "ko": "\ub3d9\uc601\uc0c1 \uc815\ubcf4",
-    }
-    for lang in spot:
-        assert lang in TRANS, f"language {lang!r} not registered"
-    assert (
-        translate("de", "Download playlist ({count} videos)", count=3)
-        == "Playlist herunterladen (3 Videos)"
-    )
-    assert TRANS["ko"]["VIDEO INFO"] == "\ub3d9\uc601\uc0c1 \uc815\ubcf4"
+def test_format_strings_render_in_chinese() -> None:
+    assert translate("zh", "{n} clips \u00b7 {dur}", n=3, dur="1:05") == "3 \u500b\u7247\u6bb5 \u00b7 1:05"
+    assert TRANS["zh"]["Subtitles"] == "\u5b57\u5e55"
 
 
 def test_new_feature_keys_are_translated_everywhere() -> None:
@@ -61,8 +49,6 @@ def test_new_feature_keys_are_translated_everywhere() -> None:
         "{count} videos",
         "Up to {res}",
         "Downloading video {n} of {total}\u2026",
-        "Playlists download each video in the selected format; trim, flip and speed are skipped.",
-        "Playlist",
     ]
     for lang in TRANS:
         for key in new_keys:

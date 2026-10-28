@@ -23,12 +23,31 @@ TranslateFn = Callable[..., str]
 
 DEFAULT_MP3_BITRATE = "192"
 
+class DownloadCancelled(yt_dlp.utils.DownloadCancelled):
+    """Raised from a progress callback to stop a download the user cancelled.
+
+    Subclasses yt-dlp's own cancellation so yt-dlp lets it propagate."""
+
+
 MIN_SPEED = 0.25
 MAX_SPEED = 4.0
 
 
 def _noop_tr(text: str, **kw: object) -> str:
     return text.format(**kw) if kw else text
+
+
+def _rate(data: dict) -> str:
+    """' · 2.3 MB/s · 0:12' from a yt-dlp progress dict ('' when unknown)."""
+    parts = []
+    speed = data.get("speed")
+    if speed:
+        parts.append(f"{_human_size(speed)}/s")
+    eta = data.get("eta")
+    if eta is not None and eta >= 0:
+        m, sec = divmod(int(eta), 60)
+        parts.append(f"{m}:{sec:02d}")
+    return "".join(f" \u00b7 {p}" for p in parts)
 
 
 # ── locations ─────────────────────────────────────────────────────────────
@@ -83,16 +102,6 @@ def find_ffmpeg() -> str | None:
     return shutil.which(ffmpeg_cmd)
 
 
-def find_ffplay() -> str | None:
-    """Locate ffplay next to ffmpeg (same folder), then PATH."""
-    ffmpeg = find_ffmpeg()
-    if ffmpeg:
-        peer = Path(ffmpeg).parent / ("ffplay.exe" if sys.platform == "win32" else "ffplay")
-        if peer.is_file():
-            return str(peer)
-    return shutil.which("ffplay.exe" if sys.platform == "win32" else "ffplay")
-
-
 def _ensure_ffmpeg_on_path(ffmpeg: str) -> None:
     """Put the bundled ffmpeg folder on PATH so yt-dlp can find its tools."""
     _ffmpeg_dir = os.path.dirname(ffmpeg)
@@ -101,37 +110,6 @@ def _ensure_ffmpeg_on_path(ffmpeg: str) -> None:
 
 
 # ── output locating ───────────────────────────────────────────────────────
-
-def preview_args(
-    path: str | Path,
-    start: float,
-    end: float,
-    video_filter: str | None,
-    speed: float | None,
-    limit: float = 6.0,
-) -> list[str]:
-    """ffplay argv that previews the trim with speed/flip applied live.
-
-    Runs without encoding: ffplay decodes and shows the first *limit*
-    seconds of the selected section through the same filters used by
-    `_trim`, so the preview matches the final output."""
-    args = ["-autoexit"]
-    if start:
-        args += ["-ss", str(start)]
-    length = min(limit, (end - start) if end != float("inf") else limit)
-    args += ["-t", str(max(length, 0.01))]
-    vf_parts = []
-    if video_filter:
-        vf_parts.append(video_filter)
-    if speed is not None:
-        vf_parts.append(f"setpts=(PTS-STARTPTS)/{speed}+STARTPTS")
-    if vf_parts:
-        args += ["-vf", ",".join(vf_parts)]
-    if speed is not None:
-        args += ["-af", ",".join(_atempo_chain(speed))]
-    args.append(str(path))
-    return args
-
 
 def _atempo_chain(speed: float) -> list[str]:
     """ffmpeg filters that change audio tempo to *speed* (0.5x..2.0x each)."""
@@ -355,6 +333,10 @@ def derive_mp3(
 
 
 # ── local file processing ─────────────────────────────────────────────────
+#
+# Not called by the UI any more (the Edit page became the Studio), but it is
+# the tested entry point for the same trim / flip / speed post-processing
+# (`_trim`) that downloads run through.
 
 def process_local_file(
     input_path: str | Path,
@@ -496,6 +478,10 @@ def _ytdl_options(
     return {
         **common,
         "format": fmt_sel,
+        # at a given resolution prefer H.264: YouTube's MP4s are often AV1,
+        # which many players (and Qt's preview) can't decode. Resolution
+        # still wins, so 1440p / 4K (VP9 / AV1 only) stay available.
+        "format_sort": ["proto:https", "res", "vcodec:h264"],
         "merge_output_format": "mp4",
     }
 
@@ -750,11 +736,12 @@ def download_playlist(
             pct = min(100.0, downloaded / total * 100)
             if current and total_n:
                 on_progress(
-                    tr("Downloading video {n} of {total}…", n=current, total=total_n),
+                    tr("Downloading video {n} of {total}…", n=current, total=total_n)
+                    + _rate(data),
                     pct,
                 )
             else:
-                on_progress(tr("Downloading… {pct:.1f}%", pct=pct), pct)
+                on_progress(tr("Downloading… {pct:.1f}%", pct=pct) + _rate(data), pct)
         else:
             if current and total_n:
                 on_progress(
@@ -788,6 +775,8 @@ def download_playlist(
             extract(client)
             info = object()
             break
+        except DownloadCancelled:
+            raise
         except Exception as exc:  # noqa: BLE001 - try the next client
             last_exc = exc
             log(tr("Download failed with {client} ({exc}); retrying.", client=client, exc=exc))
@@ -858,9 +847,9 @@ def download(
             downloaded = data.get("downloaded_bytes", 0)
             if total:
                 pct = min(100.0, downloaded / total * 100)
-                on_progress(tr("Downloading… {pct:.1f}%", pct=pct), pct)
+                on_progress(tr("Downloading… {pct:.1f}%", pct=pct) + _rate(data), pct)
             else:
-                on_progress(tr("Downloading…"), None)
+                on_progress(tr("Downloading…") + _rate(data), None)
         elif status == "finished":
             on_progress(tr("Processing…"), 95.0)
 
@@ -909,6 +898,8 @@ def download(
         try:
             info = extract(client)
             break
+        except DownloadCancelled:
+            raise
         except Exception as exc:  # noqa: BLE001 - try the next client
             last_exc = exc
             log(tr("Download failed with {client} ({exc}); retrying.", client=client, exc=exc))
@@ -1013,3 +1004,89 @@ def download_both(
         translate=translate,
     )
     return mp4_path, mp3_path
+
+
+# ── YouTube subtitles ─────────────────────────────────────────────────────
+
+# language key -> exact YouTube caption codes, best first. No wildcards: a
+# pattern like "en-.*" also matches YouTube's auto-translated tracks
+# ("en-de", …), which multiplies requests and trips HTTP 429.
+SUBTITLE_LANGS: dict[str, list[str]] = {
+    "zh-Hant": ["zh-TW", "zh-Hant", "zh-HK"],
+    "zh-Hans": ["zh-CN", "zh-Hans", "zh"],
+    "en": ["en", "en-US", "en-GB"],
+    "ja": ["ja"],
+}
+
+
+def fetch_subtitles(
+    url: str,
+    output_dir: str | Path,
+    lang: str,
+    base_name: str,
+    *,
+    on_log: LogCallback | None = None,
+    translate: TranslateFn | None = None,
+) -> Path | None:
+    """Save the video's captions in *lang* as ``<base_name>.<lang>.srt``.
+
+    Uploaded captions are preferred; YouTube's auto-generated (or
+    auto-translated) captions are used when there are none. Returns None
+    when the video has no captions in that language."""
+    tr = translate or _noop_tr
+    output_path = Path(output_dir)
+    ffmpeg = find_ffmpeg()
+    patterns = SUBTITLE_LANGS.get(lang, [lang])
+    before = time.time()
+    opts: dict = {
+        "skip_download": True,
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        # one failing track (e.g. HTTP 429) must not discard the others
+        "ignoreerrors": True,
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+        "subtitleslangs": patterns,
+        "subtitlesformat": "srt/vtt/best",
+        "outtmpl": {"subtitle": str(output_path / f"{base_name}.%(ext)s"),
+                    "default": str(output_path / f"{base_name}.%(ext)s")},
+        "postprocessors": [{"key": "FFmpegSubtitlesConvertor", "format": "srt"}],
+    }
+    if ffmpeg:
+        opts["ffmpeg_location"] = ffmpeg
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.extract_info(url, download=True)
+    except DownloadCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001 - captions are optional; keep what was saved
+        if on_log:
+            on_log(tr("Could not download subtitles: {exc}", exc=exc))
+    found = [
+        p for p in output_path.glob(f"{glob_escape(base_name)}.*.srt")
+        if p.stat().st_mtime >= before - 1
+    ]
+    if not found:
+        if on_log:
+            on_log(tr("No subtitles in that language for this video."))
+        return None
+    # keep the best-ranked language, drop extra matches
+    def rank(p: Path) -> int:
+        code = p.suffixes[-2].lstrip(".") if len(p.suffixes) >= 2 else ""
+        return patterns.index(code) if code in patterns else len(patterns)
+    found.sort(key=rank)
+    best = found[0]
+    for extra in found[1:]:
+        extra.unlink(missing_ok=True)
+    final = output_path / f"{base_name}.{lang}.srt"
+    if best != final:
+        final.unlink(missing_ok=True)
+        best.rename(final)
+    return final
+
+
+def glob_escape(name: str) -> str:
+    return re.sub(r"([\[\]*?])", r"[\1]", name)
+

@@ -6,14 +6,20 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Build on the oldest supported Ubuntu: a PyInstaller binary only runs on
+    # systems whose glibc is at least as new as the build host's.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: Install system packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3 python3-venv zip \
+          sudo apt-get install -y zip \
             libegl1 libgl1 libxkbcommon0 libfontconfig1 \
             libpulse0 libxcb-cursor0
           # ALSA lib was renamed libasound2 -> libasound2t64 on new Ubuntu images.
@@ -21,7 +27,7 @@ jobs:
 
       - name: Create build venv
         run: |
-          python3 -m venv .venv
+          python -m venv .venv
           .venv/bin/python -m pip install --upgrade pip
           .venv/bin/python -m pip install -r requirements.txt
 
@@ -43,27 +49,10 @@ jobs:
           chmod +x ffmpeg/linux/ffmpeg ffmpeg/linux/ffprobe
           rm -f ffmpeg-release-amd64-static.tar.xz
 
-      # johnvansickle's static builds no longer ship ffplay (since 7.0.x),
-      # so pull that single binary from BtbN's static GPL builds instead.
-      - name: Download static ffplay
-        run: |
-          curl -fsSL --retry 5 --retry-all-errors --connect-timeout 20 \
-            https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz \
-            -o ffmpeg-master-latest-linux64-gpl.tar.xz
-          head -c 6 ffmpeg-master-latest-linux64-gpl.tar.xz | grep -q $'\xfd7zXZ\x00' || {
-            echo "ERROR: downloaded file is not a valid XZ archive"
-            file ffmpeg-master-latest-linux64-gpl.tar.xz || true
-            exit 1
-          }
-          tar -xJf ffmpeg-master-latest-linux64-gpl.tar.xz
-          FFPLAY_SRC=$(find ffmpeg-master-latest-linux64-gpl -type f -name ffplay | head -1)
-          if [ -z "$FFPLAY_SRC" ]; then
-            echo "ERROR: ffplay not found in BtbN archive"
-            exit 1
-          fi
-          cp "$FFPLAY_SRC" ffmpeg/linux/ffplay
-          chmod +x ffmpeg/linux/ffplay
-          rm -f ffmpeg-master-latest-linux64-gpl.tar.xz
+      # Studio relies on libass (subtitles), amix and acrossfade: render real
+      # projects with the exact ffmpeg that is about to be embedded.
+      - name: Test Studio against the bundled ffmpeg
+        run: PATH="$PWD/ffmpeg/linux:$PATH" .venv/bin/python -m pytest tests/test_studio.py -v
 
       - name: Build single-file binary
         run: .venv/bin/pyinstaller VidGrab.spec --noconfirm

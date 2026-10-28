@@ -24,7 +24,7 @@
 - **Redesigned UI**: violet→cyan theme, page headers, rounded cards with accent bars, pill navigation, drawn chevrons and icons (no emoji-font dependency), all generated from one stylesheet template shared by dark and light
 - **Languages**: the UI now ships in **English and 繁體中文** only (the other 10 languages, their flags and the JP/KR fonts were removed; a saved language that no longer exists falls back to English)
 - **Release / CI**:
-  - release assets are now `VidGrab-windows-x64.exe`, `VidGrab-linux-x64` (+ `.tar.xz`) and `SHA256SUMS.txt`, with notes taken from this changelog
+  - release assets are now `VidGrab-windows-x64.exe`, `VidGrab-linux-x64` (+ `.tar.xz`), the demo video, the zh-TW user guide PDF and `SHA256SUMS.txt`, with notes taken from this changelog
   - the release fails if the tag doesn't match `vidgrab/_version.py`
   - the Linux binary is built on Ubuntu 22.04, so it runs on older distros
   - CI also runs the tests on Windows

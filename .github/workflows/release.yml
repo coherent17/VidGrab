@@ -53,6 +53,9 @@ jobs:
           mv release-linux/VidGrab "release/VidGrab-linux-x64"
           mv release-linux/VidGrab-linux.tar.xz "release/VidGrab-linux-x64.tar.xz"
           chmod +x "release/VidGrab-linux-x64"
+          # demo video + user guide ship with every release
+          cp docs/VidGrab-demo.mp4 release/
+          cp docs/VidGrab-user-guide-zh-TW.pdf release/
           (cd release && sha256sum * > SHA256SUMS.txt)
           ls -lh release
           cat release/SHA256SUMS.txt
@@ -77,6 +80,11 @@ jobs:
 
           Both are single, self-contained executables with ffmpeg / ffprobe embedded — nothing else to install.
           Verify downloads with `SHA256SUMS.txt`.
+
+          ### 示範影片與使用手冊 (Demo & user guide)
+
+          - 🎬 `VidGrab-demo.mp4`: 示範影片（繁體中文旁白，約 2 分鐘）
+          - 📘 `VidGrab-user-guide-zh-TW.pdf`: 使用手冊（繁體中文 PDF）
           EOF
           cat notes.md
 

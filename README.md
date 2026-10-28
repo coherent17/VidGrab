@@ -78,7 +78,7 @@ git push origin v3.0.0
 ```
 
 The release workflow checks that the tag matches the version, builds both platforms, and publishes a GitHub
-Release with `VidGrab-windows-x64.exe`, `VidGrab-linux-x64` (+ `.tar.xz`) and `SHA256SUMS.txt`. The notes come
+Release with `VidGrab-windows-x64.exe`, `VidGrab-linux-x64` (+ `.tar.xz`), the demo video, the user guide PDF and `SHA256SUMS.txt`. The notes come
 from the changelog section. Both binaries are standalone, with ffmpeg/ffprobe embedded.
 
 ## Project layout

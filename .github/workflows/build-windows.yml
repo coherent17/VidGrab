@@ -14,18 +14,12 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Download ffmpeg (BtbN static)
+      # the version pinned in ffmpeg/pin.json (SHA-256 checked)
+      - name: Download pinned ffmpeg
         shell: pwsh
         run: |
-          # GitHub-hosted mirror (gyan.dev is flaky from CI: intermittent 503s)
-          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile "ffmpeg.zip"
-          Expand-Archive -Path "ffmpeg.zip" -DestinationPath "ffmpeg-unpacked" -Force
-          $ffmpeg = Get-ChildItem -Recurse "ffmpeg-unpacked" -Filter "ffmpeg.exe" | Select-Object -First 1
-          $ffprobe = Get-ChildItem -Recurse "ffmpeg-unpacked" -Filter "ffprobe.exe" | Select-Object -First 1
-          if (-not $ffmpeg -or -not $ffprobe) { throw "ffmpeg.exe or ffprobe.exe not found in archive" }
-          New-Item -ItemType Directory -Force "ffmpeg\win" | Out-Null
-          Copy-Item $ffmpeg.FullName "ffmpeg\win\ffmpeg.exe"
-          Copy-Item $ffprobe.FullName "ffmpeg\win\ffprobe.exe"
+          python scripts/fetch_ffmpeg.py win
+          & .\ffmpeg\win\ffmpeg.exe -hide_banner -version | Select-Object -First 1
 
       - name: Install Python deps
         run: |

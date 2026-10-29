@@ -427,3 +427,70 @@ def test_multiple_links_preview_and_queue(qapp, tmp_path, monkeypatch) -> None:
         assert win._info_stack.currentIndex() == 0 and win._link_list.count() == 0
     finally:
         win.close()
+
+
+def test_settings_defaults_presets_and_storage(qapp, tmp_path, monkeypatch) -> None:
+    """Old config files keep working; Settings drive the Download page and
+    the Studio; subtitle presets round-trip; storage tools work."""
+    import json
+
+    from vidgrab import app as appmod
+
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    (tmp_path / "config.json").write_text(json.dumps({"theme": "light", "lang": "en"}))
+    cfg = appmod._load_config()
+    assert cfg["theme"] == "light" and cfg["fmt"] == "mp4" and cfg["notify"] is True
+    appmod._save_config("light", "en", {"render_quality": "high"})
+    assert appmod._load_config()["render_quality"] == "high"
+    appmod._save_config("dark", "en")  # theme-only saves keep the other settings
+    assert appmod._load_config()["render_quality"] == "high"
+
+    win = appmod.VidGrabWindow()
+    try:
+        # format default -> Download page checkboxes + quality list
+        win._set_fmt.setCurrentIndex(win._set_fmt.findData("mp3"))
+        win._default_changed("fmt", win._set_fmt)
+        assert win._mp3.isChecked() and not win._mp4.isChecked()
+        assert win._quality.currentData() == "192"
+        # subtitles + file-name pattern
+        win._set_sub.setChecked(True)
+        assert win._sub_cb.isChecked()
+        win._set_name.setCurrentIndex(win._set_name.findData("uploader_title"))
+        win._default_changed("name_template", win._set_name)
+        assert "jawed - Me at the zoo" in win._set_name_example.text()
+        # studio defaults
+        win._set_res.setCurrentIndex(win._set_res.findData("720p"))
+        win._default_changed("studio_resolution", win._set_res)
+        assert win._studio.res.currentData() == "720p"
+        assert appmod._load_config()["studio_resolution"] == "720p"
+
+        # subtitle presets: save from the Studio, apply, delete from Settings
+        st = win._studio
+        st.sub_size.setValue(40)
+        st.sub_bold.setChecked(True)
+        win.save_subtitle_preset("Big titles", st._style_dict())
+        assert win._set_presets.count() == 1
+        st.sub_size.setValue(20)
+        st.sub_bold.setChecked(False)
+        st.apply_preset("Big titles")
+        assert st.sub_size.value() == 40 and st.sub_bold.isChecked()
+        win._set_presets.setCurrentRow(0)
+        win._delete_preset_from_settings()
+        assert win.subtitle_presets() == {}
+
+        # storage
+        (tmp_path / "cache").mkdir(exist_ok=True)
+        (tmp_path / "cache" / "t.jpg").write_bytes(b"x" * 2048)
+        win._refresh_storage()
+        assert "2.0 KB" in win._cache_lbl.text()
+        win._clear_cache()
+        assert not (tmp_path / "cache").exists()
+
+        # 'downloads finished' fires once the queue empties
+        seen = []
+        monkeypatch.setattr(win, "_notify_downloads_done", lambda n: seen.append(n))
+        win._finished_since_idle = 2
+        win._run_next_job()
+        assert seen == [2] and win._finished_since_idle == 0
+    finally:
+        win.close()

@@ -280,6 +280,12 @@ def test_ytdl_options_prefer_h264_at_same_resolution(tmp_path) -> None:
     assert sort.index("res") < sort.index("vcodec:h264")
 
 
+def test_ytdl_options_name_template(tmp_path) -> None:
+    opts = downloader._ytdl_options("https://x", tmp_path, "mp4", ffmpeg=None,
+                                    name_template=downloader.NAME_TEMPLATES["title_id"])
+    assert opts["outtmpl"].endswith("%(title)s [%(id)s].%(ext)s")
+
+
 def test_ytdl_options_video_quality_1080p(tmp_path) -> None:
     opts = downloader._ytdl_options("https://x", tmp_path, "mp4",
                                     ffmpeg=None, quality="1080p")

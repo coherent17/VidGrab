@@ -7,6 +7,7 @@ import math
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 from datetime import datetime
@@ -17,6 +18,7 @@ from PySide6.QtCore import (
     Qt,
     QThread,
     QTimer,
+    QUrl,
     Signal,
 )
 from PySide6.QtGui import (
@@ -53,6 +55,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QStatusBar,
+    QSystemTrayIcon,
     QToolButton,
     QTreeView,
     QVBoxLayout,
@@ -61,6 +64,7 @@ from PySide6.QtWidgets import (
 
 from vidgrab import __version__
 from vidgrab.downloader import (
+    NAME_TEMPLATES,
     DownloadCancelled,
     default_output_dir,
     download,
@@ -81,6 +85,7 @@ from vidgrab.downloads_panel import (
     DownloadItem,
     DownloadsPanel,
     LinkRow,
+    human_size,
     load_history,
     save_history,
 )
@@ -877,28 +882,112 @@ def _config_dir() -> Path:
     return base / "vidgrab"
 
 
-def _load_config() -> dict[str, str]:
+# every persisted setting with its default; config.json may hold any subset
+DEFAULT_SETTINGS: dict = {
+    "theme": "dark",
+    "lang": "en",
+    "out_dir": "",  # "" = ~/Downloads/VidGrab
+    "fmt": "mp4",  # mp4 | mp3 | both
+    "video_quality": None,  # None = best available
+    "audio_quality": "192",
+    "sub_enabled": False,
+    "sub_lang": "zh-Hant",
+    "sub_mode": "file",  # file | burn
+    "name_template": "title",  # key of downloader.NAME_TEMPLATES
+    "notify": True,
+    "render_quality": "balanced",  # key of studio.RENDER_QUALITY
+    "studio_resolution": "auto",
+    "subtitle_presets": {},  # name -> SubtitleStyle fields
+}
+
+
+def _load_config() -> dict:
     try:
-        data = json.loads((_config_dir() / "config.json").read_text())
-        theme = data.get("theme", "dark")
-        lang = data.get("lang", "en")
-    except (OSError, json.JSONDecodeError):
-        theme = "dark"
-        lang = "en"
-    if theme not in _THEMES:
-        theme = "dark"
-    if lang not in LANGUAGES:
-        lang = "en"
-    return {"theme": theme, "lang": lang}
+        data = json.loads((_config_dir() / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    cfg = json.loads(json.dumps(DEFAULT_SETTINGS))  # deep copy of the defaults
+    cfg.update({k: v for k, v in data.items() if k in DEFAULT_SETTINGS})
+    if cfg["theme"] not in _THEMES:
+        cfg["theme"] = "dark"
+    if cfg["lang"] not in LANGUAGES:
+        cfg["lang"] = "en"
+    return cfg
 
 
-def _save_config(theme: str, lang: str = "en") -> None:
+def _save_config(theme: str, lang: str = "en", extra: dict | None = None) -> None:
+    """Persist theme / language plus any *extra* settings, keeping the rest."""
+    cfg = _load_config()
+    cfg.update(theme=theme, lang=lang)
+    cfg.update(extra or {})
     try:
         d = _config_dir()
         d.mkdir(parents=True, exist_ok=True)
-        (d / "config.json").write_text(json.dumps({"theme": theme, "lang": lang}))
+        (d / "config.json").write_text(json.dumps(cfg, ensure_ascii=False, indent=1),
+                                       encoding="utf-8")
     except OSError:
         pass
+
+
+def _dir_size(path: Path) -> int:
+    try:
+        return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
+    except OSError:
+        return 0
+
+
+def _chime_path() -> Path | None:
+    """A short two-note chime (generated once) for 'downloads finished'."""
+    path = _config_dir() / "chime.wav"
+    if path.is_file():
+        return path
+    try:
+        import struct
+        import wave
+
+        rate = 44100
+        frames = bytearray()
+        for freq, length in ((880.0, 0.13), (1318.5, 0.26)):
+            n = int(rate * length)
+            for i in range(n):
+                env = min(1.0, i / 400) * (1 - i / n) ** 2
+                value = int(9000 * env * math.sin(2 * math.pi * freq * i / rate))
+                frames += struct.pack("<h", value)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(bytes(frames))
+        return path
+    except OSError:
+        return None
+
+
+def _versions() -> list[tuple[str, str]]:
+    import platform
+
+    import PySide6
+    import yt_dlp
+
+    ff = find_ffmpeg()
+    ff_ver = "—"
+    if ff:
+        try:
+            out = subprocess.run([ff, "-version"], capture_output=True, text=True,
+                                 timeout=10, check=False).stdout.split("\n", 1)[0]
+            ff_ver = out.split(" version ", 1)[-1].split(" ", 1)[0] if out else "—"
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return [
+        ("VidGrab", __version__),
+        ("yt-dlp", yt_dlp.version.__version__),
+        ("ffmpeg", ff_ver),
+        ("Qt / PySide6", PySide6.__version__),
+        ("Python", platform.python_version()),
+    ]
 
 
 def _thumb_cache_dir() -> Path:
@@ -1297,6 +1386,7 @@ class _Worker(QThread):
                     subtitles=self._kw.get("subtitles"),
                     subtitle_style=self._kw.get("subtitle_style"),
                     music=self._kw.get("music"),
+                    quality=self._kw.get("render_quality", "balanced"),
                     on_progress=self._cb_progress,
                     on_log=self._cb_log,
                     translate=self._kw.get("translate"),
@@ -1443,6 +1533,9 @@ class VidGrabWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         cfg = _load_config()
+        self._settings = cfg
+        self._i18n_widgets: list[tuple[QWidget, str, str]] = []
+        self._finished_since_idle = 0
         self._theme = cfg["theme"]
         self._lang = cfg["lang"]
         self._t = make_translator(self._lang)
@@ -1468,6 +1561,8 @@ class VidGrabWindow(QMainWindow):
         self._setup_probe()
         self._load_history()
         self._apply_language()
+        self._apply_download_defaults()
+        self._studio.set_default_resolution(self.setting("studio_resolution"))
         self._update_ffmpeg_status()
         self._start_internet_check()
         self._setup_shortcuts()
@@ -1803,21 +1898,27 @@ class VidGrabWindow(QMainWindow):
 
 
     def _build_settings_form(self) -> QWidget:
+        """Appearance + download defaults (left); Studio, storage, about (right)."""
         page = QWidget()
-        lay = QVBoxLayout(page)
-        lay.setContentsMargins(24, 14, 24, 6)
-        lay.setSpacing(12)
+        outer = QHBoxLayout(page)
+        outer.setContentsMargins(24, 14, 24, 10)
+        outer.setSpacing(14)
+        left = QVBoxLayout()
+        left.setSpacing(12)
+        right = QVBoxLayout()
+        right.setSpacing(12)
+        outer.addLayout(left, stretch=1)
+        outer.addLayout(right, stretch=1)
 
+        # appearance ----------------------------------------------------------
         g1, a_title, fl = self._card("APPEARANCE", "settings_card", "settings")
         self._settings_title = a_title
         afl = QFormLayout()
         afl.setSpacing(8)
         self._theme_combo = QComboBox()
-        self._theme_combo.addItems(["Dark", "Light"])
-        self._theme_combo.setCurrentText(self._theme.capitalize())
         self._theme_combo.setCursor(QCursor(_HAND))
-        self._theme_combo.currentTextChanged.connect(
-            lambda t: self._set_theme(t.lower())
+        self._theme_combo.activated.connect(
+            lambda _i: self._set_theme(self._theme_combo.currentData() or "dark")
         )
         self._lang_combo = QComboBox()
         self._lang_combo.setCursor(QCursor(_HAND))
@@ -1833,18 +1934,381 @@ class VidGrabWindow(QMainWindow):
         afl.addRow(self._theme_lbl, self._theme_combo)
         afl.addRow(self._lang_lbl, self._lang_combo)
         fl.addLayout(afl)
-        lay.addWidget(g1)
+        left.addWidget(g1)
 
-        g2, b_title, al = self._card("ABOUT", "settings_card", "settings")
+        # download defaults ---------------------------------------------------
+        g2, t2, dl = self._card("DOWNLOAD DEFAULTS", "settings_card", "format")
+        self._trw(t2, "DOWNLOAD DEFAULTS")
+        form = QFormLayout()
+        form.setSpacing(9)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self._set_out = QLineEdit(self.setting("out_dir") or str(default_output_dir()))
+        self._set_out.editingFinished.connect(
+            lambda: self._set_default_dir(self._set_out.text().strip()))
+        browse = QPushButton()
+        browse.setObjectName("secondary")
+        browse.setCursor(QCursor(_HAND))
+        browse.clicked.connect(self._browse_default_dir)
+        self._trw(browse, "Browse…")
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(self._set_out, stretch=1)
+        row.addWidget(browse)
+        form.addRow(self._trw(QLabel(), "Save to:"), row)
+        self._set_fmt = QComboBox()
+        self._set_vq = QComboBox()
+        self._set_aq = QComboBox()
+        self._set_sub_lang = QComboBox()
+        self._set_sub_mode = QComboBox()
+        self._set_name = QComboBox()
+        for combo in (self._set_fmt, self._set_vq, self._set_aq, self._set_sub_lang,
+                      self._set_sub_mode, self._set_name):
+            combo.setCursor(QCursor(_HAND))
+        self._set_fmt.activated.connect(lambda _i: self._default_changed("fmt", self._set_fmt))
+        self._set_vq.activated.connect(
+            lambda _i: self._default_changed("video_quality", self._set_vq))
+        self._set_aq.activated.connect(
+            lambda _i: self._default_changed("audio_quality", self._set_aq))
+        self._set_sub_lang.activated.connect(
+            lambda _i: self._default_changed("sub_lang", self._set_sub_lang))
+        self._set_sub_mode.activated.connect(
+            lambda _i: self._default_changed("sub_mode", self._set_sub_mode))
+        self._set_name.activated.connect(
+            lambda _i: self._default_changed("name_template", self._set_name))
+        form.addRow(self._trw(QLabel(), "Format:"), self._set_fmt)
+        form.addRow(self._trw(QLabel(), "Video quality:"), self._set_vq)
+        form.addRow(self._trw(QLabel(), "Audio quality:"), self._set_aq)
+        self._set_sub = QCheckBox()
+        self._set_sub.setCursor(QCursor(_HAND))
+        self._set_sub.setChecked(bool(self.setting("sub_enabled")))
+        self._set_sub.toggled.connect(lambda on: self._default_changed("sub_enabled", on))
+        self._trw(self._set_sub, "Download subtitles")
+        sub_row = QHBoxLayout()
+        sub_row.setSpacing(8)
+        sub_row.addWidget(self._set_sub)
+        sub_row.addWidget(self._set_sub_lang, stretch=1)
+        sub_row.addWidget(self._set_sub_mode, stretch=1)
+        form.addRow(self._trw(QLabel(), "Subtitles:"), sub_row)
+        form.addRow(self._trw(QLabel(), "File names:"), self._set_name)
+        self._set_name_example = QLabel()
+        self._set_name_example.setObjectName("hint")
+        form.addRow(QLabel(), self._set_name_example)
+        self._set_notify = QCheckBox()
+        self._set_notify.setCursor(QCursor(_HAND))
+        self._set_notify.setChecked(bool(self.setting("notify")))
+        self._set_notify.toggled.connect(lambda on: self.set_setting("notify", on))
+        self._trw(self._set_notify, "Play a sound and show a message when downloads finish")
+        form.addRow(QLabel(), self._set_notify)
+        dl.addLayout(form)
+        hint = QLabel()
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        self._trw(hint, "These are the options the Download page starts with; you can still "
+                        "change them there for each download.")
+        dl.addWidget(hint)
+        left.addWidget(g2)
+        left.addStretch()
+
+        # studio ----------------------------------------------------------------
+        g3, t3, sl = self._card("STUDIO", "settings_card", "clips")
+        self._trw(t3, "STUDIO")
+        sform = QFormLayout()
+        sform.setSpacing(9)
+        sform.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self._set_rq = QComboBox()
+        self._set_res = QComboBox()
+        for combo in (self._set_rq, self._set_res):
+            combo.setCursor(QCursor(_HAND))
+        self._set_rq.activated.connect(
+            lambda _i: self._default_changed("render_quality", self._set_rq))
+        self._set_res.activated.connect(
+            lambda _i: self._default_changed("studio_resolution", self._set_res))
+        sform.addRow(self._trw(QLabel(), "Render quality:"), self._set_rq)
+        sform.addRow(self._trw(QLabel(), "Default resolution:"), self._set_res)
+        sl.addLayout(sform)
+        sl.addWidget(self._trw(QLabel(), "Subtitle style presets:"))
+        prow = QHBoxLayout()
+        prow.setSpacing(8)
+        self._set_presets = QListWidget()
+        self._set_presets.setObjectName("preset_list")
+        self._set_presets.setFixedHeight(86)
+        prow.addWidget(self._set_presets, stretch=1)
+        delete = QPushButton()
+        delete.setObjectName("secondary")
+        delete.setCursor(QCursor(_HAND))
+        delete.clicked.connect(self._delete_preset_from_settings)
+        self._trw(delete, "Delete")
+        prow.addWidget(delete, alignment=Qt.AlignTop)
+        sl.addLayout(prow)
+        phint = QLabel()
+        phint.setObjectName("hint")
+        phint.setWordWrap(True)
+        self._trw(phint, "Save a preset from the subtitle panel in the Studio to reuse fonts, "
+                         "colours and position in other projects.")
+        sl.addWidget(phint)
+        right.addWidget(g3)
+
+        # storage ---------------------------------------------------------------
+        g4, t4, stl = self._card("STORAGE", "settings_card", "save")
+        self._trw(t4, "STORAGE")
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(8)
+        grid.setColumnStretch(0, 1)
+        self._cache_lbl = QLabel()
+        self._history_lbl = QLabel()
+        self._log_lbl = QLabel()
+        rows = (
+            (self._cache_lbl, "Clear", self._clear_cache),
+            (self._history_lbl, "Clear", self._clear_history),
+            (self._log_lbl, "Export…", self._export_log),
+        )
+        for r, (lbl, key, slot) in enumerate(rows):
+            b = QPushButton()
+            b.setObjectName("secondary")
+            b.setCursor(QCursor(_HAND))
+            b.clicked.connect(slot)
+            self._trw(b, key)
+            grid.addWidget(lbl, r, 0)
+            grid.addWidget(b, r, 1)
+        stl.addLayout(grid)
+        reset = QPushButton()
+        reset.setObjectName("secondary")
+        reset.setCursor(QCursor(_HAND))
+        reset.clicked.connect(self._reset_settings)
+        self._trw(reset, "Reset all settings…")
+        stl.addWidget(reset, alignment=Qt.AlignLeft)
+        right.addWidget(g4)
+
+        # about -----------------------------------------------------------------
+        g5, b_title, al = self._card("ABOUT", "settings_card", "settings")
         self._about_title = b_title
         self._about_lbl = QLabel()
         self._about_lbl.setWordWrap(True)
         self._about_lbl.setTextFormat(Qt.RichText)
         al.addWidget(self._about_lbl)
-        lay.addWidget(g2)
+        self._versions_lbl = QLabel()
+        self._versions_lbl.setObjectName("hint")
+        self._versions_lbl.setTextFormat(Qt.RichText)
+        self._versions_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        al.addWidget(self._versions_lbl)
+        right.addWidget(g5)
+        right.addStretch()
+        return _wrap_scroll(page)
 
-        lay.addStretch()
-        return page
+    # ── settings helpers ───────────────────────────────────────────────
+
+    def _trw(self, widget, key: str, method: str = "setText"):
+        """Register *widget* so _apply_language re-applies t(key) to it."""
+        self._i18n_widgets.append((widget, key, method))
+        getattr(widget, method)(self._t(key))
+        return widget
+
+    def setting(self, key: str):
+        return self._settings.get(key, DEFAULT_SETTINGS.get(key))
+
+    def set_setting(self, key: str, value) -> None:
+        self._settings[key] = value
+        _save_config(self._theme, self._lang, {key: value})
+
+    def _fill_settings_combos(self) -> None:
+        t = self._t
+        fill = StudioPage._fill
+        fill(self._theme_combo, [(t("Dark"), "dark"), (t("Light"), "light")])
+        self._theme_combo.setCurrentIndex(max(0, self._theme_combo.findData(self._theme)))
+        fill(self._set_fmt, [("MP4", "mp4"), ("MP3", "mp3"), ("MP4 + MP3", "both")])
+        fill(self._set_vq, [(t("Best available"), "")] + [(label, token) for label, token in (
+            ("4K (2160p)", "2160p"), ("1440p (QHD)", "1440p"), ("1080p (FHD)", "1080p"),
+            ("720p (HD)", "720p"), ("480p (SD)", "480p"), ("360p", "360p"))])
+        fill(self._set_aq, [(f"{b} kbps", b) for b in ("320", "256", "192", "128")])
+        fill(self._set_sub_lang, [(t("Traditional Chinese"), "zh-Hant"),
+                                  (t("Simplified Chinese"), "zh-Hans"),
+                                  (t("English"), "en"), (t("Japanese"), "ja")])
+        fill(self._set_sub_mode, [(t("Save as .srt file"), "file"),
+                                  (t("Burn into video"), "burn")])
+        fill(self._set_name, [(t("Title"), "title"), (t("Title [video ID]"), "title_id"),
+                              (t("Channel - Title"), "uploader_title"),
+                              (t("Upload date + Title"), "date_title")])
+        fill(self._set_rq, [(t("Fast (smaller file)"), "fast"), (t("Balanced"), "balanced"),
+                            (t("High quality (larger file)"), "high")])
+        fill(self._set_res, [
+            (t("Same as first clip"), "auto"), (t("1080p landscape (16:9)"), "1080p"),
+            (t("720p landscape (16:9)"), "720p"), (t("480p landscape (16:9)"), "480p"),
+            (t("Vertical 1080×1920 (9:16)"), "vertical"),
+            (t("Square 1080×1080 (1:1)"), "square")])
+        for combo, key in ((self._set_fmt, "fmt"), (self._set_vq, "video_quality"),
+                           (self._set_aq, "audio_quality"), (self._set_sub_lang, "sub_lang"),
+                           (self._set_sub_mode, "sub_mode"), (self._set_name, "name_template"),
+                           (self._set_rq, "render_quality"),
+                           (self._set_res, "studio_resolution")):
+            idx = combo.findData(self.setting(key) or "")
+            combo.setCurrentIndex(max(idx, 0))
+        self._update_name_example()
+        self._refresh_storage()
+        self._refresh_presets()
+
+    def _update_name_example(self) -> None:
+        examples = {
+            "title": "Me at the zoo.mp4",
+            "title_id": "Me at the zoo [jNQXAC9IVRw].mp4",
+            "uploader_title": "jawed - Me at the zoo.mp4",
+            "date_title": "2005-04-24 Me at the zoo.mp4",
+        }
+        key = self.setting("name_template") or "title"
+        self._set_name_example.setText(self._t("e.g. {name}", name=examples.get(key, "")))
+
+    def _default_changed(self, key: str, source) -> None:
+        value = source if isinstance(source, bool) else (source.currentData() or None)
+        if key in ("fmt", "audio_quality", "sub_lang", "sub_mode", "name_template",
+                   "render_quality", "studio_resolution") and value is None:
+            value = DEFAULT_SETTINGS[key]
+        self.set_setting(key, value)
+        if key == "name_template":
+            self._update_name_example()
+        if key == "studio_resolution":
+            self._studio.set_default_resolution(value)
+        else:
+            self._apply_download_defaults()
+
+    def _apply_download_defaults(self) -> None:
+        """Start the Download page from the saved defaults."""
+        self._out.setText(self.setting("out_dir") or str(default_output_dir()))
+        fmt = self.setting("fmt") or "mp4"
+        self._mp4.setChecked(fmt in ("mp4", "both"))
+        self._mp3.setChecked(fmt in ("mp3", "both"))
+        self._populate_quality()
+        want = self.setting("video_quality") if self._mp4.isChecked() \
+            else self.setting("audio_quality")
+        idx = self._quality.findData(want)
+        if idx >= 0:
+            self._quality.setCurrentIndex(idx)
+        self._sub_cb.setChecked(bool(self.setting("sub_enabled")))
+        for combo, key in ((self._sub_lang, "sub_lang"), (self._sub_mode, "sub_mode")):
+            idx = combo.findData(self.setting(key))
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+        self._sync_sub_options()
+
+    def _set_default_dir(self, path: str) -> None:
+        self.set_setting("out_dir", path)
+        self._out.setText(path or str(default_output_dir()))
+        self._studio.out_dir.setText(path or str(default_output_dir()))
+
+    def _browse_default_dir(self) -> None:
+        folder = _get_existing_directory(self, self._t("Save to:"), self._set_out.text())
+        if folder:
+            self._set_out.setText(folder)
+            self._set_default_dir(folder)
+
+    # subtitle presets -----------------------------------------------------
+
+    def subtitle_presets(self) -> dict:
+        return dict(self.setting("subtitle_presets") or {})
+
+    def save_subtitle_preset(self, name: str, style: dict) -> None:
+        presets = self.subtitle_presets()
+        presets[name] = style
+        self.set_setting("subtitle_presets", presets)
+        self._refresh_presets()
+
+    def delete_subtitle_preset(self, name: str) -> None:
+        presets = self.subtitle_presets()
+        presets.pop(name, None)
+        self.set_setting("subtitle_presets", presets)
+        self._refresh_presets()
+
+    def _refresh_presets(self) -> None:
+        self._set_presets.clear()
+        names = sorted(self.subtitle_presets())
+        for name in names:
+            self._set_presets.addItem(name)
+        if not names:
+            item = QListWidgetItem(self._t("No presets yet"))
+            item.setFlags(Qt.NoItemFlags)
+            self._set_presets.addItem(item)
+        self._studio.refresh_presets()
+
+    def _delete_preset_from_settings(self) -> None:
+        item = self._set_presets.currentItem()
+        if item is not None and item.text() in self.subtitle_presets():
+            self.delete_subtitle_preset(item.text())
+
+    # storage ----------------------------------------------------------------
+
+    def _refresh_storage(self) -> None:
+        cache = _dir_size(_config_dir() / "cache")
+        self._cache_lbl.setText(self._t("Thumbnail cache: {size}", size=human_size(cache)))
+        done = sum(1 for i in self._queue if i.status == DONE)
+        self._history_lbl.setText(self._t("Download history: {n} items", n=done))
+        log = _config_dir() / "vidgrab.log"
+        size = log.stat().st_size if log.is_file() else 0
+        self._log_lbl.setText(self._t("Log file: {size}", size=human_size(size)))
+
+    def _clear_cache(self) -> None:
+        shutil.rmtree(_config_dir() / "cache", ignore_errors=True)
+        self._refresh_storage()
+
+    def _clear_history(self) -> None:
+        self._clear_finished()
+        self._refresh_storage()
+
+    def _export_log(self) -> None:
+        log = _config_dir() / "vidgrab.log"
+        if not log.is_file():
+            QMessageBox.information(self, self._t("Export…"), self._t("The log is empty."))
+            return
+        start = str(Path(self._start_dir("Desktop", "Downloads")) / "vidgrab.log")
+        path, _ = _get_save_file_name(self, self._t("Export…"), start, "Log (*.log *.txt)")
+        if path:
+            shutil.copy2(log, path)
+
+    def _reset_settings(self) -> None:
+        answer = QMessageBox.question(
+            self, self._t("Reset all settings…"),
+            self._t("Reset every setting (including subtitle presets) to its default? "
+                    "Downloaded files and the download history are kept."),
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            (_config_dir() / "config.json").unlink(missing_ok=True)
+        except OSError:
+            pass
+        self._settings = _load_config()
+        self._set_out.setText(str(default_output_dir()))
+        self._set_sub.setChecked(False)
+        self._set_notify.setChecked(True)
+        self._fill_settings_combos()
+        self._apply_download_defaults()
+        self._studio.set_default_resolution("auto")
+        self._studio.out_dir.setText(str(default_output_dir()))
+        if self._theme != "dark":
+            self._set_theme("dark")
+        if self._lang != "en":
+            self._lang_combo.setCurrentIndex(self._lang_combo.findData("en"))
+
+    # downloads-finished notification -------------------------------------------
+
+    def _notify_downloads_done(self, count: int) -> None:
+        if not self.setting("notify"):
+            return
+        msg = self._t("{n} downloads finished.", n=count)
+        self._statusbar.showMessage(msg, 10000)
+        QApplication.alert(self)  # flash the taskbar entry
+        if _QT_MULTIMEDIA_OK:
+            chime = _chime_path()
+            if chime is not None:
+                from PySide6.QtMultimedia import QSoundEffect
+
+                self._chime = QSoundEffect(self)
+                self._chime.setSource(QUrl.fromLocalFile(str(chime)))
+                self._chime.setVolume(0.6)
+                self._chime.play()
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            if getattr(self, "_tray", None) is None:
+                self._tray = QSystemTrayIcon(_app_icon(), self)
+                self._tray.show()
+            self._tray.showMessage("VidGrab", msg, _app_icon(), 6000)
 
     # ── shared bottom (log + progress + button) ────────────────────────
 
@@ -1924,7 +2388,7 @@ class VidGrabWindow(QMainWindow):
         self._theme = name
         self._apply_theme()
         self._theme_combo.blockSignals(True)
-        self._theme_combo.setCurrentText(self._theme.capitalize())
+        self._theme_combo.setCurrentIndex(max(0, self._theme_combo.findData(self._theme)))
         self._theme_combo.blockSignals(False)
         self._apply_language()
         _save_config(self._theme, self._lang)
@@ -1995,6 +2459,13 @@ class VidGrabWindow(QMainWindow):
         self._about_lbl.setText(
             t("about_text", ver=__version__)
         )
+        for widget, key, method in self._i18n_widgets:
+            getattr(widget, method)(t(key))
+        self._fill_settings_combos()
+        self._versions_lbl.setText(
+            "<table cellspacing='4'>" + "".join(
+                f"<tr><td>{name}</td><td>&nbsp;&nbsp;<b>{ver}</b></td></tr>"
+                for name, ver in _versions()) + "</table>")
         # bottom
         self._log_title.setText(t("DOWNLOADS"))
         self._clear_done_btn.setText(t("Clear finished"))
@@ -2259,7 +2730,8 @@ class VidGrabWindow(QMainWindow):
         self._statusbar.showMessage(msg, 8000)
 
     def default_output_dir(self) -> Path:
-        return default_output_dir()
+        custom = self.setting("out_dir") if hasattr(self, "_settings") else ""
+        return Path(custom) if custom else default_output_dir()
 
     def pick_files(self, caption: str, prefer: tuple[str, ...], name_filter: str) -> list[str]:
         paths, _ = _get_open_file_names(self, caption, self._start_dir(*prefer), name_filter)
@@ -2438,6 +2910,8 @@ class VidGrabWindow(QMainWindow):
                 subtitles=subs,
                 burn_subtitles=bool(subs) and self._sub_mode.currentData() == "burn"
                 and fmt != "mp3",
+                name_template=NAME_TEMPLATES.get(self.setting("name_template") or "title",
+                                                 NAME_TEMPLATES["title"]),
             )
             item = DownloadItem(job=job)
             probe = (self._probe_data if (len(links) == 1 and self._probe_data)
@@ -2493,6 +2967,10 @@ class VidGrabWindow(QMainWindow):
         if item is None:
             self._dl_worker = None
             self._update_queue_summary()
+            if self._finished_since_idle:
+                self._notify_downloads_done(self._finished_since_idle)
+                self._finished_since_idle = 0
+                self._refresh_storage()
             return
         item.status, item.progress, item.message = RUNNING, None, ""
         self._downloads.refresh(item.id)
@@ -2515,6 +2993,7 @@ class VidGrabWindow(QMainWindow):
     def _on_job_done(self, item: DownloadItem, result: object) -> None:
         files = [str(p) for p in (result if isinstance(result, (list, tuple)) else [result])]
         item.status, item.files, item.message = DONE, files, ""
+        self._finished_since_idle += 1
         item.finished_at = datetime.now().astimezone().isoformat(timespec="minutes")
         if not item.title and item.media():
             item.title = Path(item.media()[0]).stem

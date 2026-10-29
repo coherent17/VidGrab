@@ -101,6 +101,14 @@ def test_system_fonts_maps_families_to_files() -> None:
         assert family and path.is_file()
 
 
+def test_render_quality_presets() -> None:
+    clips = [_clip("a.mp4", 2)]
+    fast, _ = build_video_command("ffmpeg", clips, Path("o.mp4"), quality="fast")
+    high, _ = build_video_command("ffmpeg", clips, Path("o.mp4"), quality="high")
+    assert fast[fast.index("-preset") + 1] == "veryfast" and fast[fast.index("-crf") + 1] == "23"
+    assert high[high.index("-preset") + 1] == "slow" and high[high.index("-crf") + 1] == "17"
+
+
 def test_parse_timecode() -> None:
     assert parse_timecode("90") == 90
     assert parse_timecode("1:30") == 90

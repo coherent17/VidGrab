@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from vidgrab.downloader import (
+    DEFAULT_NAME,
     LogCallback,
     ProgressCallback,
     TranslateFn,
@@ -38,6 +39,7 @@ class DownloadJob:
     playlist: bool = False
     subtitles: str | None = None  # language key from downloader.SUBTITLE_LANGS
     burn_subtitles: bool = False
+    name_template: str = DEFAULT_NAME  # yt-dlp output template for the file name
 
 
 def run_job(
@@ -49,7 +51,8 @@ def run_job(
 ) -> list[Path]:
     """Download *job*; returns the saved files (media first, then any .srt)."""
     tr = translate or _noop_tr
-    common = {"on_progress": on_progress, "on_log": on_log, "translate": translate}
+    common = {"on_progress": on_progress, "on_log": on_log, "translate": translate,
+              "name_template": job.name_template or DEFAULT_NAME}
     if job.playlist:
         return download_playlist(
             job.url, job.output_dir, "mp3" if job.fmt == "mp3" else "mp4",

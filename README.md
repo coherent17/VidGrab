@@ -1,130 +1,170 @@
+<div align="center">
+
+<img src="docs/icon.png" alt="VidGrab" width="112">
+
 # VidGrab
 
-![VidGrab icon](docs/icon.png)
+**Download from YouTube. Edit in the Studio. One portable app.**
+
+Grab videos, playlists and music from YouTube, then cut them into a montage or medley
+with subtitles and background music. No installation, nothing else to set up.
 
 [![CI](https://github.com/coherent17/VidGrab/actions/workflows/ci.yml/badge.svg)](https://github.com/coherent17/VidGrab/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/coherent17/VidGrab?label=release)](https://github.com/coherent17/VidGrab/releases)
+[![Release](https://img.shields.io/github/v/release/coherent17/VidGrab?label=release&color=7c5cff)](https://github.com/coherent17/VidGrab/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/coherent17/VidGrab/total?color=22d3ee)](https://github.com/coherent17/VidGrab/releases)
+![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-4c4c4c)
+[![License: MIT](https://img.shields.io/badge/license-MIT-10b981)](LICENSE)
 
-A portable media downloader & editor for **Windows** and **Linux**. Grab a YouTube
-video or an entire **playlist/channel** as **MP4**/**MP3**, then use the **Studio**, an
-editor-style workspace, to join songs into a medley or videos into a montage with
-**subtitles** and **background music**. It all ships as one self-contained
-executable with a dark/light Qt GUI in **English** and **繁體中文**.
+[**Download**](https://github.com/coherent17/VidGrab/releases/latest) ·
+[Demo video](docs/VidGrab-demo.mp4) ·
+[User guide (繁體中文)](docs/VidGrab-user-guide-zh-TW.pdf) ·
+[Changelog](CHANGELOG.md)
 
-Built with Python, PySide6 (Qt), yt-dlp and ffmpeg, packaged with PyInstaller
-(ffmpeg + ffprobe embedded, no install required).
+<img src="docs/screenshots/studio.png" alt="VidGrab Studio: preview, inspector and a multi-track timeline" width="900">
 
-## Demo & user guide
+</div>
 
-- 🎬 **[Demo video](docs/VidGrab-demo.mp4)** (繁體中文 narration, about 2 min): paste three links, queue MP4 + MP3 downloads, trim clips with the timeline handles, add background music and a styled subtitle, then render
-- 📘 **[User guide (PDF, 繁體中文)](docs/VidGrab-user-guide-zh-TW.pdf)**: every page and option, a step-by-step example and a FAQ
+---
+
+## Highlights
+
+- **Download anything you paste.** Paste one link or a whole list. Each one gets a preview with thumbnail and length, then joins a queue with live progress, speed and ETA.
+- **Edit like a video editor.** Every clip has its own timeline row. Drag its two handles to choose where it starts and ends; the preview shows the exact frame.
+- **Subtitles that look right.** Place lines by dragging or with a 3×3 grid, pick colours and a background box, add a fade. What you see in the preview is what gets rendered.
+- **Portable.** A single executable for Windows or Linux with ffmpeg built in. The UI is in English and 繁體中文, with dark and light themes.
+
+## Download
+
+| Platform | File | How to run |
+|----------|------|------------|
+| Windows 10 / 11 (x64) | `VidGrab-windows-x64.exe` | Double-click |
+| Linux x64 (glibc ≥ 2.35) | `VidGrab-linux-x64` (or `.tar.xz`) | `chmod +x VidGrab-linux-x64 && ./VidGrab-linux-x64` |
+
+Grab them from the [latest release](https://github.com/coherent17/VidGrab/releases/latest), which also includes
+the demo video, the user guide and `SHA256SUMS.txt` for verifying downloads.
 
 ## Features
 
-- YouTube → **MP4** or **MP4+MP3** (single-pass), resolution picker up to 4K / MP3 bitrate picker
-- **Playlist & channel downloads** — every video in the selected quality, numbered `01 - …`, with per-video progress
-- **Video info card** — paste a link and instantly see title, uploader, duration, available resolutions and playlist size before downloading
-- **Auto-detect on paste** — info card updates by itself ~700 ms after pasting or finishing typing
-- **Download queue**: paste one link or many at once. Each gets a row with thumbnail, progress, speed and ETA, plus **Cancel / Retry**
-- **Recent downloads** are kept between sessions, with **Send to Studio**, which puts the file straight onto the Studio timeline along with its subtitles
-- **YouTube subtitles**: also grab the captions (繁體中文 / 简体中文 / English / 日本語; uploaded or auto-generated), saved as `.srt` or burned into the video. Their timing follows any trim / speed change
-- **Flip**, **trim** and **speed (0.25×–4×)** applied while downloading
-- **Studio**, an editor-style workspace with no scrolling:
-  - A large **preview** on top that plays the finished result, an **Inspector** beside it, and a **timeline** below where **every clip has its own row**, plus Subtitles and Music rows
-  - **Visual trimming**: drag a clip's **left handle** to choose where it starts and its **right handle** to choose where it ends. The preview shows the frame under the handle, and the faint area shows the rest of the source. Drag a clip up or down to reorder (`Space` plays)
-  - **Music medley**: join different songs (or parts of songs) into one MP3/M4A/WAV, with optional crossfade
-  - **Video montage**: join different videos into one MP4. Mixed sizes and orientations are fitted to one frame (landscape, vertical 9:16 or square)
-  - **Subtitles**: add a line at the playhead, **drag the text in the viewer to place it**, and drag or resize its block on the timeline to retime it. Snap lines to a 3×3 position grid, split or duplicate lines, and pick the text colour, a background box (or none), font, bold and fade in / out. Import / export `.srt`. Chinese is supported, and the render matches the preview
-  - **Background music**: mix a song under the montage with separate volume controls, looping and fade-out
-- Offline indicator, dark/light theme, keyboard shortcuts (Ctrl+V paste, Ctrl+L clear log, F1 about)
+### ⬇ Download
 
-## Quick start (developers)
+- **MP4, MP3 or both** in one pass. Pick the quality from 4K down to 360p (MP3 at 128–320 kbps); at any resolution H.264 is preferred so files play everywhere
+- **Several links at once** with a per-link preview (thumbnail, title, length, playlist size); remove any link before you start
+- **Download queue** that runs one item at a time, with progress, speed, ETA, **Cancel** and **Retry**
+- **Recent downloads** that stay between sessions; **Send to Studio** puts a file (and its subtitles) straight onto the timeline
+- **Playlists and channels**: every video, numbered in order
+- **YouTube subtitles** in 繁體中文, 简体中文, English or 日本語 (uploaded or auto-generated), saved as `.srt` or burned in. Timings follow any trim or speed change
+- **Trim, flip and speed (0.25×–4×)** applied while downloading
 
-### Linux / macOS
+### 🎬 Studio
 
-```bash
-make setup     # create .venv + install deps (one-time)
-make run       # launch the app
-```
+- **Video montage**: join videos of any size or orientation into one MP4 (match the first clip, 1080p / 720p / 480p, vertical 9:16 or square). Clips without sound get silence
+- **Music medley**: join songs or parts of songs into MP3 / M4A / WAV, with a crossfade between tracks
+- **Multi-track timeline**: one row per clip, with thumbnails or waveforms. Drag the left and right handles to trim, drag a clip up or down to reorder, and click to seek
+- **Subtitles**: add a line at the playhead, then drag it in the preview or snap it with the position grid. Retime it by dragging its block, and split or duplicate lines. Style options: font, bold, text colour, background box with opacity, fade in / out, and reusable **style presets**. Import or export `.srt`
+- **Background music**: separate music and original-audio volume, looping and an end fade
+- **One-pass render** with a live progress bar and Fast / Balanced / High quality presets
 
-> Missing Qt system libraries? `sudo apt install -y python3-venv python3-pip ffmpeg libegl1 libgl1 libxkbcommon0 libfontconfig1 libxcb-cursor0 libxcb-xinerama0 libdbus-1-3`
+### ⚙ Settings
 
-### Windows
+- **Download defaults**: save folder, format, quality, subtitles and a file-name pattern (title, title + ID, channel – title, date + title), plus a sound and message when the queue finishes
+- **Studio defaults**: render quality, output resolution and subtitle style presets
+- **Storage tools**: clear the thumbnail cache or download history, export the log, reset all settings. The About section shows the yt-dlp, ffmpeg and Qt versions
 
-```bat
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-python -m vidgrab
-```
+## Screenshots
 
-## Testing
+| Download page | Settings |
+|:---:|:---:|
+| <img src="docs/screenshots/download.png" alt="Download page with link previews and the download list" width="440"> | <img src="docs/screenshots/settings.png" alt="Settings page" width="440"> |
+| **Studio, light theme** | |
+| <img src="docs/screenshots/studio_light.png" alt="Studio in the light theme" width="440"> | |
 
-```bash
-make lint        # ruff check
-make test        # pytest, incl. headless GUI smoke test (Qt offscreen)
-```
+## Using VidGrab
 
-## Building
+1. **Download**: copy one or more YouTube links and click **Paste**. Check the previews, choose the format and quality, then click **Download**.
+2. **Send to Studio**: in the download list, click **Send to Studio** on a finished video (or use **＋ Add media** in the Studio).
+3. **Edit**: drag each clip's handles to trim it. Add **♪ Background music** and **＋ Subtitle** lines, then style and position them.
+4. **Render**: choose the resolution and file name, then click **Render**.
 
-- **Windows** — `scripts\build.ps1` (PowerShell) or `scripts\build.bat` (CMD), or `make build-windows` → `dist\VidGrab.exe`
-- **Linux / macOS** — `make build` → `dist\VidGrab`
-- CI on every push lints, tests (Linux + Windows) and builds both platforms
-- **Releasing**: bump `vidgrab/_version.py`, add a `CHANGELOG.md` section, then push a matching tag:
+The **[user guide](docs/VidGrab-user-guide-zh-TW.pdf)** (繁體中文) walks through every page with screenshots, and the
+**[demo video](docs/VidGrab-demo.mp4)** shows the whole flow with narration.
 
-```bash
-git tag v3.0.0
-git push origin v3.0.0
-```
+Keyboard shortcuts: `Ctrl+V` pastes a link, `Space` plays or pauses the Studio preview, `Delete` removes the selected clip or subtitle, and `F1` shows About.
 
-The release workflow checks that the tag matches the version, builds both platforms, and publishes a GitHub
-Release with `VidGrab-windows-x64.exe`, `VidGrab-linux-x64` (+ `.tar.xz`), the demo video, the user guide PDF and `SHA256SUMS.txt`. The notes come
-from the changelog section. Both binaries are standalone, with ffmpeg/ffprobe embedded.
+### Typing Chinese on Linux / WSL
 
-## Project layout
-
-```
-vidgrab/        the app (app.py UI, downloader.py download/edit logic, studio.py join/subtitle/music
-                engine, i18n.py, network.py, icon.py, _version.py)
-assets/         bundled resources (icon.ico/png, flags, NotoSans CJK TC font)
-scripts/        build.bat / build.ps1 (Windows), generate_icon.py, write_version_info.py
-docs/           icon.png preview (embedded above)
-Makefile        dev task runner (setup / run / lint / test / build / clean)
-VidGrab.spec    PyInstaller spec (bundles ffmpeg + Qt)
-```
-
-## Usage
-
-**YouTube URL** → paste URL, pick MP4/MP3, optionally flip/trim/speed + preview → Download.
-**Studio** → pick *Video montage* or *Music medley* → **＋ Add media** (or drop files) → each clip gets its own
-timeline row.
-- Drag the clip's left and right handles to trim it.
-- Drag a clip up or down to reorder it.
-- (video) **＋ Subtitle** adds a line at the playhead. Type it in the Inspector, then drag the text in the preview to position it.
-- (video) Use **♪ Background music** to add a song.
-- **Render**.
-
-### Typing Chinese subtitles on Linux / WSL
-
-The Windows build uses the Windows IME directly. Linux apps need an input-method framework, and **under WSL the Windows
-IME cannot reach Linux apps at all**. You can always paste Chinese text (Ctrl+V or the **Paste** button next to the
-subtitle text). To type it, install ibus, which VidGrab picks up automatically:
+The Windows build uses the Windows input method directly. Under WSL, Linux apps can't receive input from the Windows input
+method, so either paste the text (Ctrl+V or the **Paste** button) or install ibus. VidGrab uses ibus automatically when
+it's installed:
 
 ```bash
 sudo apt install ibus ibus-chewing   # or ibus-libpinyin for pinyin
-ibus-daemon -drx                     # start it (add to ~/.profile to keep it)
+ibus-daemon -drx                     # add to ~/.profile to start it automatically
 ```
 
-Switch input methods with Super+Space (configure via `ibus-setup`).
+## Building from source
+
+Requires Python 3.10+.
+
+```bash
+make setup    # create .venv and install dependencies (one-time)
+make run      # launch the app
+make lint     # ruff
+make test     # pytest, including a headless GUI smoke test
+make build    # standalone binary for the current OS -> dist/
+```
+
+On Windows, use `python -m venv .venv`, `.venv\Scripts\activate`, `pip install -r requirements.txt` and
+`python -m vidgrab`, or build with `scripts\build.ps1`.
+
+> Missing Qt libraries on Linux? `sudo apt install -y ffmpeg libegl1 libgl1 libxkbcommon0 libfontconfig1 libxcb-cursor0 libxcb-xinerama0 libdbus-1-3`
+
+<details>
+<summary><b>Project layout</b></summary>
+
+```
+vidgrab/
+  app.py              main window, Download and Settings pages, download queue
+  studio_page.py      Studio workspace and multi-track timeline
+  preview.py          in-window preview player with draggable subtitles
+  studio.py           ffmpeg engine: joining, subtitles (ASS), music, thumbnails and waveforms
+  downloader.py       yt-dlp downloads, subtitles, trim / flip / speed
+  jobs.py             one queued download (media + subtitles)
+  downloads_panel.py  download list rows and history
+  i18n.py             English / 繁體中文 strings
+assets/               icon, flags, bundled Noto Sans CJK TC font
+docs/                 demo video, user guide, screenshots
+tests/                pytest suite (unit, GUI smoke, real-ffmpeg renders)
+VidGrab.spec          PyInstaller spec (bundles ffmpeg + Qt)
+```
+
+</details>
+
+<details>
+<summary><b>CI and releases</b></summary>
+
+Every push and pull request is linted and tested on Linux and Windows, and both standalone binaries are built. Each
+build also renders real Studio projects with the exact ffmpeg it bundles.
+
+To release, bump `vidgrab/_version.py`, add a `## <version>` section to `CHANGELOG.md`, and push a matching tag
+(`git tag vX.Y.Z && git push origin vX.Y.Z`). The release workflow checks the tag against the version, builds both
+platforms and publishes the executables, the demo video, the user guide and `SHA256SUMS.txt`, with notes taken from
+the changelog.
+
+</details>
 
 ## Troubleshooting
 
-| Issue | Fix |
-|-------|-----|
-| "Video unavailable" / 403 | Update yt-dlp (`pip install -U yt-dlp`), rebuild |
-| Slow or stuck | Merging takes a moment; wait for "Processing…" |
-| Antivirus flags the exe | Common with PyInstaller; allowlist or sign the exe |
-| Can't type Chinese in the Studio | See *Typing Chinese subtitles on Linux / WSL* above, or paste the text |
-| Studio preview shows no picture | The packaged app includes QtMultimedia; from source, install PySide6 with multimedia support |
+| Problem | Fix |
+|---------|-----|
+| "Video unavailable" / HTTP 403 | YouTube changes often; update to the latest VidGrab release |
+| Video downloaded at only 360p | YouTube refused the high-quality stream, so VidGrab fell back to a reliable low-resolution one. Try again later |
+| Antivirus warning | Common with PyInstaller apps; add an exception |
+| Can't type Chinese | See [Typing Chinese on Linux / WSL](#typing-chinese-on-linux--wsl), or paste the text |
+| Studio preview shows no picture | The packaged app includes QtMultimedia; from source, make sure PySide6 includes it |
 
-Only download content you have the right to access. MIT licensed — use freely.
+## License
+
+[MIT](LICENSE). Built with [yt-dlp](https://github.com/yt-dlp/yt-dlp), [FFmpeg](https://ffmpeg.org),
+[PySide6 (Qt)](https://doc.qt.io/qtforpython/) and [Noto Sans CJK](https://github.com/notofonts/noto-cjk).
+
+Only download content you have the right to use.

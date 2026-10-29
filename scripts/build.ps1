@@ -30,12 +30,13 @@ if (-not (Test-Path "assets\icon.ico")) {
 }
 python scripts\write_version_info.py
 
-$winFfmpeg = "ffmpeg\win\ffmpeg.exe"
-if (-not (Test-Path $winFfmpeg) -and -not (Test-Path "ffmpeg\ffmpeg.exe")) {
+# the pinned ffmpeg (ffmpeg\pin.json) into ffmpeg\win\; a no-op when already there
+python scripts\fetch_ffmpeg.py win
+if ($LASTEXITCODE -ne 0) {
     Write-Host ""
-    Write-Host "WARNING: ffmpeg\win\ffmpeg.exe not found." -ForegroundColor Yellow
-    Write-Host "The exe will still build, but MP3 and merged MP4 downloads"
-    Write-Host "need ffmpeg embedded. Drop ffmpeg.exe + ffprobe.exe into ffmpeg\win\."
+    Write-Host "WARNING: could not download the pinned ffmpeg." -ForegroundColor Yellow
+    Write-Host "The exe will still build, but MP3 and merged MP4 downloads and the"
+    Write-Host "Studio need ffmpeg embedded. See ffmpeg\README.txt."
     Write-Host ""
 }
 

@@ -7,13 +7,18 @@ SHELL       := /bin/bash
 VENV        := .venv
 PY          := $(VENV)/bin/python
 PIP         := $(VENV)/bin/pip
+# the pinned ffmpeg from `make ffmpeg` (ffmpeg/linux) comes before any system one
+export PATH := $(CURDIR)/ffmpeg/linux:$(PATH)
 
-.PHONY: setup run lint test build clean icon
+.PHONY: setup ffmpeg run lint test build clean icon
 
 setup: ## create venv + install deps (one-time)
 	python3 -m venv $(VENV)
 	$(PIP) install --upgrade pip -q
 	$(PIP) install -r requirements.txt -q
+
+ffmpeg: ## download the pinned ffmpeg / ffprobe (ffmpeg/pin.json) into ffmpeg/linux
+	python3 scripts/fetch_ffmpeg.py linux
 
 run: ## launch the GUI (auto-setup on first use)
 	@[ -x $(PY) ] || $(MAKE) setup

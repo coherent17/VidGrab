@@ -1,19 +1,13 @@
-# Place ffmpeg binaries in the platform folders below before building.
-# They are embedded into the single-file executable by VidGrab.spec and are
-# NOT committed to git (see .gitignore).
+# ffmpeg / ffprobe are embedded into the single-file executable by VidGrab.spec
+# and are NOT committed to git (see .gitignore).
 
-# --- Windows (Windows builds) -------------------------------------------
-# Download the gyan "essentials" build:
-#   https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
-# Extract and copy into ffmpeg/win/:
-#   bin/ffmpeg.exe  -> ffmpeg/win/ffmpeg.exe
-#   bin/ffprobe.exe -> ffmpeg/win/ffprobe.exe
-
-# --- Linux (Linux builds) ----------------------------------------------
-# Download John Van Sickle's static build (x86_64):
-#   https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
-# Extract and copy into ffmpeg/linux/:
-#   ./ffmpeg  -> ffmpeg/linux/ffmpeg
-#   ./ffprobe -> ffmpeg/linux/ffprobe
-
-# The GitHub Actions workflows download these automatically at build time.
+# Every build, CI job and developer machine uses the one version pinned in
+# ffmpeg/pin.json (a BtbN month-end build, SHA-256 checked):
+#
+#   make ffmpeg                          # Linux: -> ffmpeg/linux/
+#   python scripts/fetch_ffmpeg.py win   # Windows: -> ffmpeg/win/
+#
+# In development the app prefers ffmpeg/<platform>/ over a system ffmpeg, and
+# `make run` / `make test` put ffmpeg/linux first on PATH.
+#
+# To upgrade, edit ffmpeg/pin.json (see its "comment") and let CI render-test it.

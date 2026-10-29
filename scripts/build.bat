@@ -52,12 +52,12 @@ if not exist "assets\icon.ico" (
 python scripts\write_version_info.py
 if errorlevel 1 goto :fail
 
-if not exist "ffmpeg\ffmpeg.exe" (
+rem the pinned ffmpeg (ffmpeg\pin.json) into ffmpeg\win\; a no-op when already there
+python scripts\fetch_ffmpeg.py win
+if errorlevel 1 (
     echo.
-    echo WARNING: ffmpeg\ffmpeg.exe not found.
-    echo MP3 downloads and most MP4 merges need ffmpeg.
-    echo Download from https://www.gyan.dev/ffmpeg/builds/ ^(ffmpeg-release-essentials.zip^)
-    echo and place ffmpeg.exe + ffprobe.exe in the ffmpeg\ folder.
+    echo WARNING: could not download the pinned ffmpeg. MP3 downloads, MP4 merges
+    echo and the Studio need it embedded. See ffmpeg\README.txt.
     echo.
 )
 

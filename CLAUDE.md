@@ -10,6 +10,7 @@ VidGrab — a PySide6 (Qt) desktop app that downloads YouTube videos/playlists/c
 
 ```bash
 make setup      # create .venv + install requirements.txt (one-time)
+make ffmpeg     # fetch the pinned ffmpeg/ffprobe (ffmpeg/pin.json) into ffmpeg/linux
 make run        # python -m vidgrab
 make lint       # ruff check vidgrab tests scripts   (CI runs `ruff check .`)
 make test       # SMOKE_GUI=1 QT_QPA_PLATFORM=offscreen pytest -v
@@ -45,7 +46,7 @@ Test gating via environment variables:
 
 ## Packaging & release
 
-- `VidGrab.spec` embeds ffmpeg binaries from `ffmpeg/win/` or `ffmpeg/linux/` (legacy `ffmpeg/` fallback) plus `assets/` (icons, flags, NotoSans CJK fonts) and QtMultimedia. ffmpeg binaries are **never committed** — CI fails if any are tracked; see `ffmpeg/README.txt` for sources. CI workflows download them at build time.
+- `VidGrab.spec` embeds ffmpeg binaries from `ffmpeg/win/` or `ffmpeg/linux/` (legacy `ffmpeg/` fallback) plus `assets/` (icons, flags, NotoSans CJK fonts) and QtMultimedia. ffmpeg binaries are **never committed** — CI fails if any are tracked. **One ffmpeg version is pinned** in `ffmpeg/pin.json` (a BtbN month-end autobuild, kept long-term, with SHA-256s) and fetched by `scripts/fetch_ffmpeg.py` in every CI job, both builds, `scripts/build.ps1` and `make ffmpeg`; in development `find_ffmpeg()` already prefers `ffmpeg/<platform>/` and the Makefile puts `ffmpeg/linux` first on PATH. Upgrade by editing the pin, never by pointing a workflow at a "latest" URL.
 - Release = bump `vidgrab/_version.py`, add a `## <version>` section to `CHANGELOG.md`, then push a matching `v*` tag. `release.yml` fails on a tag/version mismatch, then builds both platforms and publishes `VidGrab-windows-x64.exe`, `VidGrab-linux-x64[.tar.xz]` and `SHA256SUMS.txt`. The notes come from that changelog section.
 - The Linux binary is built on `ubuntu-22.04` on purpose (glibc floor); don't bump it to `ubuntu-latest`. Its runner needs PulseAudio/ALSA/xcb libs or QtMultimedia (inline preview) silently drops out; the `--selftest` step catches that.
 - `fetch_subtitles` must request **exact** caption codes (`SUBTITLE_LANGS`). Wildcards such as `en-.*` also match YouTube's auto-translated tracks and trigger HTTP 429; `ignoreerrors` keeps the tracks that did download.

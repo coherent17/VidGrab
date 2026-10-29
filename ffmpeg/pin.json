@@ -1,0 +1,15 @@
+{
+  "comment": "The one ffmpeg every build, CI job and `make ffmpeg` uses. BtbN keeps each month's last autobuild long-term, so pin to one of those. To upgrade: pick a newer month-end autobuild-YYYY-MM-DD-* release at https://github.com/BtbN/FFmpeg-Builds/releases, copy the *-linux64-gpl-X.Y.tar.xz / *-win64-gpl-X.Y.zip names and their sha256 digests here, and let CI render-test it.",
+  "version": "9.0.2 (n9.0.2-17-g2a571b6068)",
+  "release": "autobuild-2026-09-30-13-08",
+  "files": {
+    "linux": {
+      "name": "ffmpeg-n9.0.2-17-g2a571b6068-linux64-gpl-9.0.tar.xz",
+      "sha256": "68ee646831adaae2495618346f3bba94ff207ff83bbd34d643e7004730d66269"
+    },
+    "win": {
+      "name": "ffmpeg-n9.0.2-17-g2a571b6068-win64-gpl-9.0.zip",
+      "sha256": "a0e45723c72141975f51d8666302e614711745f3102b704ca3f82c897a58d278"
+    }
+  }
+}

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **One pinned ffmpeg everywhere: 9.0.2.** The Windows and Linux executables used to bundle different, unpinned builds (the newest development build on Windows, a 7.x static release on Linux), so behaviour could differ between platforms and change between builds without any code change. Both now ship the same ffmpeg 9.0.2, pinned in `ffmpeg/pin.json` with SHA-256 checks; every CI job tests that exact binary, and `make ffmpeg` gives developers the same one
+
 ## 3.2.0
 
 - **Undo / redo** in the Studio (Ctrl+Z / Ctrl+Y, plus toolbar buttons) for every edit: adding, trimming, splitting, reordering and deleting clips; subtitle text, timing, position and style; background music and its settings. Typing and slider drags count as one step

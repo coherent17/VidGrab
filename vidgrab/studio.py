@@ -88,6 +88,13 @@ def ass_colour(color: str | None, opacity: float = 1.0) -> str:
 # ── data model ────────────────────────────────────────────────────────────
 
 
+# ffmpeg xfade transitions offered in the Studio, in display order
+# ("none" = a plain cut). Keys are xfade transition names.
+TRANSITIONS = ("none", "fade", "fadeblack", "fadewhite", "dissolve", "wipeleft",
+               "slideleft", "circleopen", "zoomin")
+FRAMINGS = ("fit", "fill")  # whole picture with bars / fill the frame, cropping
+
+
 @dataclass
 class Clip:
     """One timeline entry: a media file plus an optional in/out range."""
@@ -95,6 +102,31 @@ class Clip:
     path: str
     start: str | None = None
     end: str | None = None
+    # how this clip begins after the previous one (ignored on the first clip)
+    transition: str = "none"
+    transition_duration: float = 0.0
+    # framing on the output canvas: "fit" (bars) or "fill" (crop), extra
+    # zoom >= 1, and which part stays in view when cropped (0..1, 0.5 = centre)
+    fit: str = "fit"
+    zoom: float = 1.0
+    pan_x: float = 0.5
+    pan_y: float = 0.5
+    volume: float = 1.0  # level of the clip's own sound (0..2)
+    muted: bool = False
+
+    def gain(self) -> float:
+        return 0.0 if self.muted else max(0.0, float(self.volume))
+
+
+def transition_overlaps(durations: list[float], transitions: list[tuple[str, float]]) -> list[float]:
+    """How much each clip overlaps the one before it (0 for the first clip
+    and for cuts). A transition can take at most half of either neighbour."""
+    out = [0.0] * len(durations)
+    for i in range(1, len(durations)):
+        kind, length = transitions[i]
+        if kind in TRANSITIONS and kind != "none" and length > 0:
+            out[i] = round(max(0.0, min(length, durations[i - 1] / 2, durations[i] / 2)), 3)
+    return out
 
 
 @dataclass
@@ -142,6 +174,13 @@ class _ResolvedClip:
     has_audio: bool
     width: int = 0
     height: int = 0
+    transition: str = "none"
+    transition_duration: float = 0.0
+    fit: str = "fit"
+    zoom: float = 1.0
+    pan_x: float = 0.5
+    pan_y: float = 0.5
+    gain: float = 1.0  # 0 = muted
 
 
 # ── ffprobe ───────────────────────────────────────────────────────────────
@@ -167,7 +206,8 @@ def probe_media(path: str | Path, *, translate: TranslateFn | None = None) -> di
     proc = subprocess.run(
         [
             ffprobe, "-v", "error", "-show_entries",
-            "format=duration:stream=codec_type,width,height,duration:stream_disposition=attached_pic",
+            ("format=duration:stream=codec_type,width,height,duration,avg_frame_rate"
+             ":stream_disposition=attached_pic"),
             "-of", "json", str(path),
         ],
         capture_output=True, text=True, check=False, timeout=30,
@@ -196,7 +236,18 @@ def probe_media(path: str | Path, *, translate: TranslateFn | None = None) -> di
         "has_audio": bool(audio),
         "width": int(video[0].get("width") or 0) if video else 0,
         "height": int(video[0].get("height") or 0) if video else 0,
+        "fps": _frame_rate(video[0].get("avg_frame_rate")) if video else 0.0,
     }
+
+
+def _frame_rate(value: object) -> float:
+    """ffprobe's "30000/1001" → 29.97 (0.0 if unknown)."""
+    num, _, den = str(value or "").partition("/")
+    try:
+        rate = float(num) / float(den or 1)
+    except (ValueError, ZeroDivisionError):
+        return 0.0
+    return rate if 1 <= rate <= 240 else 0.0
 
 
 def thumbnail_png(path: str | Path, at: float = 0.0, height: int = 72) -> bytes | None:
@@ -305,6 +356,13 @@ def _resolve(
                 has_audio=info["has_audio"],
                 width=info["width"],
                 height=info["height"],
+                transition=clip.transition,
+                transition_duration=clip.transition_duration,
+                fit=clip.fit if clip.fit in FRAMINGS else "fit",
+                zoom=max(1.0, float(clip.zoom or 1.0)),
+                pan_x=min(max(float(clip.pan_x), 0.0), 1.0),
+                pan_y=min(max(float(clip.pan_y), 0.0), 1.0),
+                gain=min(clip.gain(), 2.0),
             )
         )
     return resolved
@@ -588,12 +646,18 @@ def _run_with_progress(
         **_no_window(),
     )
     err_tail: list[str] = []
+    err_first: list[str] = []  # the first error lines usually name the cause
 
     def drain() -> None:
         assert proc.stderr is not None
         for line in proc.stderr:
             err_tail.append(line.rstrip())
             del err_tail[:-12]
+            low = line.lower()
+            if len(err_first) < 6 and any(k in low for k in (
+                    "error", "invalid", "not match", "mismatch", "failed", "cannot",
+                    "unable", "no such")):
+                err_first.append(line.rstrip())
 
     t = threading.Thread(target=drain, daemon=True)
     t.start()
@@ -615,8 +679,12 @@ def _run_with_progress(
         if on_log:
             for line in err_tail[-6:]:
                 on_log(line)
+        # ffmpeg's own last words say *why* (shown in the error dialog too)
+        lines = err_first + [x for x in err_tail[-6:] if x not in err_first]
+        detail = "\n".join(line for line in lines if line.strip())
         raise RuntimeError(
             tr("ffmpeg failed to render the project (exit code {code}).", code=proc.returncode)
+            + (f"\n\n{detail}" if detail else "")
         )
 
 
@@ -650,11 +718,17 @@ def _input_args(clip: _ResolvedClip) -> list[str]:
     return args
 
 
-def _audio_norm(label: str) -> str:
+# every audio join restates the format, so the encoder never sees it change
+# mid-stream (some ffmpeg builds' AAC encoder stops with EINVAL if it does)
+_AUDIO_FMT = (f"aformat=sample_fmts=fltp:sample_rates={SAMPLE_RATE}:channel_layouts=stereo")
+
+
+def _audio_norm(label: str, gain: float = 1.0) -> str:
     return (
         f"{label}aresample={SAMPLE_RATE},"
         f"aformat=sample_fmts=fltp:sample_rates={SAMPLE_RATE}:channel_layouts=stereo,"
         "asetpts=PTS-STARTPTS"
+        + ("" if gain == 1.0 else f",volume={gain:.3f}")  # clip level / mute
     )
 
 
@@ -674,8 +748,8 @@ def build_audio_command(
     for c in clips:
         cmd += _input_args(c)
     graph: list[str] = []
-    for i in range(len(clips)):
-        graph.append(f"{_audio_norm(f'[{i}:a:0]')}[a{i}]")
+    for i, c in enumerate(clips):
+        graph.append(f"{_audio_norm(f'[{i}:a:0]', c.gain)}[a{i}]")
 
     # a crossfade can't be longer than either neighbour
     fade = 0.0
@@ -699,6 +773,9 @@ def build_audio_command(
         graph.append(f"{ins}concat=n={len(clips)}:v=0:a=1[aout]")
         out = "[aout]"
 
+    if output.suffix.lower() == ".m4a":  # AAC: whole 1024-sample frames (see video)
+        graph.append(f"{out}{_AUDIO_FMT},asetnsamples=n=1024:p=0[aenc]")
+        out = "[aenc]"
     cmd += ["-filter_complex", ";".join(graph), "-map", out, "-vn"]
     if output.suffix.lower() == ".m4a":
         cmd += ["-c:a", "aac", "-b:a", f"{bitrate or DEFAULT_MP3_BITRATE}k"]
@@ -767,6 +844,21 @@ def _canvas(clips: list[_ResolvedClip], resolution: str) -> tuple[int, int]:
     return canvas_size(resolution, clips[0].width, clips[0].height)
 
 
+def _frame_filter(c: _ResolvedClip, width: int, height: int) -> str:
+    """Scale (+ crop) one clip onto the output canvas."""
+    if c.fit == "fit" and c.zoom == 1.0:  # the whole picture, centred, with bars
+        return (f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black")
+    # cover (fill) or contain (fit) a box `zoom` times the canvas, then cut the
+    # canvas out of it at the pan point and pad whatever is still missing
+    mode = "increase" if c.fit == "fill" else "decrease"
+    zw, zh = _even(width * c.zoom), _even(height * c.zoom)
+    return (f"scale={zw}:{zh}:force_original_aspect_ratio={mode}:force_divisible_by=2,"
+            f"crop=w='min(iw,{width})':h='min(ih,{height})':"
+            f"x='(iw-ow)*{c.pan_x:.4f}':y='(ih-oh)*{c.pan_y:.4f}',"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black")
+
+
 def build_video_command(
     ffmpeg: str,
     clips: list[_ResolvedClip],
@@ -788,7 +880,9 @@ def build_video_command(
     Windows paths (``C:\\…``) fragile, so callers run ffmpeg from a temp dir."""
     width, height = _canvas(clips, resolution)
     preset, crf, abr = RENDER_QUALITY.get(quality, RENDER_QUALITY["balanced"])
-    total = sum(c.duration for c in clips)
+    overlaps = transition_overlaps([c.duration for c in clips],
+                                   [(c.transition, c.transition_duration) for c in clips])
+    total = sum(c.duration for c in clips) - sum(overlaps)
     cmd = [ffmpeg, "-y"]
     for c in clips:
         cmd += _input_args(c)
@@ -814,16 +908,41 @@ def build_video_command(
         next_input += 1
 
     graph: list[str] = []
-    for i, _c in enumerate(clips):
+    for i, c in enumerate(clips):
         graph.append(
-            f"[{i}:v:0]scale={width}:{height}:force_original_aspect_ratio=decrease,"
-            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
-            f"setsar=1,fps={fps},format=yuv420p,setpts=PTS-STARTPTS[v{i}]"
+            f"[{i}:v:0]{_frame_filter(c, width, height)},"
+            f"setsar=1,fps={fps},format=yuv420p,setpts=PTS-STARTPTS"
+            # xfade needs both inputs on one timebase, and concat changes it
+            # ffmpeg 7.0's setpts forgets the frame rate, which xfade requires:
+            # restate it, then put every input on one timebase
+            f"{f',fps={fps},settb=AVTB' if any(overlaps) else ''}[v{i}]"
         )
-        src = f"[{silence[i]}:a]" if i in silence else f"[{i}:a:0]"
-        graph.append(f"{_audio_norm(src)}[a{i}]")
-    pairs = "".join(f"[v{i}][a{i}]" for i in range(len(clips)))
-    graph.append(f"{pairs}concat=n={len(clips)}:v=1:a=1[vc][ac]")
+        if i in silence:
+            graph.append(f"{_audio_norm(f'[{silence[i]}:a]')}[a{i}]")
+        else:
+            graph.append(f"{_audio_norm(f'[{i}:a:0]', c.gain)}[a{i}]")
+    if not any(overlaps):
+        pairs = "".join(f"[v{i}][a{i}]" for i in range(len(clips)))
+        graph.append(f"{pairs}concat=n={len(clips)}:v=1:a=1[vc][ac]")
+    else:
+        # join pairwise: xfade / acrossfade where a transition overlaps the
+        # clips, a plain concat at cuts; `at` = where clip i starts in the output
+        vprev, aprev, at = "[v0]", "[a0]", clips[0].duration
+        for i in range(1, len(clips)):
+            d = overlaps[i]
+            vnext, anext = ("[vc]", "[ac]") if i == len(clips) - 1 else (f"[vx{i}]", f"[ax{i}]")
+            if d > 0:
+                at -= d
+                graph.append(f"{vprev}[v{i}]xfade=transition={clips[i].transition}:"
+                             f"duration={d:.3f}:offset={at:.3f}{vnext}")
+                graph.append(f"{aprev}[a{i}]acrossfade=d={d:.3f}:c1=tri:c2=tri,{_AUDIO_FMT}{anext}")
+            else:
+                # concat drops the frame rate / timebase that the next xfade
+                # checks (some ffmpeg builds refuse the mismatch): restate them
+                graph.append(f"{vprev}[v{i}]concat=n=2:v=1:a=0,fps={fps},settb=AVTB{vnext}")
+                graph.append(f"{aprev}[a{i}]concat=n=2:v=0:a=1,{_AUDIO_FMT}{anext}")
+            at += clips[i].duration
+            vprev, aprev = vnext, anext
 
     vout = "[vc]"
     if subtitles_file:
@@ -848,6 +967,10 @@ def build_video_command(
         )
         aout = "[am]"
 
+    # hand AAC whole 1024-sample frames (crossfades emit bigger ones, which some
+    # ffmpeg builds pass straight to the encoder and it rejects)
+    graph.append(f"{aout}{_AUDIO_FMT},asetnsamples=n=1024:p=0[aenc]")
+    aout = "[aenc]"
     cmd += [
         "-filter_complex", ";".join(graph),
         "-map", vout, "-map", aout,

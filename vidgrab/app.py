@@ -14,6 +14,8 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import (
+    QEvent,
+    QObject,
     QSize,
     Qt,
     QThread,
@@ -32,6 +34,7 @@ from PySide6.QtGui import (
     QPixmap,
 )
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -323,6 +326,9 @@ QPushButton#segment:checked {
     background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
         stop:0 @ACCENT@, stop:1 @ACCENT2@);
     color: #ffffff;
+}
+QPushButton#segment[compact="true"] {
+    padding: 6px 4px;
 }
 
 /* ── inputs ── */
@@ -898,6 +904,7 @@ DEFAULT_SETTINGS: dict = {
     "render_quality": "balanced",  # key of studio.RENDER_QUALITY
     "studio_resolution": "auto",
     "subtitle_presets": {},  # name -> SubtitleStyle fields
+    "recent_projects": [],  # Studio .vgproj files, newest first
 }
 
 
@@ -1526,12 +1533,37 @@ class _FadeStack(QStackedWidget):
         super().setCurrentIndex(idx)
 
 
+class _WheelGuard(QObject):
+    """The mouse wheel never changes a dropdown, number box or slider — it
+    scrolls the panel underneath instead (no accidental edits while scrolling)."""
+
+    _KINDS = (QComboBox, QAbstractSpinBox, QSlider)
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.Wheel and isinstance(obj, self._KINDS):
+            event.ignore()  # handled here, but unaccepted: Qt passes it to the parent
+            return True
+        return False
+
+
+_wheel_guard: _WheelGuard | None = None
+
+
+def _install_wheel_guard() -> None:
+    global _wheel_guard
+    app = QApplication.instance()
+    if app is not None and _wheel_guard is None:
+        _wheel_guard = _WheelGuard(app)
+        app.installEventFilter(_wheel_guard)
+
+
 # ── main window ────────────────────────────────────────────────────────────
 
 
 class VidGrabWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        _install_wheel_guard()
         cfg = _load_config()
         self._settings = cfg
         self._i18n_widgets: list[tuple[QWidget, str, str]] = []
@@ -3170,6 +3202,9 @@ class VidGrabWindow(QMainWindow):
     # ── close ──────────────────────────────────────────────────────────
 
     def closeEvent(self, event) -> None:
+        if self.isVisible() and not self._studio.maybe_save():
+            event.ignore()
+            return
         _save_config(self._theme, self._lang)
         if self._worker is not None and self._worker.isRunning():
             QMessageBox.information(
@@ -3201,6 +3236,7 @@ class VidGrabWindow(QMainWindow):
             if worker.isRunning():
                 worker.wait(3000)
         self._studio.preview.stop()
+        self._studio.shutdown()
         event.accept()
 
 

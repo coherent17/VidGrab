@@ -23,6 +23,7 @@ from vidgrab.studio import (
     parse_srt,
     parse_timecode,
     probe_media,
+    transition_overlaps,
     unique_path,
 )
 
@@ -210,3 +211,97 @@ def test_compose_rejects_bad_input(tmp_path: Path) -> None:
         compose_audio([Clip(str(song), "5")], tmp_path / "o.mp3")
     with pytest.raises(RuntimeError, match="at least one clip"):
         compose_audio([], tmp_path / "o.mp3")
+
+
+def test_transition_overlaps_are_clamped() -> None:
+    durs = [4.0, 1.0, 6.0, 6.0]
+    trans = [("fade", 1.0), ("fade", 2.0), ("none", 1.0), ("wipeleft", 1.5)]
+    # first clip never overlaps; a transition takes at most half a neighbour; cuts are 0
+    assert transition_overlaps(durs, trans) == [0.0, 0.5, 0.0, 1.5]
+
+
+def test_video_command_transitions_and_cuts() -> None:
+    clips = [_clip("a.mp4", 4), _clip("b.mp4", 3), _clip("c.mp4", 5)]
+    clips[1].transition, clips[1].transition_duration = "fadeblack", 1.0
+    clips[2].transition, clips[2].transition_duration = "none", 1.0
+    cmd, total = build_video_command("ffmpeg", clips, Path("o.mp4"))
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    assert total == 4 + 3 + 5 - 1.0
+    # clip b starts 1 s before a ends; c is cut on straight after b
+    assert "[v0][v1]xfade=transition=fadeblack:duration=1.000:offset=3.000[vx1]" in graph
+    assert "[a0][a1]acrossfade=d=1.000" in graph
+    assert "acrossfade=d=1.000:c1=tri:c2=tri,aformat=sample_fmts=fltp" in graph
+    assert graph.endswith("asetnsamples=n=1024:p=0[aenc]") and cmd[cmd.index("[vc]") + 2] == "[aenc]"
+    assert "[vx1][v2]concat=n=2:v=1:a=0,fps=30,settb=AVTB[vc]" in graph
+    plain, _ = build_video_command("ffmpeg", [_clip("a.mp4", 4), _clip("b.mp4", 3)], Path("o.mp4"))
+    assert "concat=n=2:v=1:a=1[vc][ac]" in plain[plain.index("-filter_complex") + 1]
+
+
+def test_video_command_framing() -> None:
+    fit = _clip("a.mp4", 2)
+    fill = _clip("b.mp4", 2)
+    fill.fit, fill.zoom, fill.pan_x = "fill", 1.5, 0.0
+    cmd, _ = build_video_command("ffmpeg", [fit, fill], Path("o.mp4"), resolution="vertical")
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    assert "[0:v:0]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920" in graph
+    assert ("[1:v:0]scale=1620:2880:force_original_aspect_ratio=increase" in graph
+            and "x='(iw-ow)*0.0000'" in graph)
+
+
+@requires_ffmpeg
+def test_compose_video_with_transitions_and_fill(tmp_path: Path) -> None:
+    a = _make(tmp_path / "a.mp4", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25",
+              "-f", "lavfi", "-i", "sine=frequency=440", "-t", "3", "-shortest")
+    b = _make(tmp_path / "b.mp4", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30", "-t", "3")
+    c = _make(tmp_path / "c.mp4", "-f", "lavfi", "-i", "smptebars=size=320x240:rate=25", "-t", "2")
+    out = compose_video(
+        [Clip(str(a)),
+         Clip(str(b), transition="fade", transition_duration=1.0, fit="fill", pan_x=0.2),
+         Clip(str(c), transition="none"),
+         Clip(str(a), transition="slideleft", transition_duration=0.5, zoom=1.4)],
+        tmp_path / "t.mp4", resolution="square",
+        subtitles=[SubtitleCue(0.5, 6.0, "轉場")],
+    )
+    info = probe_media(out)
+    assert (info["width"], info["height"]) == (1080, 1080)
+    assert abs(info["duration"] - (3 + 3 + 2 + 3 - 1.0 - 0.5)) < 0.3
+
+
+def test_clip_volume_and_mute_in_commands() -> None:
+    loud, muted, plain = _clip("a.mp4", 2), _clip("b.mp4", 2), _clip("c.mp4", 2)
+    loud.gain, muted.gain = 1.5, 0.0
+    cmd, _ = build_video_command("ffmpeg", [loud, muted, plain], Path("o.mp4"))
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    a0, a1, a2 = (part for part in graph.split(";") if part.endswith(("[a0]", "[a1]", "[a2]")))
+    assert a0.endswith("volume=1.500[a0]") and a1.endswith("volume=0.000[a1]")
+    assert "volume=" not in a2
+    audio, _ = build_audio_command("ffmpeg", [muted, plain], Path("o.mp3"))
+    assert "volume=0.000[a0]" in audio[audio.index("-filter_complex") + 1]
+    assert Clip("x.mp4", volume=0.5, muted=True).gain() == 0.0
+
+
+@requires_ffmpeg
+def test_compose_video_mutes_a_clip(tmp_path: Path) -> None:
+    a = _make(tmp_path / "a.mp4", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25",
+              "-f", "lavfi", "-i", "sine=frequency=440", "-t", "2", "-shortest")
+    out = compose_video([Clip(str(a)), Clip(str(a), muted=True)], tmp_path / "m.mp4")
+    levels = []
+    for start in (0.5, 2.5):
+        proc = subprocess.run(
+            ["ffmpeg", "-v", "info", "-ss", str(start), "-t", "1", "-i", str(out),
+             "-af", "volumedetect", "-vn", "-f", "null", "-"],
+            capture_output=True, text=True, check=True)
+        line = next(x for x in proc.stderr.splitlines() if "max_volume" in x)
+        levels.append(float(line.split("max_volume:")[1].split("dB")[0]))
+    assert levels[0] > -30 and levels[1] < -80  # first clip audible, second silent
+
+
+@requires_ffmpeg
+def test_render_error_includes_ffmpeg_message(tmp_path: Path) -> None:
+    from vidgrab.studio import _run_with_progress
+
+    with pytest.raises(RuntimeError) as err:
+        _run_with_progress(["ffmpeg", "-v", "error", "-i", str(tmp_path / "missing.mp4"),
+                            str(tmp_path / "o.mp4")], 1.0, label="x", on_progress=None,
+                           on_log=None, translate=None)
+    assert "missing.mp4" in str(err.value)

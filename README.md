@@ -59,9 +59,13 @@ the demo video, the user guide and `SHA256SUMS.txt` for verifying downloads.
 
 - **Video montage**: join videos of any size or orientation into one MP4 (match the first clip, 1080p / 720p / 480p, vertical 9:16 or square). Clips without sound get silence
 - **Music medley**: join songs or parts of songs into MP3 / M4A / WAV, with a crossfade between tracks
-- **Multi-track timeline**: one row per clip, with thumbnails or waveforms. Drag the left and right handles to trim, drag a clip up or down to reorder, and click to seek
+- **Multi-track timeline**: one row per clip, with thumbnails or waveforms. Drag the left and right handles to trim, drag a clip up or down to reorder, and click to seek. Zoom with Ctrl+wheel; handles and subtitles snap to the playhead and to each other
+- **Editing like an editor**: undo / redo, split a clip at the playhead, keyboard trimming (I / O) and playback (J / K / L, frame steps)
+- **Projects**: save the timeline as a `.vgproj` file and pick up where you left off (Open recent)
+- **Transitions** between clips (crossfade, dip to black / white, wipe, slide, circle, zoom…) and **framing**: fill a vertical or square frame from a landscape clip, zoom in, and drag to choose what stays in view
 - **Subtitles**: add a line at the playhead, then drag it in the preview or snap it with the position grid. Retime it by dragging its block, and split or duplicate lines. Style options: font, bold, text colour, background box with opacity, fade in / out, and reusable **style presets**. Import or export `.srt`
 - **Background music**: separate music and original-audio volume, looping and an end fade
+- **Per-clip sound**: mute any clip from its timeline row, or set its volume (0–200 %)
 - **One-pass render** with a live progress bar and Fast / Balanced / High quality presets
 
 ### ⚙ Settings
@@ -88,7 +92,22 @@ the demo video, the user guide and `SHA256SUMS.txt` for verifying downloads.
 The **[user guide](docs/VidGrab-user-guide-zh-TW.pdf)** (繁體中文) walks through every page with screenshots, and the
 **[demo video](docs/VidGrab-demo.mp4)** shows the whole flow with narration.
 
-Keyboard shortcuts: `Ctrl+V` pastes a link, `Space` plays or pauses the Studio preview, `Delete` removes the selected clip or subtitle, and `F1` shows About.
+Keyboard shortcuts: `Ctrl+V` pastes a link and `F1` shows About. In the Studio:
+
+| Keys | Action |
+|------|--------|
+| `Space` / `K` | Play / pause |
+| `J` / `L` · `←` / `→` | Back / forward 1 second · one frame |
+| `I` / `O` | Trim the clip under the playhead to start / end there |
+| `S` | Split the clip under the playhead |
+| `M` | Mute / unmute the selected clip |
+| `Delete` | Delete the selected clip or subtitle |
+| `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
+| `Ctrl+wheel` · `Ctrl+0` | Zoom the timeline · fit the whole project |
+| `Z` | Zoom to the selected clip |
+| `Ctrl+S` / `Ctrl+O` / `Ctrl+N` | Save / open / new project |
+
+Hold `Alt` while dragging to turn snapping off, or `Shift` for fine (1/10-speed) trimming; drag a handle past the edge of the timeline to keep extending the clip. The **?** button in the timeline lists every shortcut.
 
 ### Typing Chinese on Linux / WSL
 

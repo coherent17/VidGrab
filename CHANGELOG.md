@@ -1,16 +1,16 @@
 # Changelog
 
-## Unreleased
+## 3.3.0
 
-- **Cut the background music**: the music block now has start / end handles to choose the part of the song that plays, and dragging the block makes the music come in later. When looping, that part repeats (dashed lines mark each pass) and the rest of the song shows faintly behind it. The music panel has exact **Song start**, **Song end** and **Comes in at** fields; undo and projects include them
-- **The preview shows transitions**: crossfade, dissolve, wipe, slide, circle and zoom are now drawn live in the preview (paused or playing), not just labelled, and the sound crossfades as in the render. A second, hidden player decodes the other clip of a transition for the same preview window
-- Removed the Studio's **Import .srt / Export .srt** buttons (YouTube subtitles downloaded with a video still come along with "Send to Studio")
-- **Several background songs**: "＋ Add song…" puts another song on the Music row (right after the previous one); each song has its own part, start time, volume and fade in / out, and overlapping two songs with fades crossfades them. Only the last song loops to the end of the video; the original-audio level and the end fade apply to all music. Projects from 3.2 (one song) still open
 - **Images over the video**: "＋ Image…" (or drop a picture on the window, or double-click the new **Images** row) shows a picture from the playhead for 4 s, placed by what it is: a cut-out with transparency (a logo, a sticker) small in the top-right corner, a photo as large as fits in the middle (several pictures follow one another). Drag its block in the Images row to change when it shows; in the preview drag the picture to move it, its corner to resize it and the knob above it to **rotate** it (snaps to 0 / 90 / 180 / 270°, Alt = free). The Image panel has start / end, size, opacity, fade in / out, rotation (± 90° buttons), a 3 × 3 position grid and "Fill the frame". Any number of pictures render in the same single ffmpeg pass, under the subtitles; undo and projects include them
-- **Overlapping subtitles (and pictures) stack into lanes**: lines that overlap in time sit one under another in the Subtitles row (which grows to fit) instead of covering each other, so each can be seen, selected and dragged
-- Headless runs (tests, scripts) never play sound: the download-finished chime is skipped and the preview starts muted
+- **The preview shows transitions**: crossfade, dissolve, wipe, slide, circle and zoom are now drawn live in the preview (paused or playing), not just labelled, and the sound crossfades as in the render. A second, hidden player decodes the other clip of a transition for the same preview window
+- **Cut the background music**: the music block now has start / end handles to choose the part of the song that plays, and dragging the block makes the music come in later. When looping, that part repeats (dashed lines mark each pass) and the rest of the song shows faintly behind it. The music panel has exact **Song start**, **Song end** and **Comes in at** fields; undo and projects include them
+- **Several background songs**: "＋ Add song…" puts another song on the Music row (right after the previous one); each song has its own part, start time, volume and fade in / out, and overlapping two songs with fades crossfades them. Only the last song loops to the end of the video; the original-audio level and the end fade apply to all music. Projects from 3.2 (one song) still open
 - **Hear the music in the preview**: the play button now plays the background music with the video, as it will be rendered: the chosen part of the song, from its start time, looping, at the music volume, with the original audio turned down and the end fade
+- **Overlapping subtitles (and pictures) stack into lanes**: lines that overlap in time sit one under another in the Subtitles row (which grows to fit) instead of covering each other, so each can be seen, selected and dragged
 - **One pinned ffmpeg everywhere: 9.0.2.** The Windows and Linux executables used to bundle different, unpinned builds (the newest development build on Windows, a 7.x static release on Linux), so behaviour could differ between platforms and change between builds without any code change. Both now ship the same ffmpeg 9.0.2, pinned in `ffmpeg/pin.json` with SHA-256 checks; every CI job tests that exact binary, and `make ffmpeg` gives developers the same one
+- Removed the Studio's **Import .srt / Export .srt** buttons (YouTube subtitles downloaded with a video still come along with "Send to Studio")
+- Headless runs (tests, scripts) never play sound: the download-finished chime is skipped and the preview starts muted
 
 ## 3.2.0
 

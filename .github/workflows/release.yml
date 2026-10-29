@@ -21,12 +21,19 @@ jobs:
           echo "app=$APP tag=$TAG"
           [ "$APP" = "$TAG" ] || { echo "::error::tag v$TAG does not match _version.py ($APP)"; exit 1; }
 
-  build:
+  # the same lint + tests as CI: a tag can't publish what doesn't pass them
+  # (the live-YouTube integration tests stay CI-only: YouTube often refuses
+  # GitHub's runners, which shouldn't block a release)
+  checks:
     needs: check-version
+    uses: ./.github/workflows/checks.yml
+
+  build:
+    needs: checks
     uses: ./.github/workflows/build-windows.yml
 
   build-linux:
-    needs: check-version
+    needs: checks
     uses: ./.github/workflows/build-linux.yml
 
   release:

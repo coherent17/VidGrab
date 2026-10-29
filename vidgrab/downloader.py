@@ -426,6 +426,39 @@ def process_local_file(
 
 # ── YouTube downloads ─────────────────────────────────────────────────────
 
+# Networks (and CI runners) with IPv6 but no route for it: YouTube's media
+# hosts resolve to IPv6 first and the download dies with "Network is
+# unreachable". Those attempts are retried over IPv4.
+_UNREACHABLE = ("network is unreachable", "errno 101", "no route to host", "errno 113")
+
+
+def _network_unreachable(exc: BaseException) -> bool:
+    text = f"{exc}".lower()
+    return any(k in text for k in _UNREACHABLE)
+
+
+def _try_clients(attempt: Callable[[str, bool], object], log: LogCallback, tr: TranslateFn) -> object:
+    """Run *attempt(client, ipv4)* with each player client in turn (full
+    resolution first, then the reliable low-res one). After an "unreachable"
+    error the same client is retried, and every later one runs, over IPv4."""
+    queue = [("tv_embedded", False), ("android", False)]
+    last_exc: Exception | None = None
+    while queue:
+        client, ipv4 = queue.pop(0)
+        try:
+            return attempt(client, ipv4)
+        except DownloadCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - try the next way
+            last_exc = exc
+            if not ipv4 and _network_unreachable(exc):
+                log(tr("Network unreachable with {client}; retrying over IPv4.", client=client))
+                queue = [(client, True)] + [(c, True) for c, _v4 in queue]
+                continue
+            log(tr("Download failed with {client} ({exc}); retrying.", client=client, exc=exc))
+    raise RuntimeError(tr("Download failed: {exc}", exc=last_exc))
+
+
 def _ytdl_options(
     url: str,
     output_path: Path,
@@ -440,6 +473,7 @@ def _ytdl_options(
     outtmpl: str | None = None,
     player_client: str = "tv_embedded",
     name_template: str = DEFAULT_NAME,
+    ipv4: bool = False,
 ) -> dict:
     common: dict = {
         "outtmpl": outtmpl
@@ -453,6 +487,8 @@ def _ytdl_options(
         # used as the fallback in download() when YouTube answers 403.
         "extractor_args": {"youtube": {"player_client": [player_client]}},
     }
+    if ipv4:  # see _network_unreachable()
+        common["source_address"] = "0.0.0.0"
     if progress_hook is not None:
         common["progress_hooks"] = [progress_hook]
     if ffmpeg:
@@ -654,8 +690,14 @@ def probe(
         "extract_flat": "in_playlist",
         "extractor_args": {"youtube": {"player_client": ["tv_embedded"]}},
     }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as exc:  # IPv6 without a route: try IPv4
+        if not _network_unreachable(exc):
+            raise
+        with yt_dlp.YoutubeDL({**opts, "source_address": "0.0.0.0"}) as ydl:
+            info = ydl.extract_info(url, download=False)
     if info is None:
         raise RuntimeError(tr("Could not fetch video information."))
     return _summarize(info, thumb_dir=thumb_dir)
@@ -764,7 +806,7 @@ def download_playlist(
 
     t0 = time.time()
 
-    def extract(client: str) -> None:
+    def extract(client: str, ipv4: bool) -> None:
         opts = _ytdl_options(
             url,
             output_path,
@@ -775,24 +817,12 @@ def download_playlist(
             noplaylist=False,
             outtmpl=str(output_path / f"%(playlist_index)02d - {name_template}.%(ext)s"),
             player_client=client,
+            ipv4=ipv4,
         )
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.extract_info(url, download=True)
 
-    info = None
-    last_exc: Exception | None = None
-    for client in ("tv_embedded", "android"):
-        try:
-            extract(client)
-            info = object()
-            break
-        except DownloadCancelled:
-            raise
-        except Exception as exc:  # noqa: BLE001 - try the next client
-            last_exc = exc
-            log(tr("Download failed with {client} ({exc}); retrying.", client=client, exc=exc))
-    if info is None:
-        raise RuntimeError(tr("Download failed: {exc}", exc=last_exc))
+    _try_clients(extract, log, tr)
 
     files = sorted(_new_files(output_path, t0), key=_playlist_order)
     if not files:
@@ -885,7 +915,7 @@ def download(
     # Always fetch the full video and cut locally with ffmpeg: YouTube's media
     # servers answer ranged (download_sections) requests with HTTP 403 or fall
     # back to the full file, so range-based downloads are unreliable.
-    def extract(client: str) -> dict:
+    def extract(client: str, ipv4: bool) -> dict:
         opts = _ytdl_options(
             url,
             output_path,
@@ -896,6 +926,7 @@ def download(
             progress_hook=progress_hook,
             player_client=client,
             name_template=name_template,
+            ipv4=ipv4,
         )
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -905,21 +936,7 @@ def download(
 
     # tv_embedded gives the full resolution but YouTube can 403 its media
     # URLs; android is low-res but reliable, so it acts as the last resort.
-    info = None
-    last_exc: Exception | None = None
-    for client in ("tv_embedded", "android"):
-        try:
-            info = extract(client)
-            break
-        except DownloadCancelled:
-            raise
-        except Exception as exc:  # noqa: BLE001 - try the next client
-            last_exc = exc
-            log(tr("Download failed with {client} ({exc}); retrying.", client=client, exc=exc))
-    if info is None:
-        raise RuntimeError(
-            tr("Download failed: {exc}", exc=last_exc)
-        )
+    info = _try_clients(extract, log, tr)
 
     title = info.get("title", "download")
     out_file = _locate_output(output_path, title, fmt, suffix)

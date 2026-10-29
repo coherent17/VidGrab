@@ -107,8 +107,8 @@ def test_trim_section(src_mp4: Path, tmp_path: Path) -> None:
     out = downloader.process_local_file(
         src_mp4,
         tmp_path,
-        section_start="00:00:00:50",
-        section_end="00:00:01:50",
+        section_start="0:00.5",  # M:SS.s, as the app accepts (not "00:00:00:50" = 50 s)
+        section_end="0:01.5",
     )
     dur = _duration(out)
     # trimmed to ~1 second (±400 ms tolerance)

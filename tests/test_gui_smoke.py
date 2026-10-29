@@ -167,13 +167,10 @@ def test_studio_page(qapp, tmp_path, monkeypatch) -> None:
         assert st._cues[0].x is None
 
         # text colour + background box (or none) reach the render request
-        st.sub_color.setCurrentIndex(st.sub_color.findData("#FFE500"))
-        st._color_picked(st.sub_color)
-        st.sub_bg.setCurrentIndex(st.sub_bg.findData(""))
-        st._color_picked(st.sub_bg)
+        st.sub_color._pick("#FFE500")
+        st.sub_bg._pick("")
         assert st._style().background is None and not st.sub_bg_opacity.isEnabled()
-        st.sub_bg.setCurrentIndex(st.sub_bg.findData("#000000"))
-        st._color_picked(st.sub_bg)
+        st.sub_bg._pick("#000000")
         st.sub_bg_opacity.setValue(80)
         style = st._style()
         assert (style.color, style.background, style.bg_opacity) == ("#FFE500", "#000000", 0.8)
@@ -494,3 +491,340 @@ def test_settings_defaults_presets_and_storage(qapp, tmp_path, monkeypatch) -> N
         assert seen == [2] and win._finished_since_idle == 0
     finally:
         win.close()
+
+
+def test_studio_undo_projects_split_zoom(qapp, tmp_path, monkeypatch) -> None:
+    """Undo / redo, project save + open, split / I / O at the playhead,
+    timeline zoom + snapping, and the wheel never changing a dropdown."""
+    import json
+    import shutil
+    import subprocess
+
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication
+
+    from vidgrab import app as appmod
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        pytest.skip("ffmpeg / ffprobe not on PATH")
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    clip = tmp_path / "c.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc=size=160x120:rate=10", "-t", "4", str(clip)], check=True)
+    win = appmod.VidGrabWindow()
+    try:
+        st = win._studio
+        assert not st.can_undo() and not st.is_dirty()
+
+        # undo / redo across adding, trimming and subtitle edits
+        st.add_clips([str(clip)])
+        st.set_trim(0, 1.0, 3.0)
+        assert st.clips()[0].span() == (1.0, 3.0) and st.is_dirty()
+        st.undo()
+        assert st.clips()[0].span() == (0.0, 4.0)
+        st.undo()
+        assert st.clips() == [] and not st.can_undo()
+        st.redo()
+        st.redo()
+        assert st.clips()[0].span() == (1.0, 3.0) and not st.can_redo()
+        st.preview.seek(0.5)
+        st._add_cue()
+        for text in ("h", "he", "hello"):  # typing merges into one undo step
+            st.cue_text.setPlainText(text)
+        st.undo()  # the typing is one step...
+        assert [c.text for c in st.cues()] == ["New subtitle"]
+        st.undo()  # ...adding the line another
+        assert st.cues() == []
+        st.redo()
+        st.redo()
+        assert [c.text for c in st.cues()] == ["hello"]
+        st.sub_size.setValue(30)
+        st.undo()
+        assert st.sub_size.value() == 24
+
+        # split the clip under the playhead; both halves keep the source times
+        st.preview.seek(0.5)
+        st.split_clip()
+        assert [c.span() for c in st.clips()] == [(1.0, 1.5), (1.5, 3.0)]
+        st.undo()
+        assert len(st.clips()) == 1
+        st.preview.seek(0.5)  # I / O: trim the clip under the playhead
+        st.trim_at_playhead("end")
+        assert st.clips()[0].span() == (1.0, 1.5)
+        st.undo()
+        st.preview.seek(1.0)
+        st.trim_at_playhead("start")
+        assert st.clips()[0].span() == (2.0, 3.0)
+
+        # save, start a new project, reopen
+        st.add_clips([str(clip)])
+        st.sub_color._pick("#FFE500")
+        proj = tmp_path / "demo.vgproj"
+        monkeypatch.setattr(win, "pick_save", lambda *_a: str(proj))
+        assert st.save_project() and proj.is_file() and not st.is_dirty()
+        data = json.loads(proj.read_text(encoding="utf-8"))
+        assert data["app"] == "VidGrab" and len(data["clips"]) == 2
+        assert data["clips"][0]["rel"] == "c.mp4" and data["style"]["color"] == "#FFE500"
+        assert win.setting("recent_projects") == [str(proj)]
+        st.new_project()
+        assert st.clips() == [] and st.cues() == [] and st.sub_color.color() == "#FFE500"
+        st.sub_color._pick("#FFFFFF")
+        monkeypatch.setattr(appmod.QMessageBox, "question",
+                            staticmethod(lambda *_a, **_k: appmod.QMessageBox.Discard))
+        assert st.open_project(str(proj))
+        assert [c.span() for c in st.clips()] == [(2.0, 3.0), (0.0, 4.0)]
+        assert len(st.cues()) == 1 and st.sub_color.color() == "#FFE500"
+        assert not st.is_dirty() and not st.can_undo()
+        bad = tmp_path / "bad.vgproj"
+        bad.write_text("nope", encoding="utf-8")
+        warned = []
+        monkeypatch.setattr(appmod.QMessageBox, "warning",
+                            staticmethod(lambda *a, **_k: warned.append(a[2])))
+        assert not st.open_project(str(bad)) and warned
+
+        # zoom keeps the anchor in place; edges snap to the playhead
+        tl = st.track
+        tl.resize(1000, tl.height())
+        st.fit_timeline()
+        tl.set_playhead(2.0)
+        x_before = tl._x(2.0)
+        st.zoom_timeline(4.0)
+        assert tl.zoom() == 4.0 and abs(tl._x(2.0) - x_before) < 1
+        assert st.hscroll.isVisibleTo(st)
+        st.fit_timeline()
+        assert tl.zoom() == 1.0 and tl.view_start() == 0.0
+        assert tl._snap(2.0 + 3 / tl._pps(), [2.0], free=False) == (2.0, 2.0)
+        assert tl._snap(2.0 + 3 / tl._pps(), [2.0], free=True)[1] is None
+        assert tl._snap(2.0 + 30 / tl._pps(), [2.0], free=False)[1] is None
+
+        # the wheel scrolls past a dropdown instead of changing it
+        combo = st.res
+        idx = combo.currentIndex()
+        pos = QPointF(5, 5)
+        ev = QWheelEvent(pos, combo.mapToGlobal(QPoint(5, 5)).toPointF(), QPoint(0, 0),
+                         QPoint(0, -120), Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
+        QApplication.sendEvent(combo, ev)
+        assert combo.currentIndex() == idx
+    finally:
+        win.close()
+
+
+def test_trim_is_clamped_to_the_source(qapp, tmp_path, monkeypatch) -> None:
+    import shutil
+    import subprocess
+
+    from vidgrab import app as appmod
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        pytest.skip("ffmpeg / ffprobe not on PATH")
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    clip = tmp_path / "c.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc=size=160x120:rate=10", "-t", "4", str(clip)], check=True)
+    win = appmod.VidGrabWindow()
+    try:
+        st = win._studio
+        st.add_clips([str(clip)])
+        st.set_trim(0, 40.0, 52.0)  # past the end of a 4 s source
+        s, e = st.clips()[0].span()
+        assert e - s >= 0.2 and e <= 4.0
+    finally:
+        win.close()
+
+
+def test_studio_transitions_and_framing(qapp, tmp_path, monkeypatch) -> None:
+    import json
+    import shutil
+    import subprocess
+
+    from vidgrab import app as appmod
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        pytest.skip("ffmpeg / ffprobe not on PATH")
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    clip = tmp_path / "c.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc=size=160x120:rate=10", "-f", "lavfi", "-i", "sine", "-t", "4",
+                    str(clip)], check=True)
+    win = appmod.VidGrabWindow()
+    try:
+        st = win._studio
+        st.add_clips([str(clip), str(clip), str(clip)])
+        assert len(st.clips()[0].thumbs) >= 2  # a filmstrip, not one repeated frame
+        st.select_clip(0)
+        assert st.insp.currentIndex() == st.INSP_CLIP
+        assert st.trans_first.isVisibleTo(st) and not st.trans_box.isVisibleTo(st)
+
+        # a 1 s crossfade into clip 2 overlaps it with clip 1
+        st.select_clip(1)
+        st.trans_btns["fade"].click()
+        st.trans_len.setValue(1.0)
+        assert st.track.overlaps() == [0.0, 1.0, 0.0]
+        assert st.track.offsets() == [0.0, 3.0, 7.0] and st.track.total() == 11.0
+        assert st.total_lbl.text().endswith("0:11.0")  # the label subtracts the overlap too
+        assert abs(st.preview.duration() - 11.0) < 1e-6
+        segs = st._segments()
+        assert (segs[0].duration, segs[1].start, segs[1].duration) == (3.5, 0.5, 3.5)
+        st._transition_for_all()
+        assert [c.transition for c in st.clips()] == ["none", "fade", "fade"]
+        assert st.track.total() == 10.0
+        st.undo()
+        assert st.track.total() == 11.0
+
+        # framing: fill + zoom + pan reach the render request
+        st.fit_btns["fill"].click()
+        st.clip_zoom.setValue(150)
+        st._on_pan_dragged(1, 0.1, 0.9)
+        assert st.preview.canvas._pannable is (st.preview._seg_idx == 1)
+        got = {}
+        st.render_requested.connect(lambda task, kw: got.update(kw))
+        monkeypatch.setattr(win, "_start_studio", lambda *_a: None)
+        st.render()
+        c1 = got["clips"][1]
+        assert (c1.transition, c1.transition_duration) == ("fade", 1.0)
+        assert (c1.fit, c1.zoom, c1.pan_x, c1.pan_y) == ("fill", 1.5, 0.1, 0.9)
+
+        # ...and survive a project save / open
+        proj = tmp_path / "p.vgproj"
+        monkeypatch.setattr(win, "pick_save", lambda *_a: str(proj))
+        st.save_project()
+        saved = json.loads(proj.read_text(encoding="utf-8"))["clips"][1]
+        assert saved["transition"] == "fade" and saved["fit"] == "fill"
+        st.new_project()
+        st.open_project(str(proj))
+        c = st.clips()[1]
+        assert (c.transition, c.fit, c.zoom, c.pan_x) == ("fade", "fill", 1.5, 0.1)
+
+        # mute from the timeline header, volume from the clip panel
+        st.toggle_mute(0)
+        assert st.clips()[0].muted and st._segments()[0].volume == 0.0
+        st.undo()
+        assert not st.clips()[0].muted
+        st.select_clip(2)
+        st.clip_vol.setValue(50)
+        st.clip_mute.setChecked(True)
+        assert not st.clip_vol.isEnabled()
+        got.clear()
+        st.render()
+        assert (got["clips"][2].volume, got["clips"][2].muted) == (0.5, True)
+        assert st.project_data()["clips"][2]["muted"] is True
+
+        # the music medley ignores per-clip transitions (it has one crossfade)
+        st.mode_audio.setChecked(True)
+        assert st.track.overlaps() == [0.0, 0.0, 0.0]
+        assert st.insp.currentIndex() != st.INSP_CLIP
+    finally:
+        win.close()
+
+
+def test_precise_trimming(qapp, tmp_path, monkeypatch) -> None:
+    """Nudges by frame / second, typed in/out points, Shift = fine drag,
+    dragging past the edge keeps extending, zoom to clip, on-demand frames."""
+    import shutil
+    import subprocess
+
+    from PySide6.QtCore import QEventLoop, QPoint, Qt, QTimer
+    from PySide6.QtTest import QTest
+
+    from vidgrab import app as appmod
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        pytest.skip("ffmpeg / ffprobe not on PATH")
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    clip = tmp_path / "c.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc=size=160x120:rate=25", "-t", "60", str(clip)], check=True)
+
+    def wait(ms: int) -> None:
+        loop = QEventLoop()
+        QTimer.singleShot(ms, loop.quit)
+        loop.exec()
+
+    win = appmod.VidGrabWindow()
+    try:
+        st = win._studio
+        st.add_clips([str(clip)])
+        assert st.clips()[0].info["fps"] == 25.0
+        st.set_trim(0, 10.0, 20.0)
+        st.select_clip(0)
+        st._nudge("end", 0.01)  # one frame at 25 fps
+        st._nudge("start", -1.0)
+        assert st.clips()[0].span() == (9.0, 20.04)
+        assert st.trim_fields["end"].text() == "0:20.04"
+        st.trim_fields["start"].setText("0:05.5")
+        st._trim_typed("start")
+        assert st.clips()[0].span()[0] == 5.5
+        st.undo()
+        assert st.clips()[0].span()[0] == 9.0
+
+        tl = st.track
+        tl.resize(900, tl.height())
+        st.fit_timeline()
+        r = tl._clip_rect(0)
+        y, x = int(r.center().y()), int(r.right()) - 3
+        QTest.mousePress(tl, Qt.LeftButton, Qt.NoModifier, QPoint(x, y))
+        tl._trim_move(x - 100, Qt.ShiftModifier)  # a tenth as far with Shift
+        pps = tl._pps()
+        assert abs((20.04 - tl._drag["e"]) - 10 / pps) < 0.02
+        tl._trim_move(tl.width() + 80, Qt.KeyboardModifier.NoModifier)  # past the edge
+        before = tl._drag["e"]
+        wait(400)
+        assert tl._drag["e"] > before + 1  # still extending while held there
+        assert tl._x(tl._drag["offsets"][0] - tl._drag["s0"] + tl._drag["e"]) <= tl.width()
+        QTest.mouseRelease(tl, Qt.LeftButton, Qt.NoModifier, QPoint(tl.width() + 80, y))
+        assert st.clips()[0].span()[1] > before + 1
+
+        st.zoom_to_clip()
+        assert tl.zoom() >= 1.0
+        assert tl._tooltip(("clip", 0, "header")).startswith("c.mp4\n")
+        # tiles ask the cache for the frame at their own time
+        assert tl._thumbs is st.thumbs
+        assert st.thumbs.frame(str(clip), 12.3, 1.0) is None  # queued
+        for _ in range(50):
+            wait(100)
+            if st.thumbs.frame(str(clip), 12.3, 1.0) is not None:
+                break
+        assert st.thumbs.frame(str(clip), 12.3, 1.0) is not None
+        assert st.thumbs.nearest(str(clip), 12.9) is not None
+    finally:
+        win.close()
+
+
+def test_preview_waits_for_the_new_source_before_seeking(qapp) -> None:
+    """A stale "loaded" status from the previous file must not use up the
+    seek for the new one (the playhead then sat still while the source
+    played from 0:00)."""
+    from vidgrab.preview import QT_MULTIMEDIA_OK, QMediaPlayer, StudioPreview
+
+    if not QT_MULTIMEDIA_OK:
+        pytest.skip("QtMultimedia not available")
+    pv = StudioPreview()
+    calls: list[int] = []
+    pv.player.setPosition = calls.append  # type: ignore[method-assign]
+    pv._pending_seek, pv._awaiting_source = 22.5, True
+    pv._on_status(QMediaPlayer.MediaStatus.LoadedMedia)  # stale, from the old file
+    assert pv._pending_seek == 22.5 and calls == []
+    pv._awaiting_source = False
+    pv._on_status(QMediaPlayer.MediaStatus.LoadedMedia)
+    assert calls == [22500] and pv._seek_target == 22.5
+    # reloading resets the position: the seek is queued again
+    pv._on_status(QMediaPlayer.MediaStatus.LoadingMedia)
+    assert pv._pending_seek == 22.5
+    pv.close()
+
+
+def test_preview_newest_seek_wins_while_loading(qapp, tmp_path) -> None:
+    """Two quick jumps while a file is still loading: the second must win."""
+    from vidgrab.preview import QT_MULTIMEDIA_OK, Segment, StudioPreview
+
+    if not QT_MULTIMEDIA_OK:
+        pytest.skip("QtMultimedia not available")
+    pv = StudioPreview()
+    a, b = str(tmp_path / "a.mp4"), str(tmp_path / "b.mp4")
+    pv.load_timeline([Segment(a, 0.0, 10.0, True), Segment(b, 5.0, 10.0, True)], 0.0)
+    pv.seek(12.0)  # switches to b: queued until b has loaded
+    assert pv._pending_seek == 7.0
+    pv.seek(18.0)  # still loading b
+    assert pv._pending_seek == 13.0 and abs(pv.position() - 18.0) < 1e-6
+    pv.close()

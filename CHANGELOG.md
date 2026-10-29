@@ -1,5 +1,29 @@
 # Changelog
 
+## 3.2.0
+
+- **Undo / redo** in the Studio (Ctrl+Z / Ctrl+Y, plus toolbar buttons) for every edit: adding, trimming, splitting, reordering and deleting clips; subtitle text, timing, position and style; background music and its settings. Typing and slider drags count as one step
+- **Projects**: save the Studio timeline as a `.vgproj` file and open it later (Project menu, Ctrl+S / Ctrl+O / Ctrl+N, Open recent). Media paths are stored both absolute and relative to the project file, so a moved folder still opens; missing files are reported and left out. VidGrab asks before discarding unsaved changes, including when you close the window. Dropping a `.vgproj` on the window opens it
+- **Timeline zoom**: Ctrl+wheel (or − / + / Fit) zooms around the mouse; Shift+wheel or the scrollbar pans; the view follows the playhead during playback
+- **Snapping**: trim handles and subtitle blocks snap to the playhead, clip boundaries and other subtitles, with a guide line; hold Alt to drag freely
+- **Keyboard editing**: Space / K play-pause, J / L ±1 s, ← / → one frame, Home / End, I / O trim the clip under the playhead, S split it; a **?** button lists every shortcut
+- **Split clips** at the playhead (✂ Split or S); both halves keep their source times
+- **Transitions between clips**: select a clip to open its new **Clip** panel and pick how it comes in: Cut, Crossfade, Dip to black / white, Dissolve, Wipe, Slide, Circle or Zoom in, with a duration (0.2–3 s) and **Use for all cuts**. The clips overlap on the timeline (marked ✕), the sound crossfades too, and the render uses ffmpeg `xfade`. The preview switches at the middle of a transition, draws dips to black / white, and labels the others while they play
+- **Framing (crop and reframe)**: per clip, **Whole picture** (black bars) or **Fill frame** (crop, no bars), a zoom of 100–300 %, and **drag the picture in the preview** to choose what stays in view. Made for vertical 9:16 and square videos from landscape clips; the preview matches the render
+- **Mute or turn down a clip**: a speaker button on every clip row in the timeline mutes it in one click (red when muted; also `M`), and the Clip panel has Mute plus a 0–200 % volume slider. The preview plays at that level and the render applies it (also in music medleys); saved in projects and undoable
+- **Filmstrip thumbnails**: every tile on a video's timeline block shows the frame at its own time, extracted on demand in the background (zooming in fetches finer frames). Before, one frame was repeated across the block, so a video that fades in from black showed an all-black track, and a short part of a long video showed the same image over and over
+- **Easier trimming**:
+  - drag a start / end handle **past the edge** of the timeline and the clip keeps growing (faster the further out you hold it) while the view rescales, so a long clip can be lengthened in one drag instead of many small ones
+  - hold **Shift** while dragging for 1/10-speed fine adjustment
+  - the Clip panel has **exact Start / End** fields (hundredths) with **−1 s / −1 frame / +1 frame / +1 s** buttons (frame length from the video's own frame rate)
+  - **Zoom to clip** (button or Z) zooms the timeline onto the selected clip
+- **Clearer subtitle panel**: Line and Style tabs instead of one long scrolling panel; text and background colours are one-click swatches (with a custom colour picker), and the default position is a Bottom / Top switch
+- **The mouse wheel no longer changes dropdowns, number boxes or sliders** anywhere in the app; it scrolls the panel instead
+- Trims can no longer go past the end of the source (a clip could end up 0 s long)
+- **Preview play button sometimes did nothing**: after jumping into a different clip, the player could report the previous file as loaded, so the jump was lost and the new file played from 0:00 while the playhead and time stayed still. The preview now waits for the new file, re-applies a jump the player drops, and when you jump twice while a file is still loading the newest jump wins
+- Demo video re-recorded and the user guide updated for the new Clip panel (trim, transitions, sound, framing), undo, projects and keyboard shortcuts
+- The clip count / length label under the preview now subtracts transition overlaps, so it matches the preview's total
+
 ## 3.1.0
 
 - **Settings page** in two columns with five sections:

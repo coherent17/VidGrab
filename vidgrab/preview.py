@@ -26,6 +26,7 @@ from PySide6.QtGui import (
     QPixmap,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -37,6 +38,7 @@ from PySide6.QtWidgets import (
 from vidgrab.studio import (
     SUBTITLE_FONT_NAME,
     SUBTITLE_MARGIN,
+    ImageOverlay,
     SubtitleCue,
     SubtitleStyle,
     box_padding,
@@ -174,6 +176,8 @@ class VideoCanvas(QWidget):
     cue_clicked = Signal(int)
     pan_dragged = Signal(float, float)  # new pan_x, pan_y while dragging the picture
     pan_finished = Signal()
+    image_clicked = Signal(int)
+    image_changed = Signal(int, float, float, float, float)  # row, centre x, y, width, rotation
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -196,6 +200,15 @@ class VideoCanvas(QWidget):
         self._pan_drag: tuple[QPointF, float, float] | None = None
         self._dip: tuple[str, float] | None = None  # colour, opacity
         self._badge = ""
+        self._images: list[tuple[int, ImageOverlay]] = []  # the ones showing now
+        self._selected_image: int | None = None
+        self._pictures: dict[str, QImage] = {}  # loaded once per file
+        # row, box (unrotated), its rotation, resize grip, rotate knob (unrotated frame)
+        self._img_hits: list[tuple[int, QRectF, float, QRectF, QRectF]] = []
+        # dragging a picture: row, "move" | "size" | "turn", press point, original
+        # x / y / width / rotation
+        self._img_drag: tuple[int, str, QPointF, float, float, float, float] | None = None
+        self._img_live: tuple[float, float, float, float] | None = None
 
     def sizeHint(self) -> QSize:
         return QSize(640, 360)
@@ -226,6 +239,84 @@ class VideoCanvas(QWidget):
     def set_style(self, style: SubtitleStyle) -> None:
         self._style = style
         self.update()
+
+    def set_images(self, images: list[tuple[int, ImageOverlay]], selected: int | None) -> None:
+        self._images, self._selected_image = images, selected
+        self.update()
+
+    def picture(self, path: str) -> QImage:
+        img = self._pictures.get(path)
+        if img is None:
+            img = QImage(path)
+            self._pictures[path] = img
+        return img
+
+    def _image_box(self, img: ImageOverlay, rect: QRectF) -> QRectF:
+        pic = self.picture(img.path)
+        w = rect.width() * img.width
+        h = w * pic.height() / max(1, pic.width()) if not pic.isNull() else w
+        cx, cy = rect.x() + img.x * rect.width(), rect.y() + img.y * rect.height()
+        return QRectF(cx - w / 2, cy - h / 2, w, h)
+
+    def _paint_images(self, p: QPainter, rect: QRectF) -> None:
+        self._img_hits = []
+        p.save()
+        p.setClipRect(rect)
+        for row, img in self._images:
+            if self._img_drag is not None and self._img_drag[0] == row and self._img_live:
+                x, y, w, rot = self._img_live
+                img = ImageOverlay(img.path, img.start, img.end, x, y, w,
+                                   opacity=img.opacity, fade=img.fade, rotation=rot)
+            pic = self.picture(img.path)
+            box = self._image_box(img, rect)
+            level = img.opacity
+            if img.fade > 0 and self._img_drag is None:
+                fade = min(img.fade, (img.end - img.start) / 2) or 1.0
+                level *= min(1.0, max(0.0, min(self._time - img.start, img.end - self._time) / fade))
+            # draw in the picture's own (rotated) frame, centred on its centre
+            p.save()
+            p.translate(box.center())
+            p.rotate(img.rotation)
+            local = QRectF(-box.width() / 2, -box.height() / 2, box.width(), box.height())
+            p.setOpacity(level)
+            if not pic.isNull():
+                p.drawImage(local, pic)
+            p.setOpacity(1.0)
+            grip = QRectF(local.right() - 7, local.bottom() - 7, 14, 14)
+            knob = QRectF(-7, local.top() - 30, 14, 14)
+            if row == self._selected_image:
+                p.setPen(QPen(QColor(self._colors["accent"]), 1.5, Qt.DashLine))
+                p.setBrush(Qt.NoBrush)
+                p.drawRect(local)
+                p.drawLine(QPointF(0, local.top()), QPointF(0, knob.bottom()))
+                p.setPen(QPen(QColor("#ffffff"), 1.2))
+                p.setBrush(QColor(self._colors["accent"]))
+                p.drawRect(grip)
+                p.drawEllipse(knob)
+            p.restore()
+            self._img_hits.append((row, box, img.rotation, grip, knob))
+        p.restore()
+
+    @staticmethod
+    def _to_local(pos: QPointF, box: QRectF, rotation: float) -> QPointF:
+        """*pos* in a picture's own frame: centred on it, rotation undone."""
+        from math import cos, radians, sin
+
+        d = pos - box.center()
+        a = radians(-rotation)
+        return QPointF(d.x() * cos(a) - d.y() * sin(a), d.x() * sin(a) + d.y() * cos(a))
+
+    def _image_hit(self, pos: QPointF) -> tuple[int, str] | None:
+        for row, box, rotation, grip, knob in reversed(self._img_hits):  # top-most first
+            local = self._to_local(pos, box, rotation)
+            if row == self._selected_image:
+                if knob.adjusted(-5, -5, 5, 5).contains(local):
+                    return row, "turn"
+                if grip.adjusted(-4, -4, 4, 4).contains(local):
+                    return row, "size"
+            if QRectF(-box.width() / 2, -box.height() / 2, box.width(), box.height()).contains(local):
+                return row, "move"
+        return None
 
     def set_framing(self, fit: str, zoom: float, pan_x: float, pan_y: float) -> None:
         self._framing = (fit, zoom, pan_x, pan_y)
@@ -329,6 +420,10 @@ class VideoCanvas(QWidget):
             color = QColor(self._dip[0])
             color.setAlphaF(min(max(self._dip[1], 0.0), 1.0))
             p.fillRect(rect, color)
+        if self._images:
+            self._paint_images(p, rect)
+        else:
+            self._img_hits = []
         self._hits = []
         if self._cues:
             self._paint_cues(p, rect)
@@ -408,6 +503,15 @@ class VideoCanvas(QWidget):
 
     def mousePressEvent(self, event) -> None:
         hit = self._hit(event.position())
+        img_hit = self._image_hit(event.position()) if hit is None else None
+        if img_hit is not None and event.button() == Qt.LeftButton:
+            row, part = img_hit
+            img = next(i for r, i in self._images if r == row)
+            self._img_drag = (row, part, event.position(), img.x, img.y, img.width, img.rotation)
+            self._img_live = None
+            self.setCursor(QCursor(Qt.SizeFDiagCursor if part == "size" else Qt.ClosedHandCursor))
+            self.image_clicked.emit(row)
+            return None
         if hit is None and event.button() == Qt.LeftButton and self._pannable \
                 and self.canvas_rect().contains(event.position()):
             _fit, _zoom, px, py = self._framing
@@ -423,6 +527,35 @@ class VideoCanvas(QWidget):
         self.cue_clicked.emit(row)
 
     def mouseMoveEvent(self, event) -> None:
+        if self._img_drag is not None:
+            row, part, start, x0, y0, w0, r0 = self._img_drag
+            rect = self.canvas_rect()
+            delta = event.position() - start
+            if part == "move":
+                x = min(max(x0 + delta.x() / rect.width(), 0.0), 1.0)
+                y = min(max(y0 + delta.y() / rect.height(), 0.0), 1.0)
+                self._img_live = (x, y, w0, r0)
+            elif part == "size":  # the corner: grow / shrink around the centre
+                img = next(i for r, i in self._images if r == row)
+                box = self._image_box(img, rect)
+                grow = self._to_local(event.position(), box, r0).x() \
+                    - self._to_local(start, box, r0).x()
+                w = min(max(w0 + 2 * grow / rect.width(), 0.03), 2.0)
+                self._img_live = (x0, y0, w, r0)
+            else:  # the knob: the angle from the centre to the mouse
+                from math import atan2, degrees
+
+                centre = QPointF(rect.x() + x0 * rect.width(), rect.y() + y0 * rect.height())
+                d = event.position() - centre
+                angle = (degrees(atan2(d.y(), d.x())) + 90) % 360
+                if not event.modifiers() & Qt.AltModifier:  # snap to the square angles
+                    nearest = round(angle / 90) * 90
+                    if abs(angle - nearest) < 6:
+                        angle = nearest % 360
+                angle = round(angle - 360 if angle > 180 else angle, 1)
+                self._img_live = (x0, y0, w0, angle)
+            self.update()
+            return
         if self._pan_drag is not None:
             start, px0, py0 = self._pan_drag
             ow, oh, _scale = self._overflow()
@@ -434,8 +567,15 @@ class VideoCanvas(QWidget):
             return
         if self._drag is None:
             over = self._hit(event.position()) is not None
+            img = None if over else self._image_hit(event.position())
             pan = self._pannable and self.canvas_rect().contains(event.position())
-            self.setCursor(QCursor(Qt.OpenHandCursor if over or pan else Qt.ArrowCursor))
+            if img is not None and img[1] == "size":
+                self.setCursor(QCursor(Qt.SizeFDiagCursor))
+            elif img is not None and img[1] == "turn":
+                self.setCursor(QCursor(Qt.CrossCursor))
+            else:
+                self.setCursor(QCursor(Qt.OpenHandCursor if over or pan or img
+                                       else Qt.ArrowCursor))
             self.update()
             return
         rect = self.canvas_rect()
@@ -450,6 +590,14 @@ class VideoCanvas(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event) -> None:
+        if self._img_drag is not None:
+            row, live = self._img_drag[0], self._img_live
+            self._img_drag = self._img_live = None
+            self.setCursor(QCursor(Qt.OpenHandCursor))
+            if live is not None:
+                self.image_changed.emit(row, *(round(v, 4) for v in live))
+            self.update()
+            return
         if self._pan_drag is not None:
             self._pan_drag = None
             self.setCursor(QCursor(Qt.OpenHandCursor))
@@ -478,6 +626,8 @@ class StudioPreview(QWidget):
     cue_clicked = Signal(int)
     pan_dragged = Signal(int, float, float)  # segment, pan_x, pan_y
     pan_finished = Signal()
+    image_clicked = Signal(int)
+    image_changed = Signal(int, float, float, float, float)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -502,9 +652,12 @@ class StudioPreview(QWidget):
         self._icon_color = "#eceeff"
         self._transitions: list[TransitionMark] = []
         self._pan_segment: int | None = None
+        self._images: list[tuple[int, ImageOverlay]] = []
+        self._selected_image: int | None = None
         self._music: list[MusicBed] = []
         self._music_players: list[tuple[QMediaPlayer, QAudioOutput, str]] = []
-        self._muted = False
+        # headless (tests, scripts): the speakers stay silent
+        self._muted = QApplication.platformName() == "offscreen"
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -514,6 +667,8 @@ class StudioPreview(QWidget):
         self.canvas.cue_clicked.connect(self.cue_clicked)
         self.canvas.pan_dragged.connect(lambda x, y: self.pan_dragged.emit(self._seg_idx, x, y))
         self.canvas.pan_finished.connect(self.pan_finished)
+        self.canvas.image_clicked.connect(self.image_clicked)
+        self.canvas.image_changed.connect(self.image_changed)
         lay.addWidget(self.canvas, stretch=1)
 
         row = QHBoxLayout()
@@ -536,6 +691,7 @@ class StudioPreview(QWidget):
         if QT_MULTIMEDIA_OK:
             self.player = QMediaPlayer(self)
             self._audio = QAudioOutput(self)
+            self._audio.setMuted(self._muted)
             self.player.setAudioOutput(self._audio)
             self._sink = QVideoSink(self)
             self._sink.videoFrameChanged.connect(self._on_frame)
@@ -671,6 +827,11 @@ class StudioPreview(QWidget):
             if mp.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
                 mp.play()
 
+    def set_images(self, images: list[tuple[int, ImageOverlay]], selected: int | None) -> None:
+        """Every picture (row, overlay); the canvas shows those active now."""
+        self._images, self._selected_image = images, selected
+        self._refresh_overlay()
+
     def set_transitions(self, marks: list[TransitionMark]) -> None:
         self._transitions = marks
         self._refresh_overlay()
@@ -801,6 +962,8 @@ class StudioPreview(QWidget):
         active = [(row, c) for row, c in self._cues if c.start <= t < c.end]
         self.canvas.set_time(t)
         self.canvas.set_cues(active, self._selected_cue)
+        self.canvas.set_images([(row, img) for row, img in self._images
+                                if img.start <= t < img.end], self._selected_image)
         dip, badge = None, ""
         for mark in self._transitions:
             half = mark.duration / 2

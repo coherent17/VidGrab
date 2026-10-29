@@ -1004,3 +1004,125 @@ def test_overlapping_subtitles_stack_into_lanes(qapp) -> None:
     assert tl._hit(QPointF(rects[1].center().x(), rects[1].center().y()))[:2] == ("cue", 1)
     tl.close()
     one.close()
+
+
+def test_image_overlays(qapp, tmp_path, monkeypatch) -> None:
+    import json
+    import shutil
+    import subprocess
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QColor, QImage
+
+    from vidgrab import app as appmod
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        pytest.skip("ffmpeg / ffprobe not on PATH")
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    clip = tmp_path / "c.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc=size=320x180:rate=10", "-t", "10", str(clip)], check=True)
+    logo = QImage(200, 100, QImage.Format_ARGB32)  # a cut-out with transparency
+    logo.fill(Qt.transparent)
+    logo.save(str(tmp_path / "logo.png"))
+    photo = QImage(400, 300, QImage.Format_RGB32)  # an opaque 4:3 photo
+    photo.fill(QColor("#3366cc"))
+    photo.save(str(tmp_path / "photo.jpg"))
+    win = appmod.VidGrabWindow()
+    try:
+        st = win._studio
+        st.preview.set_muted(True)
+        st.add_clips([str(clip)])
+        st.preview.seek(2.0)
+        st.add_images([str(tmp_path / "logo.png"), str(tmp_path / "photo.jpg")])
+        logo_o, photo_o = st.images()
+        # smart placement: the logo small in the top-right corner, the photo large in
+        # the middle; the second picture follows the first in time
+        assert (logo_o.start, logo_o.end, photo_o.start, photo_o.end) == (2.0, 6.0, 6.0, 10.0)
+        assert logo_o.width == 0.22 and logo_o.x > 0.8 and logo_o.y < 0.2
+        assert (photo_o.x, photo_o.y) == (0.5, 0.5) and photo_o.width == pytest.approx(0.6)
+        assert st._sel == ("image", 1) and st.insp.currentIndex() == st.INSP_IMAGE
+
+        # the Images row: one block each, sharing a lane (they don't overlap)
+        assert len(st.track._images) == 2 and st.track._image_lanes() == [0, 0]
+        st.track.image_timing.emit(1, 4.0, 9.0)  # drag the photo to overlap the logo
+        assert st.track._image_lanes() == [0, 1]
+
+        # move / resize in the preview, position grid, sliders
+        st.preview.image_changed.emit(0, 0.3, 0.4, 0.5, 0.0)
+        assert (st.images()[0].x, st.images()[0].y, st.images()[0].width) == (0.3, 0.4, 0.5)
+        st.select_image(0)
+        st._place_image(9)  # top-right, its edge 4 % in
+        assert st.images()[0].x == pytest.approx(1 - 0.04 - 0.25)
+        st._turn_image(90)
+        st._turn_image(90)
+        st._turn_image(90)  # 270 -> shown as -90
+        assert st.images()[0].rotation == -90.0 and st.image_rotation.value() == -90.0
+        st._turn_image(90)
+        st.image_opacity.setValue(70)
+        st.image_fade.setValue(0.5)
+        assert (st.images()[0].opacity, st.images()[0].fade) == (0.7, 0.5)
+        st.undo()
+        assert st.images()[0].fade == 0.0
+
+        # the preview shows a picture only while it is on
+        st.preview.seek(3.0)
+        assert [row for row, _i in st.preview.canvas._images] == [0]
+        st.preview.seek(7.0)
+        assert [row for row, _i in st.preview.canvas._images] == [1]
+
+        got = {}
+        st.render_requested.connect(lambda task, kw: got.update(kw))
+        monkeypatch.setattr(win, "_start_studio", lambda *_a: None)
+        st.render()
+        assert [(i.start, i.end) for i in got["images"]] == [(2.0, 6.0), (4.0, 9.0)]
+
+        proj = tmp_path / "p.vgproj"
+        monkeypatch.setattr(win, "pick_save", lambda *_a: str(proj))
+        st.save_project()
+        saved = json.loads(proj.read_text(encoding="utf-8"))["images"]
+        assert saved[1]["rel"] == "photo.jpg" and saved[0]["rotation"] == 0.0
+        st.new_project()
+        assert st.images() == []
+        st.open_project(str(proj))
+        assert [(i.start, i.opacity) for i in st.images()] == [(2.0, 0.7), (4.0, 1.0)]
+
+        st.select_image(1)
+        st._delete_selected()
+        assert len(st.images()) == 1
+
+        # dropping a picture on the window adds an overlay, not a clip
+        st.add_clips([str(tmp_path / "photo.jpg")])
+        assert len(st.clips()) == 1 and len(st.images()) == 2
+    finally:
+        win.close()
+
+
+def test_headless_runs_make_no_sound(qapp) -> None:
+    """Tests and scripts run offscreen: no chime, preview players muted."""
+    from vidgrab.preview import QT_MULTIMEDIA_OK, MusicBed, StudioPreview
+
+    if not QT_MULTIMEDIA_OK:
+        pytest.skip("QtMultimedia not available")
+    pv = StudioPreview()
+    pv.set_music(MusicBed("x.mp3", 0.0, 1.0))
+    assert pv._audio.isMuted() and all(out.isMuted() for _p, out, _s in pv._music_players)
+    pv.close()
+
+
+def test_render_worker_passes_everything_to_compose_video(qapp, monkeypatch) -> None:
+    """The Studio's render request must reach the renderer whole (images were dropped)."""
+    from vidgrab import app as appmod
+    from vidgrab.studio import BackgroundMusic, Clip, ImageOverlay, SubtitleCue
+
+    got = {}
+    monkeypatch.setattr(appmod, "compose_video",
+                        lambda clips, out, **kw: got.update(kw, clips=clips) or out)
+    kw = {"clips": [Clip("a.mp4")], "output_file": "o.mp4", "resolution": "720p",
+          "subtitles": [SubtitleCue(0, 1, "x")], "music": [BackgroundMusic("m.mp3")],
+          "images": [ImageOverlay("i.png", 0, 1)], "render_quality": "high"}
+    worker = appmod._Worker("compose_video", **kw)
+    worker.run()
+    for key in ("resolution", "subtitles", "music", "images"):
+        assert got[key] == kw[key], key
+    assert got["quality"] == "high"

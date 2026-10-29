@@ -91,10 +91,12 @@ from PySide6.QtWidgets import (
 
 from vidgrab.preview import MusicBed, Segment, StudioPreview, TransitionMark, fmt_time
 from vidgrab.studio import (
+    IMAGE_EXTS,
     SUBTITLE_FONT_NAME,
     TRANSITIONS,
     BackgroundMusic,
     Clip,
+    ImageOverlay,
     SubtitleCue,
     SubtitleStyle,
     canvas_size,
@@ -503,6 +505,9 @@ class TrackTimeline(QWidget):
     cue_selected = Signal(int)
     cue_changed = Signal(int, float, float)
     cue_add_requested = Signal(float)
+    image_selected = Signal(int)
+    image_timing = Signal(int, float, float)  # picture, start, end
+    image_add_requested = Signal(float)
     music_selected = Signal(int)  # song index
     music_changed = Signal(int, float, float, float)  # song, its start / end, offset on the timeline
     add_media_requested = Signal()
@@ -524,8 +529,10 @@ class TrackTimeline(QWidget):
         self._clips: list[_MediaClip] = []
         self._cues: list[tuple[float, float, str]] = []
         self._music: list[dict] = []  # one entry per background song
+        self._images: list[tuple[float, float, str, QImage | None]] = []  # start, end, name, thumb
         self._labels = {"subs": "Subtitles", "music": "Music", "empty": "",
-                        "empty_subs": "", "empty_music": "", "mute": "", "unmute": ""}
+                        "empty_subs": "", "empty_music": "", "mute": "", "unmute": "",
+                        "images": "Images", "empty_images": ""}
         self._show_subs = True
         self._show_music = True
         self._playhead = 0.0
@@ -585,10 +592,12 @@ class TrackTimeline(QWidget):
         self._show_subs, self._show_music = subs, music
         self._update_height()
 
-    def set_data(self, clips: list[_MediaClip], cues, music: list[dict] | None) -> None:
+    def set_data(self, clips: list[_MediaClip], cues, music: list[dict] | None,
+                 images: list | None = None) -> None:
         if self._drag is not None:
             return
         self._clips, self._cues, self._music = clips, cues, list(music or [])
+        self._images = list(images or [])
         self._update_height()
         self._clamp_view()
 
@@ -702,6 +711,8 @@ class TrackTimeline(QWidget):
         if self._show_subs:
             lanes = max(1, max(self._cue_lanes(), default=0) + 1)
             rows.append(("subs", 0, self.SUBS_H + (lanes - 1) * self.LANE_H))
+            lanes = max(1, max(self._image_lanes(), default=0) + 1)
+            rows.append(("images", 0, self.SUBS_H + (lanes - 1) * self.LANE_H))
         if self._show_music:
             rows.append(("music", 0, self.MUSIC_H))
         return rows
@@ -758,16 +769,14 @@ class TrackTimeline(QWidget):
         left = self._x(offs[i]) - s0 * self._pps()
         return QRectF(left, row.top(), clip.length * self._pps(), row.height())
 
-    def _cue_lanes(self) -> list[int]:
-        """A lane per line so that lines overlapping in time sit one under
-        another (first free lane, in start order). Frozen while dragging."""
-        d = self._drag or {}
-        if d.get("kind", "").startswith("cue_") and "lanes" in d:
-            return d["lanes"]
-        lanes = [0] * len(self._cues)
-        ends: list[float] = []  # per lane: when its last line ends
-        for k in sorted(range(len(self._cues)), key=lambda k: self._cues[k][0]):
-            s, e, _t = self._cues[k]
+    @staticmethod
+    def _lanes(spans: list[tuple[float, float]]) -> list[int]:
+        """A lane per item so that items overlapping in time sit one under
+        another (first free lane, in start order); others share a lane."""
+        lanes = [0] * len(spans)
+        ends: list[float] = []  # per lane: when its last item ends
+        for k in sorted(range(len(spans)), key=lambda k: spans[k][0]):
+            s, e = spans[k]
             lane = next((n for n, end in enumerate(ends) if end <= s + 1e-6), len(ends))
             if lane == len(ends):
                 ends.append(e)
@@ -775,6 +784,28 @@ class TrackTimeline(QWidget):
                 ends[lane] = e
             lanes[k] = lane
         return lanes
+
+    def _cue_lanes(self) -> list[int]:
+        """Subtitle lanes (frozen while a line is dragged)."""
+        d = self._drag or {}
+        if d.get("kind", "").startswith("cue_") and "lanes" in d:
+            return d["lanes"]
+        return self._lanes([(s, e) for s, e, _t in self._cues])
+
+    def _image_lanes(self) -> list[int]:
+        d = self._drag or {}
+        if d.get("kind", "").startswith("img_") and "lanes" in d:
+            return d["lanes"]
+        return self._lanes([(s, e) for s, e, _n, _i in self._images])
+
+    def _image_rects(self) -> list[QRectF]:
+        r = self._row_rect("images")
+        if r is None:
+            return []
+        lanes = self._image_lanes()
+        return [QRectF(self._x(s), r.top() + 3 + lanes[k] * self.LANE_H,
+                       max(4.0, (e - s) * self._pps()), self.SUBS_H - 6)
+                for k, (s, e, _n, _i) in enumerate(self._images)]
 
     def _cue_rects(self) -> list[QRectF]:
         r = self._row_rect("subs")
@@ -841,6 +872,7 @@ class TrackTimeline(QWidget):
             self._paint_clip(p, c, fm, i)
         self._paint_reorder(p, c)
         self._paint_cues(p, c, fm)
+        self._paint_images(p, c, fm)
         self._paint_music(p, c, fm, total)
         snap = (self._drag or {}).get("snap")
         if snap is not None:  # the line an edge snapped to
@@ -879,9 +911,10 @@ class TrackTimeline(QWidget):
             p.setPen(c["muted"])
             p.drawText(QRectF(x, rect.center().y() + 1, right - x, rect.height() / 2 - 4),
                        Qt.AlignTop | Qt.AlignLeft, fmt_time(clip.kept()))
-        elif kind in ("subs", "music"):
+        elif kind in ("subs", "music", "images"):
             p.setPen(c["muted"])
-            p.drawText(rect, Qt.AlignVCenter | Qt.AlignLeft, self._labels[kind])
+            p.drawText(QRectF(rect.left(), rect.top(), rect.width(), min(rect.height(), self.SUBS_H)),
+                       Qt.AlignVCenter | Qt.AlignLeft, self._labels[kind])
 
     def _mute_rect(self, i: int) -> QRectF:
         row = self._row_rect("clip", i)
@@ -1057,6 +1090,32 @@ class TrackTimeline(QWidget):
                 p.drawText(inner, Qt.AlignVCenter | Qt.AlignLeft,
                            fm.elidedText(text.replace("\n", " "), Qt.ElideRight, inner.width()))
 
+    def _paint_images(self, p, c, fm) -> None:
+        r = self._row_rect("images")
+        if r is None:
+            return
+        if not self._images and self._clips:
+            p.setPen(c["muted"])
+            p.drawText(r, Qt.AlignCenter, self._labels["empty_images"])
+        for i, (rect, (_s, _e, name, thumb)) in enumerate(zip(self._image_rects(), self._images)):
+            sel = self._selection == ("image", i)
+            fill = QColor(c["clip2"])
+            fill.setAlpha(235 if sel else 160)
+            p.setPen(QPen(QColor(c["sel"]), 2) if sel else Qt.NoPen)
+            p.setBrush(fill)
+            p.drawRoundedRect(rect, 5, 5)
+            x = rect.left() + 4
+            if thumb is not None and not thumb.isNull() and rect.width() > 30:
+                h = rect.height() - 6
+                w = min(thumb.width() * h / max(1, thumb.height()), rect.width() - 8)
+                p.drawImage(QRectF(x, rect.top() + 3, w, h), thumb)
+                x += w + 5
+            if rect.right() - x > 16:
+                p.setPen(QColor("#141414"))
+                inner = QRectF(x, rect.top(), rect.right() - x - 4, rect.height())
+                p.drawText(inner, Qt.AlignVCenter | Qt.AlignLeft,
+                           fm.elidedText(name, Qt.ElideRight, inner.width()))
+
     def _music_geom(self, k: int) -> tuple[float, float, float, float]:
         """(offset, song start, song end, timeline end) of song *k*,
         following an in-progress drag."""
@@ -1195,6 +1254,13 @@ class TrackTimeline(QWidget):
                 if abs(pos.x() - rect.right()) <= 6:
                     return "cue", i, "end"
                 return "cue", i, "body"
+        for i, rect in enumerate(self._image_rects()):
+            if rect.adjusted(-6, 0, 6, 0).contains(pos):
+                if abs(pos.x() - rect.left()) <= 6:
+                    return "image", i, "start"
+                if abs(pos.x() - rect.right()) <= 6:
+                    return "image", i, "end"
+                return "image", i, "body"
         songs = [(k, self._music_rects(k)) for k in reversed(range(len(self._music)))]
         songs = [(k, rects) for k, rects in songs if rects is not None]
         sel = self._selection[1] if self._selection and self._selection[0] == "music" else None
@@ -1245,6 +1311,12 @@ class TrackTimeline(QWidget):
                           "s0": s, "e0": e, "head": head}
             self._drag["lanes"] = self._cue_lanes()  # lines keep their lane while dragging
             self.cue_selected.emit(i)
+        elif kind == "image":
+            s, e, _n, _t = self._images[i]
+            self._drag = {"kind": f"img_{part}", "row": i, "x0": pos.x(), "s": s, "e": e,
+                          "s0": s, "e0": e, "head": head}
+            self._drag["lanes"] = self._image_lanes()
+            self.image_selected.emit(i)
         else:
             m = self._music[i]
             self._drag = {"kind": f"music_{part}", "row": i, "x0": pos.x(), "pps": self._pps(),
@@ -1263,6 +1335,8 @@ class TrackTimeline(QWidget):
             if r is not None and r.adjusted(-self.HEADER_W, 0, 0, 0).contains(pos):
                 if kind in ("empty", "clip"):
                     self.add_media_requested.emit()
+                elif kind == "images" and self.total() > 0:
+                    self.image_add_requested.emit(self._t(pos.x()))
                 elif kind == "subs" and self.total() > 0:
                     self.cue_add_requested.emit(self._t(pos.x()))
                 elif kind == "music":
@@ -1284,7 +1358,7 @@ class TrackTimeline(QWidget):
             elif hit and hit[0] == "clip" and hit[2] == "body":
                 self.setCursor(QCursor(Qt.SizeVerCursor if len(self._clips) > 1
                                        else Qt.ArrowCursor))
-            elif hit and hit[0] in ("cue", "music"):
+            elif hit and hit[0] in ("cue", "music", "image"):
                 self.setCursor(QCursor(Qt.OpenHandCursor))
             else:
                 self.setCursor(QCursor(_HAND))
@@ -1307,8 +1381,13 @@ class TrackTimeline(QWidget):
         if kind.startswith("music_"):
             self._music_move(dt, free)
             return
-        total = self.total()  # subtitle move / resize
-        targets = [0.0, total, d["head"], *self.offsets(), *self._cue_edges(d["row"])]
+        total = self.total()  # subtitle / picture move / resize
+        image = kind.startswith("img_")
+        targets = [0.0, total, d["head"], *self.offsets(),
+                   *self._cue_edges(None if image else d["row"]),
+                   *(v for k, (s0, e0, _n, _t) in enumerate(self._images)
+                     if not (image and k == d["row"]) for v in (s0, e0))]
+        kind = "cue_" + kind[4:] if image else kind
         s, e = d["s0"], d["e0"]
         if kind == "cue_body":
             length = e - s
@@ -1329,7 +1408,10 @@ class TrackTimeline(QWidget):
             e = max(min(total, e), s + 0.3)
         d["s"], d["e"] = round(s, 2), round(e, 2)
         row = d["row"]
-        self._cues[row] = (d["s"], d["e"], self._cues[row][2])
+        if image:
+            self._images[row] = (d["s"], d["e"], *self._images[row][2:])
+        else:
+            self._cues[row] = (d["s"], d["e"], self._cues[row][2])
         self.update()
 
     def _tooltip(self, hit: tuple[str, int, str] | None) -> str:
@@ -1426,6 +1508,8 @@ class TrackTimeline(QWidget):
             self.clip_trimmed.emit(d["row"], d["s"], d["e"])
         elif kind.startswith("music_") and (d["s"], d["e"], d["o"]) != (d["s0"], d["e0"], d["o0"]):
             self.music_changed.emit(d["row"], d["s"], d["e"], d["o"])
+        elif kind.startswith("img_") and (d["s"], d["e"]) != (d["s0"], d["e0"]):
+            self.image_timing.emit(d["row"], d["s"], d["e"])
         elif kind.startswith("cue_") and (d["s"], d["e"]) != (d["s0"], d["e0"]):
             self.cue_changed.emit(d["row"], d["s"], d["e"])
         self.setCursor(QCursor(_HAND))
@@ -1442,7 +1526,7 @@ class StudioPage(QWidget):
 
     render_requested = Signal(str, dict)  # worker task name, kwargs
 
-    INSP_PROJECT, INSP_CUE, INSP_MUSIC, INSP_CLIP = range(4)
+    INSP_PROJECT, INSP_CUE, INSP_MUSIC, INSP_CLIP, INSP_IMAGE = range(5)
 
     def __init__(self, host) -> None:
         super().__init__()
@@ -1450,6 +1534,7 @@ class StudioPage(QWidget):
         self._clips: list[_MediaClip] = []
         self._cues: list[SubtitleCue] = []
         self._songs: list[_Song] = []  # background music, in timeline order of adding
+        self._images: list[ImageOverlay] = []  # pictures over the video
         self._sel: tuple[str, int] | None = None
         self._busy = False
         self._i18n: list[tuple[object, str, str]] = []
@@ -1522,6 +1607,8 @@ class StudioPage(QWidget):
         self.preview.cue_moved.connect(self._on_cue_moved)
         self.preview.cue_clicked.connect(self.select_cue)
         self.preview.pan_dragged.connect(self._on_pan_dragged)
+        self.preview.image_clicked.connect(self.select_image)
+        self.preview.image_changed.connect(self._on_image_placed)
         self.preview.position_changed.connect(self.track_playhead)
         vl.addWidget(self.preview)
         top.addWidget(viewer)
@@ -1605,10 +1692,13 @@ class StudioPage(QWidget):
         bar.addWidget(self.split_btn)
         self.add_sub_btn = self._btn("＋ Subtitle", self._add_cue,
                                      "Add a subtitle line at the playhead")
+        self.image_btn = self._btn("＋ Image…", self._browse_images,
+                                   "Show a picture over the video from the playhead")
         self.music_btn = self._btn("♪ Background music…", self._browse_music)
         self.import_btn = self._btn("Import .srt…", self._import_srt)
         self.export_btn = self._btn("Export .srt…", self._export_srt)
-        for b in (self.add_sub_btn, self.music_btn, self.import_btn, self.export_btn):
+        for b in (self.add_sub_btn, self.image_btn, self.music_btn, self.import_btn,
+                  self.export_btn):
             bar.addWidget(b)
         bar.addStretch()
         self.total_lbl = QLabel()
@@ -1644,6 +1734,9 @@ class StudioPage(QWidget):
         self.track.cue_selected.connect(self.select_cue)
         self.track.cue_changed.connect(self._on_cue_dragged)
         self.track.cue_add_requested.connect(self._add_cue_at)
+        self.track.image_selected.connect(self.select_image)
+        self.track.image_timing.connect(self._on_image_timing)
+        self.track.image_add_requested.connect(lambda t: self._browse_images(at=t))
         self.track.music_selected.connect(self.select_music)
         self.track.music_changed.connect(self._on_music_dragged)
         self.track.add_media_requested.connect(self._add_dialog)
@@ -1698,7 +1791,8 @@ class StudioPage(QWidget):
         lay.addWidget(self.insp_title)
         self.insp = QStackedWidget()
         for build in (self._build_project_inspector, self._build_cue_inspector,
-                      self._build_music_inspector, self._build_clip_inspector):
+                      self._build_music_inspector, self._build_clip_inspector,
+                      self._build_image_inspector):
             self.insp.addWidget(build())
         lay.addWidget(self.insp, stretch=1)
         return panel
@@ -1968,7 +2062,7 @@ class StudioPage(QWidget):
         self.sub_font.blockSignals(False)
 
     def _anchor_icons(self, color: str) -> None:
-        for anchor, b in self._anchor_btns.items():
+        for anchor, b in [*self._anchor_btns.items(), *self._image_anchor_btns.items()]:
             pm = QPixmap(18, 12)
             pm.fill(Qt.transparent)
             p = QPainter(pm)
@@ -2469,7 +2563,8 @@ class StudioPage(QWidget):
         for widget, key, method in self._i18n:
             getattr(widget, method)(t(key))
         self.track.set_labels(
-            subs=t("Subtitles"), music=t("Music"),
+            subs=t("Subtitles"), music=t("Music"), images=t("Images"),
+            empty_images=t("Double-click to add a picture"),
             empty=t("＋ Drop video or music files here (or double-click)"),
             empty_subs=t("Double-click to add a subtitle"),
             empty_music=t("Double-click to add background music"),
@@ -2507,13 +2602,13 @@ class StudioPage(QWidget):
 
     def _on_mode(self) -> None:
         video = self.is_video()
-        for w in (self.add_sub_btn, self.music_btn, self.import_btn, self.export_btn,
-                  self.res_lbl, self.res):
+        for w in (self.add_sub_btn, self.image_btn, self.music_btn, self.import_btn,
+                  self.export_btn, self.res_lbl, self.res):
             w.setVisible(video)
         for w in (self.xfade_lbl, self.xfade, self.afmt_lbl, self.afmt, self.abr_lbl, self.abr):
             w.setVisible(not video)
         self.track.set_tracks(subs=video, music=video)
-        if not video and self._sel and self._sel[0] in ("cue", "music"):
+        if not video and self._sel and self._sel[0] in ("cue", "music", "image"):
             self.deselect()
         self._style_icons()
         self._refresh_all()
@@ -2525,6 +2620,8 @@ class StudioPage(QWidget):
     def _show_inspector(self, page: int, title: str) -> None:
         self.insp.setCurrentIndex(page)
         self.insp_title.setText(self.t(title))
+        if hasattr(self, "_images"):
+            self._push_images()  # the picture's selection box follows the selection
 
     def deselect(self) -> None:
         self._sel = None
@@ -2617,6 +2714,7 @@ class StudioPage(QWidget):
         self.preview.set_transitions(self._transition_marks() if self.is_video() else [])
         self._update_pan_target()
         self._push_music()
+        self._push_images()
         sel = self._sel[1] if self._sel and self._sel[0] == "cue" else None
         self.preview.set_cues(self._preview_cues(), sel)
 
@@ -2642,6 +2740,8 @@ class StudioPage(QWidget):
             list(self._clips),
             [(c.start, c.end, c.text) for c in self._cues] if self.is_video() else [],
             music if self.is_video() else None,
+            [(img.start, img.end, Path(img.path).name, self._image_thumb(img.path))
+             for img in self._images] if self.is_video() else [],
         )
         self._fit_timeline()
         total = self.track.total()  # transitions overlap, so not the plain sum
@@ -2710,6 +2810,10 @@ class StudioPage(QWidget):
 
     def add_clips(self, paths: list[str]) -> None:
         added = 0
+        pictures = [p for p in paths if p.lower().endswith(IMAGE_EXTS)]
+        if pictures and self.is_video():  # a picture is an overlay, not a clip
+            self.add_images(pictures)
+        paths = [p for p in paths if not p.lower().endswith(IMAGE_EXTS)]
         for path in paths:
             if path.endswith(PROJECT_EXT):
                 self.open_project(path)
@@ -2756,6 +2860,8 @@ class StudioPage(QWidget):
             self._record()
         elif kind == "music":
             self._remove_song()
+        elif kind == "image":
+            self._remove_image()
 
     def clips(self) -> list[_MediaClip]:
         return list(self._clips)
@@ -3234,6 +3340,292 @@ class StudioPage(QWidget):
             return self.orig_vol.value() / 100
         return 1.0
 
+    # images over the video --------------------------------------------------------
+
+    def images(self) -> list[ImageOverlay]:
+        return [replace(img) for img in self._images]
+
+    def _image_thumb(self, path: str) -> QImage | None:
+        cache = self.__dict__.setdefault("_thumb_cache", {})
+        if path not in cache:
+            img = QImage(path)
+            cache[path] = img.scaledToHeight(48, Qt.SmoothTransformation) if not img.isNull() else None
+        return cache[path]
+
+    def _browse_images(self, *, at: float | None = None) -> None:
+        exts = " ".join(f"*{e}" for e in IMAGE_EXTS)
+        paths = self.host.pick_files(self.t("Add images"), ("Pictures", "Downloads"),
+                                     f"Images ({exts});;All files (*)")
+        if paths:
+            self.add_images(paths, at=at)
+
+    def add_images(self, paths: list[str], *, at: float | None = None) -> None:
+        """Add pictures from the playhead (or *at*), placed by what they look
+        like: a cut-out with transparency (a logo, a sticker) goes small in a
+        corner, a photo large in the middle. Several are shown one after another."""
+        total = self.track.total()
+        if total <= 0:
+            self.status.setText(self.t("Add at least one clip first."))
+            return
+        t = self.preview.position() if at is None else at
+        added = None
+        for path in paths:
+            pic = QImage(path)
+            if pic.isNull():
+                self.host.log(self.t("Could not read the image {name}.", name=Path(path).name))
+                continue
+            length = min(4.0, total)
+            start = round(min(max(0.0, t), max(0.0, total - length)), 2)
+            img = ImageOverlay(path, start, round(min(start + length, total), 2))
+            frame_w, frame_h = canvas_size(self.res.currentData() or "auto",
+                                           *self._first_video_size())
+            if pic.hasAlphaChannel():  # a logo / sticker: top-right corner
+                img.width = 0.22
+                h = img.width * frame_w * pic.height() / max(1, pic.width()) / frame_h
+                img.x, img.y = round(1 - 0.04 - img.width / 2, 4), round(0.06 + h / 2, 4)
+            else:  # a photo: as large as fits, centred
+                fit_w = min(0.8, 0.8 * frame_h / frame_w * pic.width() / max(1, pic.height()))
+                img.width = round(fit_w, 4)
+                img.fade = 0.3
+            self._images.append(img)
+            added = len(self._images) - 1
+            t = img.end
+        if added is None:
+            return
+        self._refresh_track()
+        self._push_images()
+        self.select_image(added)
+        self.preview.seek(self._images[added].start + 0.01)
+        self._record()
+
+    def _first_video_size(self) -> tuple[int, int]:
+        first = next((c for c in self._clips if c.has_video), None)
+        return (first.info.get("width", 0), first.info.get("height", 0)) if first else (1280, 720)
+
+    def _cur_image(self) -> ImageOverlay | None:
+        if self._sel and self._sel[0] == "image" and 0 <= self._sel[1] < len(self._images):
+            return self._images[self._sel[1]]
+        return None
+
+    def select_image(self, k: int) -> None:
+        if not 0 <= k < len(self._images):
+            return
+        self._sel = ("image", k)
+        img = self._images[k]
+        if not img.start <= self.preview.position() < img.end:
+            self.preview.seek(img.start + 0.01)
+        self._fill_image_inspector()
+        self._show_inspector(self.INSP_IMAGE, "Image")
+        self.track.set_selection(self._sel)
+        self._push_images()
+
+    def _push_images(self) -> None:
+        sel = self._sel[1] if self._sel and self._sel[0] == "image" else None
+        self.preview.set_images(list(enumerate(self._images)) if self.is_video() else [], sel)
+
+    def _image_changed(self, kind: str = "", *, timeline: bool = False) -> None:
+        if timeline:
+            self._refresh_track()
+            self.track.set_selection(self._sel)
+        self._push_images()
+        self._fill_image_inspector()
+        self._record(kind)
+
+    def _on_image_timing(self, k: int, start: float, end: float) -> None:
+        if 0 <= k < len(self._images):
+            self._images[k].start, self._images[k].end = start, end
+            self._sel = ("image", k)
+            self._image_changed(timeline=True)
+
+    def _on_image_placed(self, k: int, x: float, y: float, width: float,
+                         rotation: float = 0.0) -> None:
+        if 0 <= k < len(self._images):
+            img = self._images[k]
+            img.x, img.y, img.width, img.rotation = x, y, width, rotation
+            self._sel = ("image", k)
+            self._image_changed()
+
+    def _remove_image(self) -> None:
+        if self._cur_image() is None:
+            return
+        del self._images[self._sel[1]]
+        self.deselect()
+        self._refresh_track()
+        self._push_images()
+        self._record()
+
+    def _build_image_inspector(self) -> QWidget:
+        inner, lay = self._page()
+        lay.setContentsMargins(0, 0, 4, 0)
+        lay.setSpacing(6)
+        self.image_name = QLabel()
+        self.image_name.setObjectName("info_name")
+        self.image_name.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        lay.addWidget(self.image_name)
+        times = QHBoxLayout()
+        times.setSpacing(8)
+        self.image_fields: dict[str, QLineEdit] = {}
+        for key, label in (("start", "Start:"), ("end", "End:")):
+            f = QLineEdit()
+            f.editingFinished.connect(lambda k=key: self._image_typed(k))
+            self.image_fields[key] = f
+            times.addWidget(self._label(label))
+            times.addWidget(f, stretch=1)
+        lay.addLayout(times)
+        form = QFormLayout()
+        form.setSpacing(7)
+        self.image_size, srow = self._level(30)
+        self.image_size.setRange(3, 200)
+        self.image_size.valueChanged.connect(self._set_image_size)
+        form.addRow(self._label("Size:"), srow)
+        self.image_opacity, orow = self._level(100)
+        self.image_opacity.setRange(5, 100)
+        self.image_opacity.valueChanged.connect(self._set_image_opacity)
+        form.addRow(self._label("Opacity:"), orow)
+        self.image_fade = QDoubleSpinBox()
+        self.image_fade.setRange(0.0, 5.0)
+        self.image_fade.setSingleStep(0.1)
+        self.image_fade.setDecimals(1)
+        self.image_fade.setSuffix(" s")
+        self.image_fade.valueChanged.connect(self._set_image_fade)
+        form.addRow(self._label("Fade in / out:"), self.image_fade)
+        turn = QHBoxLayout()
+        turn.setSpacing(6)
+        self.image_rotation = QDoubleSpinBox()
+        self.image_rotation.setRange(-180.0, 180.0)
+        self.image_rotation.setSingleStep(5.0)
+        self.image_rotation.setDecimals(1)
+        self.image_rotation.setSuffix("°")
+        self.image_rotation.setWrapping(True)
+        self.image_rotation.valueChanged.connect(self._set_image_rotation)
+        turn.addWidget(self.image_rotation, stretch=1)
+        for text, step, tip in (("↺ 90°", -90.0, "Turn left 90°"), ("↻ 90°", 90.0, "Turn right 90°")):
+            b = self._btn(text, lambda _c=False, d=step: self._turn_image(d), tip)
+            turn.addWidget(b)
+        form.addRow(self._label("Rotation:"), turn)
+        lay.addLayout(form)
+        lay.addWidget(self._label("POSITION", "field_cap"))
+        pos_row = QHBoxLayout()
+        pos_row.setSpacing(12)
+        grid_box = QWidget()
+        grid = QGridLayout(grid_box)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(3)
+        self._image_anchor_btns: dict[int, QPushButton] = {}
+        for r, row_anchors in enumerate(((7, 8, 9), (4, 5, 6), (1, 2, 3))):
+            for c, anchor in enumerate(row_anchors):
+                b = QPushButton()
+                b.setObjectName("anchor_btn")
+                b.setFixedSize(34, 24)
+                b.setIconSize(QSize(18, 12))
+                b.setCursor(QCursor(_HAND))
+                b.clicked.connect(lambda _c=False, a=anchor: self._place_image(a))
+                grid.addWidget(b, r, c)
+                self._image_anchor_btns[anchor] = b
+        pos_row.addWidget(grid_box)
+        col = QVBoxLayout()
+        col.setSpacing(6)
+        col.addWidget(self._btn("Fill the frame", self._fill_frame_image,
+                                "Cover the whole frame (a full-screen picture)"))
+        col.addWidget(self._btn("Remove", self._remove_image, "Remove this picture"))
+        col.addStretch()
+        pos_row.addLayout(col, stretch=1)
+        lay.addLayout(pos_row)
+        lay.addWidget(self._label(
+            "Drag the picture in the preview to move it; drag its corner to resize. Drag its "
+            "block in the Images row to change when it shows.", "hint"))
+        lay.addStretch()
+        return self._scroll(inner)
+
+    def _fill_image_inspector(self) -> None:
+        img = self._cur_image()
+        if img is None:
+            return
+        self.image_name.setText(QFontMetricsF(self.image_name.font()).elidedText(
+            Path(img.path).name, Qt.ElideMiddle, max(120, self.insp.width() - 16)))
+        self.image_name.setToolTip(img.path)
+        for key, value in (("start", img.start), ("end", img.end)):
+            if not self.image_fields[key].hasFocus():
+                self.image_fields[key].setText(_fmt_precise(value))
+        for w, v in ((self.image_size, round(img.width * 100)),
+                     (self.image_opacity, round(img.opacity * 100)), (self.image_fade, img.fade),
+                     (self.image_rotation, img.rotation)):
+            w.blockSignals(True)
+            w.setValue(v)
+            w.blockSignals(False)
+        self._sync_level_label(self.image_size)
+        self._sync_level_label(self.image_opacity)
+
+    def _image_typed(self, key: str) -> None:
+        img = self._cur_image()
+        value = parse_timecode(self.image_fields[key].text())
+        if img is None or value is None:
+            self._fill_image_inspector()
+            return
+        total = self.track.total()
+        if key == "start" and value < img.end - 0.1:
+            img.start = round(max(0.0, value), 2)
+        elif key == "end" and value > img.start + 0.1:
+            img.end = round(min(value, total) if total else value, 2)
+        self._image_changed(timeline=True)
+
+    def _set_image_size(self, value: int) -> None:
+        img = self._cur_image()
+        if img is not None:
+            img.width = value / 100
+            self._image_changed("image_size")
+
+    def _set_image_opacity(self, value: int) -> None:
+        img = self._cur_image()
+        if img is not None:
+            img.opacity = value / 100
+            self._image_changed("image_opacity")
+
+    def _set_image_fade(self, value: float) -> None:
+        img = self._cur_image()
+        if img is not None:
+            img.fade = round(value, 2)
+            self._image_changed("image_fade")
+
+    def _set_image_rotation(self, value: float) -> None:
+        img = self._cur_image()
+        if img is not None:
+            img.rotation = round(value, 1)
+            self._image_changed("image_rotation")
+
+    def _turn_image(self, step: float) -> None:
+        img = self._cur_image()
+        if img is not None:
+            angle = (img.rotation + step) % 360
+            img.rotation = round(angle - 360 if angle > 180 else angle, 1)
+            self._image_changed()
+
+    def _place_image(self, anchor: int) -> None:
+        """Snap the picture to one of 9 spots, its edge a small margin in."""
+        img = self._cur_image()
+        if img is None:
+            return
+        frame_w, frame_h = canvas_size(self.res.currentData() or "auto", *self._first_video_size())
+        pic = QImage(img.path)
+        h = img.width * frame_w * pic.height() / max(1, pic.width()) / frame_h if not pic.isNull() \
+            else img.width
+        col, row = (anchor - 1) % 3, (anchor - 1) // 3
+        margin = 0.04
+        img.x = round((margin + img.width / 2, 0.5, 1 - margin - img.width / 2)[col], 4)
+        img.y = round((1 - margin - h / 2, 0.5, margin + h / 2)[row], 4)
+        self._image_changed()
+
+    def _fill_frame_image(self) -> None:
+        img = self._cur_image()
+        if img is None:
+            return
+        frame_w, frame_h = canvas_size(self.res.currentData() or "auto", *self._first_video_size())
+        pic = QImage(img.path)
+        # cover: wide enough for the frame's width and its height
+        cover_h = (frame_h / frame_w) * pic.width() / max(1, pic.height()) if not pic.isNull() else 1
+        img.x, img.y, img.width = 0.5, 0.5, round(max(1.0, cover_h), 4)
+        self._image_changed()
+
     # playhead editing ------------------------------------------------------------
 
     def step(self, seconds: float) -> None:
@@ -3294,6 +3686,7 @@ class StudioPage(QWidget):
         return {
             "clips": [(c.path, c.edit()) for c in self._clips],
             "cues": [astuple(c) for c in self._cues],
+            "images": [astuple(img) for img in self._images],
             "music": [song.edit() for song in self._songs],
             "music_opts": (self.orig_vol.value(), self.music_loop.isChecked(),
                            self.music_fade.isChecked()),
@@ -3350,6 +3743,7 @@ class StudioPage(QWidget):
             self._clips = [self._media[path].with_edit(edit)
                            for path, edit in state["clips"] if path in self._media]
             self._cues = [SubtitleCue(*row) for row in state["cues"]]
+            self._images = [ImageOverlay(*row) for row in state.get("images", [])]
             self._songs = []
             for path, start, end, offset, volume, fade in state["music"]:
                 if path in self._music_media:
@@ -3357,7 +3751,8 @@ class StudioPage(QWidget):
                     self._songs.append(_Song(path, info, wave, start, end, offset, volume, fade))
             kind, i = self._sel or ("", 0)
             if (kind == "clip" and i >= len(self._clips)) or (kind == "cue" and i >= len(self._cues)) \
-                    or (kind == "music" and i >= len(self._songs)):
+                    or (kind == "music" and i >= len(self._songs)) \
+                    or (kind == "image" and i >= len(self._images)):
                 self._sel = None
             orig, loop, fade = state["music_opts"]
             self.orig_vol.setValue(orig)
@@ -3472,6 +3867,8 @@ class StudioPage(QWidget):
                        "volume": c.volume, "muted": c.muted}
                       for c in self._clips],
             "subtitles": [asdict(c) for c in self._cues],
+            "images": [{**ref(img.path), **{k: v for k, v in asdict(img).items() if k != "path"}}
+                       for img in self._images],
             "music": music,
             "music_options": {"original_volume": self.orig_vol.value(),
                               "loop_last": self.music_loop.isChecked(),
@@ -3589,7 +3986,14 @@ class StudioPage(QWidget):
         self.name.setText(str(data.get("name", "")))
         if data.get("output_dir"):
             self.out_dir.setText(str(data["output_dir"]))
-        self._load_state({"clips": clips, "cues": cues, "music": songs,
+        img_fields = set(ImageOverlay.__dataclass_fields__) - {"path"}
+        images = []
+        for m in data.get("images") or []:
+            found = find(m) if isinstance(m, dict) else ""
+            if found:
+                images.append(astuple(ImageOverlay(found, **{k: v for k, v in m.items()
+                                                             if k in img_fields})))
+        self._load_state({"clips": clips, "cues": cues, "music": songs, "images": images,
                           "music_opts": music_opts,
                           "style": {**self._style_dict(), **(data.get("style") or {})}})
         self._project_path = path
@@ -3706,6 +4110,7 @@ class StudioPage(QWidget):
                 "output_file": folder / f"{name}.mp4",
                 "resolution": self.res.currentData() or "auto",
                 "subtitles": self.cues() or None,
+                "images": [replace(img) for img in self._images] or None,
                 "subtitle_style": self._style(),
                 "music": music,
                 "render_quality": (self.host.setting("render_quality")

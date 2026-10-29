@@ -11,6 +11,7 @@ import pytest
 from vidgrab.studio import (
     BackgroundMusic,
     Clip,
+    ImageOverlay,
     SubtitleCue,
     SubtitleStyle,
     _ResolvedClip,
@@ -372,3 +373,68 @@ def _peak_db_filtered(path: Path, start: float, filt: str) -> float:
         capture_output=True, text=True, check=True)
     line = next(x for x in proc.stderr.splitlines() if "max_volume" in x)
     return float(line.split("max_volume:")[1].split("dB")[0])
+
+
+def test_video_command_image_overlays() -> None:
+    clips = [_clip("a.mp4", 10, w=1280, h=720)]
+    imgs = [ImageOverlay("logo.png", 1.0, 4.0, x=0.85, y=0.15, width=0.2, opacity=0.8, fade=0.5),
+            ImageOverlay("b.png", 5.0, 30.0)]
+    cmd, _ = build_video_command("ffmpeg", clips, Path("o.mp4"), images=imgs,
+                                 subtitles_file="subs.ass")
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    # looped stills, cut to what the montage needs (the second ends with the video)
+    assert cmd[cmd.index("logo.png") - 7:cmd.index("logo.png") + 1] == [
+        "-loop", "1", "-framerate", "30", "-t", "4.000", "-i", "logo.png"]
+    assert "-t" == cmd[cmd.index("b.png") - 3] and cmd[cmd.index("b.png") - 2] == "10.000"
+    assert "format=rgba,scale=256:-2,colorchannelmixer=aa=0.800" in graph
+    assert "fade=t=in:st=1.000:d=0.500:alpha=1,fade=t=out:st=3.500:d=0.500:alpha=1" in graph
+    assert "[vc][im0]overlay=x='main_w*0.8500-overlay_w/2'" in graph
+    assert "enable='between(t,1.000,4.000)'" in graph
+    assert "[vo0][im1]overlay" in graph and "[vo1]subtitles=filename=subs.ass" in graph
+
+
+@requires_ffmpeg
+def test_compose_video_with_an_image(tmp_path: Path) -> None:
+    video = _make(tmp_path / "v.mp4", "-f", "lavfi", "-i", "color=c=black:s=320x240:r=25",
+                  "-t", "4")
+    red = _make(tmp_path / "red.png", "-f", "lavfi", "-i", "color=c=red:s=64x64", "-frames:v", "1")
+    out = compose_video([Clip(str(video))], tmp_path / "o.mp4",
+                        images=[ImageOverlay(str(red), 1.0, 3.0, x=0.5, y=0.5, width=0.5)])
+
+    def centre_red(t: float) -> int:
+        png = subprocess.run(
+            ["ffmpeg", "-v", "error", "-ss", str(t), "-i", str(out), "-frames:v", "1",
+             "-vf", "crop=8:8:156:116,scale=1:1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+            capture_output=True, check=True).stdout
+        return png[0]
+
+    assert centre_red(0.5) < 40 and centre_red(2.0) > 180 and centre_red(3.5) < 40
+
+
+def test_image_rotation_in_command() -> None:
+    clips = [_clip("a.mp4", 5, w=1280, h=720)]
+    cmd, _ = build_video_command("ffmpeg", clips, Path("o.mp4"),
+                                 images=[ImageOverlay("i.png", 0, 5, rotation=-30.0)])
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    assert "rotate=a=330.000*PI/180:c=none:ow=rotw(330.000*PI/180):oh=roth(330.000*PI/180)" in graph
+    plain, _ = build_video_command("ffmpeg", clips, Path("o.mp4"),
+                                   images=[ImageOverlay("i.png", 0, 5)])
+    assert "rotate=" not in plain[plain.index("-filter_complex") + 1]
+
+
+@requires_ffmpeg
+def test_compose_video_rotated_image(tmp_path: Path) -> None:
+    video = _make(tmp_path / "v.mp4", "-f", "lavfi", "-i", "color=c=black:s=320x320:r=25",
+                  "-t", "2")
+    bar = _make(tmp_path / "bar.png", "-f", "lavfi", "-i", "color=c=red:s=200x20", "-frames:v", "1")
+    out = compose_video([Clip(str(video))], tmp_path / "o.mp4",
+                        images=[ImageOverlay(str(bar), 0.0, 2.0, width=0.6, rotation=90.0)])
+
+    def red_at(x: int, y: int) -> int:
+        return subprocess.run(
+            ["ffmpeg", "-v", "error", "-ss", "1", "-i", str(out), "-frames:v", "1",
+             "-vf", f"crop=4:4:{x}:{y},scale=1:1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+            capture_output=True, check=True).stdout[0]
+
+    # a horizontal bar turned 90 degrees is vertical: red above the centre, not beside it
+    assert red_at(158, 70) > 150 and red_at(60, 158) < 60

@@ -182,6 +182,26 @@ class BackgroundMusic:
 
 Music = BackgroundMusic | list[BackgroundMusic] | None
 
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
+
+
+@dataclass
+class ImageOverlay:
+    """A picture shown over the video from *start* to *end* (montage time).
+
+    Placed by its centre (x, y as fractions of the frame) and sized by its
+    width as a fraction of the frame width (height follows the picture)."""
+
+    path: str
+    start: float
+    end: float
+    x: float = 0.5
+    y: float = 0.5
+    width: float = 0.3
+    opacity: float = 1.0
+    fade: float = 0.0  # fade in / out (s)
+    rotation: float = 0.0  # degrees, clockwise, around the centre
+
 
 def _songs(music: Music) -> list[BackgroundMusic]:
     if music is None:
@@ -912,6 +932,23 @@ def _music_bed(label: str, m: BackgroundMusic, total: float) -> str:
     return bed
 
 
+def _image_filter(img: ImageOverlay, frame_width: int) -> str:
+    """Scale a picture to its width on the frame, with opacity and fades."""
+    w = _even(frame_width * min(max(img.width, 0.01), 4.0))
+    chain = f"format=rgba,scale={w}:-2"
+    if img.opacity < 1.0:
+        chain += f",colorchannelmixer=aa={max(img.opacity, 0.0):.3f}"
+    if img.fade > 0:
+        fade = min(img.fade, (img.end - img.start) / 2)
+        chain += (f",fade=t=in:st={img.start:.3f}:d={fade:.3f}:alpha=1"
+                  f",fade=t=out:st={img.end - fade:.3f}:d={fade:.3f}:alpha=1")
+    angle = img.rotation % 360
+    if angle:  # turn around the centre; the corners it uncovers stay transparent
+        rad = f"{angle:.3f}*PI/180"
+        chain += f",rotate=a={rad}:c=none:ow=rotw({rad}):oh=roth({rad})"
+    return chain
+
+
 def build_video_command(
     ffmpeg: str,
     clips: list[_ResolvedClip],
@@ -924,6 +961,7 @@ def build_video_command(
     music: Music = None,
     music_has_audio: bool = True,
     quality: str = "balanced",
+    images: list[ImageOverlay] | None = None,
 ) -> tuple[list[str], float]:
     """ffmpeg argv + output length for a video montage.
 
@@ -951,6 +989,14 @@ def build_video_command(
             ]
             silence[i] = next_input
             next_input += 1
+
+    # pictures: one looped still per overlay, only as long as it is needed
+    image_inputs: list[int] = []
+    for img in images or []:
+        cmd += ["-loop", "1", "-framerate", str(fps), "-t", f"{min(img.end, total):.3f}",
+                "-i", str(img.path)]
+        image_inputs.append(next_input)
+        next_input += 1
 
     songs = _songs(music) if music_has_audio else []
     song_inputs: list[int] = []
@@ -999,11 +1045,19 @@ def build_video_command(
             vprev, aprev = vnext, anext
 
     vout = "[vc]"
+    # pictures go under the subtitles, each only between its start and end
+    for k, (img, idx) in enumerate(zip(images or [], image_inputs)):
+        graph.append(f"[{idx}:v]{_image_filter(img, width)}[im{k}]")
+        graph.append(
+            f"{vout}[im{k}]overlay=x='main_w*{img.x:.4f}-overlay_w/2'"
+            f":y='main_h*{img.y:.4f}-overlay_h/2'"
+            f":enable='between(t,{img.start:.3f},{img.end:.3f})':eof_action=pass[vo{k}]")
+        vout = f"[vo{k}]"
     if subtitles_file:
         opts = f"filename={subtitles_file}"
         if fonts_dir:
             opts += f":fontsdir={fonts_dir}"
-        graph.append(f"[vc]subtitles={opts}[vs]")
+        graph.append(f"{vout}subtitles={opts}[vs]")
         vout = "[vs]"
 
     aout = "[ac]"
@@ -1040,6 +1094,7 @@ def compose_video(
     subtitle_style: SubtitleStyle | None = None,
     music: Music = None,
     quality: str = "balanced",
+    images: list[ImageOverlay] | None = None,
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
     translate: TranslateFn | None = None,
@@ -1091,6 +1146,7 @@ def compose_video(
             subtitles_file=subs_name,
             fonts_dir=fonts_name,
             music=songs,
+            images=[img for img in images or [] if img.end > img.start],
             quality=quality,
         )
         _run_with_progress(

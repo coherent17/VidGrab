@@ -66,6 +66,7 @@ the demo video, the user guide and `SHA256SUMS.txt` for verifying downloads.
 - **Subtitles**: add a line at the playhead, then drag it in the preview or snap it with the position grid. Retime it by dragging its block, and split or duplicate lines. Style options: font, bold, text colour, background box with opacity, fade in / out, and reusable **style presets**. Import or export `.srt`
 - **Background music**: cut the song with handles and choose when it comes in; separate music and original-audio volume, looping and an end fade. The preview plays it in sync with the video
 - **Per-clip sound**: mute any clip from its timeline row, or set its volume (0–200 %)
+- **Images**: put logos, stickers or photos over the video for any time range; move, resize and rotate them right in the preview
 - **One-pass render** with a live progress bar and Fast / Balanced / High quality presets
 
 ### ⚙ Settings

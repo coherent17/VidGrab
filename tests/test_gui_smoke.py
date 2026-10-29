@@ -830,3 +830,75 @@ def test_preview_newest_seek_wins_while_loading(qapp, tmp_path) -> None:
     pv.seek(18.0)  # still loading b
     assert pv._pending_seek == 13.0 and abs(pv.position() - 18.0) < 1e-6
     pv.close()
+
+
+def test_music_cut_offset_and_preview_bed(qapp, tmp_path, monkeypatch) -> None:
+    import json
+    import shutil
+    import subprocess
+
+    from PySide6.QtCore import QPointF
+
+    from vidgrab import app as appmod
+    from vidgrab.preview import MusicBed
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        pytest.skip("ffmpeg / ffprobe not on PATH")
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    clip, song = tmp_path / "c.mp4", tmp_path / "s.wav"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc=size=160x120:rate=10", "-f", "lavfi", "-i", "sine", "-t", "8",
+                    str(clip)], check=True)
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "sine=frequency=330", "-t", "30", str(song)], check=True)
+    win = appmod.VidGrabWindow()
+    try:
+        st = win._studio
+        st.preview.set_muted(True)
+        st.add_clips([str(clip)])
+        st.set_music(str(song))
+        assert st.preview.music_bed() == MusicBed(str(song), 0.0, 30.0, 0.0, True, 0.35, True)
+        st.orig_vol.setValue(50)  # the clip's own sound plays at half under the music
+        assert st.preview._segments[0].volume == 0.5
+
+        # dragging the block's handles / body arrives here
+        st.track.music_changed.emit(10.0, 14.0, 2.0)
+        bed = st.preview.music_bed()
+        assert (bed.start, bed.end, bed.offset) == (10.0, 14.0, 2.0)
+        assert bed.position(1.0) is None and bed.position(3.0) == 11.0
+        assert bed.position(7.0) == 11.0  # looped: 2 + 4 s later it starts over
+        assert st.music_fields["start"].text() == "0:10.00"
+        st.music_loop.setChecked(False)
+        assert st.preview.music_bed().position(7.0) is None
+        st.music_fields["offset"].setText("0:01.5")
+        st._music_typed("offset")
+        assert st._music_cut == (10.0, 14.0, 1.5)
+        st.undo()
+        assert st._music_cut == (10.0, 14.0, 2.0)
+
+        got = {}
+        st.render_requested.connect(lambda task, kw: got.update(kw))
+        monkeypatch.setattr(win, "_start_studio", lambda *_a: None)
+        st.render()
+        m = got["music"]
+        assert (m.start, m.end, m.offset, m.loop) == (10.0, 14.0, 2.0, False)
+
+        proj = tmp_path / "p.vgproj"
+        monkeypatch.setattr(win, "pick_save", lambda *_a: str(proj))
+        st.save_project()
+        assert json.loads(proj.read_text(encoding="utf-8"))["music"]["start"] == 10.0
+        st.new_project()
+        assert st.preview.music_bed() is None
+        st.open_project(str(proj))
+        assert st._music_cut == (10.0, 14.0, 2.0)
+
+        # the timeline: handles at the song part's edges, body moves it
+        tl = st.track
+        tl.resize(900, tl.height())
+        st.fit_timeline()
+        _block, first = tl._music_rects()
+        y = first.center().y()
+        assert tl._hit(QPointF(first.left() + 2, y)) == ("music", 0, "start")
+        assert tl._hit(QPointF(first.right() - 2, y)) == ("music", 0, "end")
+    finally:
+        win.close()

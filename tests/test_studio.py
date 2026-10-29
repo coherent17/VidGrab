@@ -305,3 +305,40 @@ def test_render_error_includes_ffmpeg_message(tmp_path: Path) -> None:
                             str(tmp_path / "o.mp4")], 1.0, label="x", on_progress=None,
                            on_log=None, translate=None)
     assert "missing.mp4" in str(err.value)
+
+
+def test_music_bed_trim_loop_and_offset_in_command() -> None:
+    clips = [_clip("a.mp4", 10)]
+    music = BackgroundMusic("m.mp3", start=12.0, end=20.0, offset=2.5, length=180.0)
+    cmd, _ = build_video_command("ffmpeg", clips, Path("o.mp4"), music=music)
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    assert "-stream_loop" not in cmd  # a trimmed part loops inside the graph
+    assert "atrim=start=12.000:end=20.000,asetpts=PTS-STARTPTS" in graph
+    assert "aloop=loop=-1:size=384000" in graph  # 8 s x 48 kHz
+    assert "atrim=0:7.500,asetpts=PTS-STARTPTS,adelay=2500:all=1,asetpts=N/SR/TB" in graph
+    whole, _ = build_video_command("ffmpeg", clips, Path("o.mp4"), music=BackgroundMusic("m.mp3"))
+    assert "-stream_loop" in whole and "atrim=start" not in whole[whole.index("-filter_complex") + 1]
+
+
+def _peak_db(path: Path, start: float, length: float) -> float:
+    proc = subprocess.run(
+        ["ffmpeg", "-v", "info", "-ss", str(start), "-t", str(length), "-i", str(path),
+         "-af", "volumedetect", "-vn", "-f", "null", "-"],
+        capture_output=True, text=True, check=True)
+    line = next(x for x in proc.stderr.splitlines() if "max_volume" in x)
+    return float(line.split("max_volume:")[1].split("dB")[0])
+
+
+@requires_ffmpeg
+def test_compose_video_music_comes_in_at_offset(tmp_path: Path) -> None:
+    video = _make(tmp_path / "v.mp4", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25",
+                  "-t", "6")
+    # a song that is silent for 3 s, then a tone: cut to the tone, bring it in at 2 s
+    song = _make(tmp_path / "s.wav", "-f", "lavfi", "-i",
+                 "aevalsrc='if(lt(t,3),0,0.5*sin(2*PI*440*t))':s=48000:d=10")
+    out = compose_video([Clip(str(video))], tmp_path / "o.mp4",
+                        music=BackgroundMusic(str(song), volume=1.0, start=3.0, end=6.0,
+                                              offset=2.0, fade_out=False))
+    assert abs(probe_media(out)["duration"] - 6.0) < 0.3
+    assert _peak_db(out, 0.2, 1.5) < -60  # before the offset: silence
+    assert _peak_db(out, 2.5, 1.5) > -20  # the cut-in part of the song (the tone)

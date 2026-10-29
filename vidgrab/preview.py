@@ -70,6 +70,32 @@ class Segment:
 
 
 @dataclass
+class MusicBed:
+    """Background music as the render mixes it: the song part start..end,
+    coming in at *offset* on the montage timeline, optionally looped."""
+
+    path: str
+    start: float
+    end: float
+    offset: float = 0.0
+    loop: bool = True
+    volume: float = 0.35
+    fade_out: bool = True
+
+    def position(self, t: float) -> float | None:
+        """Song time to play at montage time *t* (None = silent there)."""
+        length = self.end - self.start
+        if length <= 0 or t < self.offset:
+            return None
+        rel = t - self.offset
+        if self.loop:
+            rel %= length
+        elif rel >= length:
+            return None
+        return self.start + rel
+
+
+@dataclass
 class TransitionMark:
     """A transition on the montage timeline. The preview cuts at its middle
     (one player can't show two clips at once); dips to black / white are
@@ -463,6 +489,8 @@ class StudioPreview(QWidget):
         self._icon_color = "#eceeff"
         self._transitions: list[TransitionMark] = []
         self._pan_segment: int | None = None
+        self._music: MusicBed | None = None
+        self._music_source = ""
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -502,6 +530,12 @@ class StudioPreview(QWidget):
             self.player.mediaStatusChanged.connect(self._on_status)
             self.player.sourceChanged.connect(self._on_source_changed)
             self.player.playbackStateChanged.connect(lambda _s: self._update_play_icon())
+            self.player.playbackStateChanged.connect(lambda _s: self._sync_music())
+            # the background music plays on its own player, kept in step with
+            # the montage timeline by _sync_music()
+            self.music_player = QMediaPlayer(self)
+            self._music_audio = QAudioOutput(self)
+            self.music_player.setAudioOutput(self._music_audio)
         self._update_play_icon()
         self._refresh_controls()
 
@@ -563,6 +597,49 @@ class StudioPreview(QWidget):
         self._cues = cues
         self._selected_cue = selected
         self._refresh_overlay()
+
+    def set_music(self, bed: MusicBed | None) -> None:
+        self._music = bed
+        if self.player is None:
+            return
+        path = bed.path if bed else ""
+        if path != self._music_source:
+            self._music_source = path
+            self.music_player.stop()
+            self.music_player.setSource(QUrl.fromLocalFile(path) if path else QUrl())
+        self._sync_music(force=True)
+
+    def music_bed(self) -> MusicBed | None:
+        return self._music
+
+    def set_muted(self, muted: bool) -> None:
+        """Silence both players (tests and scripted recordings)."""
+        if self.player is not None:
+            self._audio.setMuted(muted)
+            self._music_audio.setMuted(muted)
+
+    def _sync_music(self, force: bool = False) -> None:
+        """Play / pause / re-seek the music to match the montage playhead."""
+        if self.player is None:
+            return
+        mp, bed, t = self.music_player, self._music, self._pos
+        pos = bed.position(t) if bed and t < self._duration else None
+        playing = self.is_playing() or (self._want_play and bool(self._segments))
+        if bed is not None:
+            fade = 1.0
+            if bed.fade_out and self._duration > 4:
+                fade = min(1.0, max(0.0, (self._duration - t) / 3))
+            self._music_audio.setVolume(min(1.0, max(0.0, bed.volume * fade)))
+        if pos is None or not playing:
+            if mp.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                mp.pause()
+            if pos is not None and force:
+                mp.setPosition(int(pos * 1000))
+            return
+        if force or abs(mp.position() / 1000 - pos) > 0.3:
+            mp.setPosition(int(pos * 1000))
+        if mp.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+            mp.play()
 
     def set_transitions(self, marks: list[TransitionMark]) -> None:
         self._transitions = marks
@@ -630,6 +707,7 @@ class StudioPreview(QWidget):
         if self.player is not None:
             self.player.stop()
             self.player.setSource(QUrl())
+            self.music_player.pause()
         self._source = ""
         self._want_play = False
 
@@ -680,9 +758,11 @@ class StudioPreview(QWidget):
         self.player.setPosition(int(local * 1000))
 
     def _set_pos(self, seconds: float) -> None:
+        jumped = abs(seconds - self._pos) > 0.5
         self._pos = seconds
         self.time_lbl.setText(f"{fmt_time(seconds)} / {fmt_time(self._duration)}")
         self._refresh_overlay()
+        self._sync_music(force=jumped and not self.is_playing())
         self.position_changed.emit(seconds)
 
     def _refresh_overlay(self) -> None:

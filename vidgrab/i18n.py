@@ -372,6 +372,11 @@ TRANS: dict[str, dict[str, str]] = {
      "Zoom the timeline to this clip for precise trimming (Z)": "Zoom the timeline to this clip for precise trimming (Z)",
      "Zoom to the selected clip": "Zoom to the selected clip",
      "Move the handle ten times more finely": "Move the handle ten times more finely",
+     "PART OF THE SONG": "PART OF THE SONG",
+     "Song start:": "Song start:",
+     "Song end:": "Song end:",
+     "Comes in at:": "Comes in at:",
+     "Drag the handles on the music block to cut the song; drag the block to make it start later.": "Drag the handles on the music block to cut the song; drag the block to make it start later.",
      "←": "←",
     },
     # ── zh ──
@@ -719,6 +724,11 @@ TRANS: dict[str, dict[str, str]] = {
      "Zoom the timeline to this clip for precise trimming (Z)": "把時間軸放大到這個片段，方便精準裁剪 (Z)",
      "Zoom to the selected clip": "放大到選取的片段",
      "Move the handle ten times more finely": "以十分之一的速度微調把手",
+     "PART OF THE SONG": "使用的歌曲片段",
+     "Song start:": "歌曲開始:",
+     "Song end:": "歌曲結束:",
+     "Comes in at:": "進場時間:",
+     "Drag the handles on the music block to cut the song; drag the block to make it start later.": "拖曳音樂方塊兩端的把手可裁剪歌曲；拖曳整個方塊可讓音樂晚一點進場。",
      "←": "←",
     },
 }

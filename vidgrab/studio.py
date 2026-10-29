@@ -163,6 +163,15 @@ class BackgroundMusic:
     original_volume: float = 1.0  # level of the clips' own audio, 0..1
     loop: bool = True
     fade_out: bool = True
+    # the part of the song that plays (seconds in the song; end None = to its
+    # end) and when it comes in on the video timeline; looping repeats that part
+    start: float = 0.0
+    end: float | None = None
+    offset: float = 0.0
+    length: float = 0.0  # the song's full length (filled in by compose_video)
+
+    def trimmed(self) -> bool:
+        return self.start > 0 or self.end is not None
 
 
 @dataclass
@@ -901,7 +910,7 @@ def build_video_command(
 
     music_idx = None
     if music is not None and music_has_audio:
-        if music.loop:
+        if music.loop and not music.trimmed():  # a trimmed part loops in the graph
             cmd += ["-stream_loop", "-1"]
         cmd += ["-i", str(music.path)]
         music_idx = next_input
@@ -954,10 +963,20 @@ def build_video_command(
 
     aout = "[ac]"
     if music is not None and music_idx is not None:
-        bed = (
-            f"{_audio_norm(f'[{music_idx}:a:0]')},"
-            f"atrim=0:{total:.3f},volume={max(0.0, music.volume):.3f}"
-        )
+        bed = _audio_norm(f"[{music_idx}:a:0]")
+        if music.trimmed():
+            end = music.end or music.length or None
+            bed += f",atrim=start={music.start:.3f}" + (f":end={end:.3f}" if end else "")
+            bed += ",asetpts=PTS-STARTPTS"
+            if music.loop and end and end > music.start:
+                bed += f",aloop=loop=-1:size={int((end - music.start) * SAMPLE_RATE)}"
+        if music.offset > 0:  # comes in later on the timeline
+            # cut to the length still needed and restart the timestamps first
+            # (adelay misreads aloop's output), then rebuild them from the
+            # sample count (atrim / afade misread adelay's)
+            bed += (f",atrim=0:{max(total - music.offset, 0.01):.3f},asetpts=PTS-STARTPTS"
+                    f",adelay={int(music.offset * 1000)}:all=1,asetpts=N/SR/TB")
+        bed += f",atrim=0:{total:.3f},volume={max(0.0, music.volume):.3f}"
         if music.fade_out and total > 4:
             bed += f",afade=t=out:st={total - 3:.3f}:d=3"
         graph.append(f"{bed}[bg]")
@@ -1017,6 +1036,10 @@ def compose_video(
             original_volume=music.original_volume,
             loop=music.loop,
             fade_out=music.fade_out,
+            start=max(0.0, music.start),
+            end=music.end,
+            offset=max(0.0, music.offset),
+            length=info["duration"],
         )
 
     out = unique_path(Path(output_file).resolve())

@@ -230,6 +230,8 @@ def test_video_command_transitions_and_cuts() -> None:
     # clip b starts 1 s before a ends; c is cut on straight after b
     assert "[v0][v1]xfade=transition=fadeblack:duration=1.000:offset=3.000[vx1]" in graph
     assert "[a0][a1]acrossfade=d=1.000" in graph
+    assert "acrossfade=d=1.000:c1=tri:c2=tri,aformat=sample_fmts=fltp" in graph
+    assert graph.endswith("asetnsamples=n=1024:p=0[aenc]") and cmd[cmd.index("[vc]") + 2] == "[aenc]"
     assert "[vx1][v2]concat=n=2:v=1:a=0,fps=30,settb=AVTB[vc]" in graph
     plain, _ = build_video_command("ffmpeg", [_clip("a.mp4", 4), _clip("b.mp4", 3)], Path("o.mp4"))
     assert "concat=n=2:v=1:a=1[vc][ac]" in plain[plain.index("-filter_complex") + 1]

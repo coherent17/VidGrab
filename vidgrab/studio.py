@@ -674,7 +674,7 @@ def _run_with_progress(
             for line in err_tail[-6:]:
                 on_log(line)
         # ffmpeg's own last words say *why* (shown in the error dialog too)
-        detail = "\n".join(line for line in err_tail[-4:] if line.strip())
+        detail = "\n".join(line for line in err_tail[-10:] if line.strip())
         raise RuntimeError(
             tr("ffmpeg failed to render the project (exit code {code}).", code=proc.returncode)
             + (f"\n\n{detail}" if detail else "")
@@ -709,6 +709,11 @@ def _input_args(clip: _ResolvedClip) -> list[str]:
         args += ["-ss", f"{clip.start:.3f}"]
     args += ["-t", f"{clip.duration:.3f}", "-i", str(clip.path)]
     return args
+
+
+# every audio join restates the format, so the encoder never sees it change
+# mid-stream (some ffmpeg builds' AAC encoder stops with EINVAL if it does)
+_AUDIO_FMT = (f"aformat=sample_fmts=fltp:sample_rates={SAMPLE_RATE}:channel_layouts=stereo")
 
 
 def _audio_norm(label: str, gain: float = 1.0) -> str:
@@ -761,6 +766,9 @@ def build_audio_command(
         graph.append(f"{ins}concat=n={len(clips)}:v=0:a=1[aout]")
         out = "[aout]"
 
+    if output.suffix.lower() == ".m4a":  # AAC: whole 1024-sample frames (see video)
+        graph.append(f"{out}{_AUDIO_FMT},asetnsamples=n=1024:p=0[aenc]")
+        out = "[aenc]"
     cmd += ["-filter_complex", ";".join(graph), "-map", out, "-vn"]
     if output.suffix.lower() == ".m4a":
         cmd += ["-c:a", "aac", "-b:a", f"{bitrate or DEFAULT_MP3_BITRATE}k"]
@@ -918,12 +926,12 @@ def build_video_command(
                 at -= d
                 graph.append(f"{vprev}[v{i}]xfade=transition={clips[i].transition}:"
                              f"duration={d:.3f}:offset={at:.3f}{vnext}")
-                graph.append(f"{aprev}[a{i}]acrossfade=d={d:.3f}:c1=tri:c2=tri{anext}")
+                graph.append(f"{aprev}[a{i}]acrossfade=d={d:.3f}:c1=tri:c2=tri,{_AUDIO_FMT}{anext}")
             else:
                 # concat drops the frame rate / timebase that the next xfade
                 # checks (some ffmpeg builds refuse the mismatch): restate them
                 graph.append(f"{vprev}[v{i}]concat=n=2:v=1:a=0,fps={fps},settb=AVTB{vnext}")
-                graph.append(f"{aprev}[a{i}]concat=n=2:v=0:a=1{anext}")
+                graph.append(f"{aprev}[a{i}]concat=n=2:v=0:a=1,{_AUDIO_FMT}{anext}")
             at += clips[i].duration
             vprev, aprev = vnext, anext
 
@@ -950,6 +958,10 @@ def build_video_command(
         )
         aout = "[am]"
 
+    # hand AAC whole 1024-sample frames (crossfades emit bigger ones, which some
+    # ffmpeg builds pass straight to the encoder and it rejects)
+    graph.append(f"{aout}{_AUDIO_FMT},asetnsamples=n=1024:p=0[aenc]")
+    aout = "[aenc]"
     cmd += [
         "-filter_complex", ";".join(graph),
         "-map", vout, "-map", aout,

@@ -1126,3 +1126,39 @@ def test_render_worker_passes_everything_to_compose_video(qapp, monkeypatch) -> 
     for key in ("resolution", "subtitles", "music", "images"):
         assert got[key] == kw[key], key
     assert got["quality"] == "high"
+
+
+def test_preview_draws_transitions(qapp) -> None:
+    """Halfway through, each kind mixes the outgoing (red) and incoming (blue)
+    frames the way ffmpeg's xfade does."""
+    from PySide6.QtGui import QColor, QImage
+
+    from vidgrab.preview import TransitionMark, VideoCanvas
+
+    red, blue = QImage(160, 90, QImage.Format_RGB32), QImage(160, 90, QImage.Format_RGB32)
+    red.fill(QColor("#ff0000"))
+    blue.fill(QColor("#0000ff"))
+    canvas = VideoCanvas()
+    canvas.resize(320, 180)
+    canvas.set_aspect(16, 9)
+    canvas.set_frame(red)
+    fit = ("fit", 1.0, 0.5, 0.5)
+
+    def at(kind: str, prog: float, x: float, y: float = 0.5) -> QColor:
+        canvas.set_blend(kind, prog, red, fit, blue, fit)
+        img = canvas.grab().toImage()
+        r = canvas.canvas_rect()
+        return img.pixelColor(int(r.x() + x * (r.width() - 1)), int(r.y() + y * (r.height() - 1)))
+
+    mid = at("fade", 0.5, 0.5)
+    assert 100 < mid.red() < 160 and 100 < mid.blue() < 160  # half and half
+    assert at("wipeleft", 0.5, 0.1).red() > 200 and at("wipeleft", 0.5, 0.9).blue() > 200
+    assert at("slideleft", 0.25, 0.5).red() > 200 and at("slideleft", 0.25, 0.9).blue() > 200
+    assert at("circleopen", 0.3, 0.5).blue() > 200 and at("circleopen", 0.3, 0.02, 0.02).red() > 200
+    assert at("zoomin", 0.9, 0.5).blue() > 200  # the outgoing clip has nearly faded away
+    canvas.clear_blend()
+    assert canvas.grab().toImage().pixelColor(160, 90).red() > 200
+
+    mark = TransitionMark(at=5.0, duration=2.0, kind="fade", label="", incoming=1)
+    assert mark.progress(3.9) is None and mark.progress(4.5) == 0.25 and mark.progress(6.1) is None
+    canvas.close()

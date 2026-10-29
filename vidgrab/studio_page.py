@@ -100,7 +100,6 @@ from vidgrab.studio import (
     SubtitleCue,
     SubtitleStyle,
     canvas_size,
-    format_srt,
     parse_srt,
     parse_timecode,
     probe_media,
@@ -1695,10 +1694,7 @@ class StudioPage(QWidget):
         self.image_btn = self._btn("＋ Image…", self._browse_images,
                                    "Show a picture over the video from the playhead")
         self.music_btn = self._btn("♪ Background music…", self._browse_music)
-        self.import_btn = self._btn("Import .srt…", self._import_srt)
-        self.export_btn = self._btn("Export .srt…", self._export_srt)
-        for b in (self.add_sub_btn, self.image_btn, self.music_btn, self.import_btn,
-                  self.export_btn):
+        for b in (self.add_sub_btn, self.image_btn, self.music_btn):
             bar.addWidget(b)
         bar.addStretch()
         self.total_lbl = QLabel()
@@ -2602,8 +2598,7 @@ class StudioPage(QWidget):
 
     def _on_mode(self) -> None:
         video = self.is_video()
-        for w in (self.add_sub_btn, self.image_btn, self.music_btn, self.import_btn,
-                  self.export_btn, self.res_lbl, self.res):
+        for w in (self.add_sub_btn, self.image_btn, self.music_btn, self.res_lbl, self.res):
             w.setVisible(video)
         for w in (self.xfade_lbl, self.xfade, self.afmt_lbl, self.afmt, self.abr_lbl, self.abr):
             w.setVisible(not video)
@@ -2702,7 +2697,7 @@ class StudioPage(QWidget):
             if ov > 0:
                 kind = self._clips[i].transition
                 marks.append(TransitionMark(off + ov / 2, ov, kind,
-                                            self.t(TRANSITION_LABELS.get(kind, kind))))
+                                            self.t(TRANSITION_LABELS.get(kind, kind)), i))
         return marks
 
     def _reload_preview(self, position: float | None = None) -> None:
@@ -3112,15 +3107,9 @@ class StudioPage(QWidget):
             self.preview.set_cues(self._preview_cues(), self._sel[1])
             self._record()
 
-    def _import_srt(self) -> None:
-        path = self.host.pick_file(self.t("Import subtitles"), ("Videos", "Downloads"),
-                                   "SubRip (*.srt);;All files (*)")
-        if path and not self.load_srt(path):
-            QMessageBox.warning(self, self.t("Import subtitles"),
-                                self.t("No subtitle lines found in that file."))
-
     def load_srt(self, path: str) -> bool:
-        """Replace the subtitle lines with those in an .srt file."""
+        """Replace the subtitle lines with those in an .srt file (the YouTube
+        captions that come with "Send to Studio")."""
         try:
             raw = Path(path).read_bytes()
         except OSError:
@@ -3137,13 +3126,6 @@ class StudioPage(QWidget):
         self._cues_changed()
         self._record()
         return True
-
-    def _export_srt(self) -> None:
-        if not self._cues:
-            return
-        path = self.host.pick_save(self.t("Export subtitles"), "subtitles.srt", "SubRip (*.srt)")
-        if path:
-            Path(path).write_text(format_srt(self._cues), encoding="utf-8")
 
     def cues(self) -> list[SubtitleCue]:
         return [replace(c) for c in self._cues if c.text.strip()]

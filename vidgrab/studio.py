@@ -646,12 +646,18 @@ def _run_with_progress(
         **_no_window(),
     )
     err_tail: list[str] = []
+    err_first: list[str] = []  # the first error lines usually name the cause
 
     def drain() -> None:
         assert proc.stderr is not None
         for line in proc.stderr:
             err_tail.append(line.rstrip())
             del err_tail[:-12]
+            low = line.lower()
+            if len(err_first) < 6 and any(k in low for k in (
+                    "error", "invalid", "not match", "mismatch", "failed", "cannot",
+                    "unable", "no such")):
+                err_first.append(line.rstrip())
 
     t = threading.Thread(target=drain, daemon=True)
     t.start()
@@ -674,7 +680,8 @@ def _run_with_progress(
             for line in err_tail[-6:]:
                 on_log(line)
         # ffmpeg's own last words say *why* (shown in the error dialog too)
-        detail = "\n".join(line for line in err_tail[-10:] if line.strip())
+        lines = err_first + [x for x in err_tail[-6:] if x not in err_first]
+        detail = "\n".join(line for line in lines if line.strip())
         raise RuntimeError(
             tr("ffmpeg failed to render the project (exit code {code}).", code=proc.returncode)
             + (f"\n\n{detail}" if detail else "")
@@ -906,7 +913,9 @@ def build_video_command(
             f"[{i}:v:0]{_frame_filter(c, width, height)},"
             f"setsar=1,fps={fps},format=yuv420p,setpts=PTS-STARTPTS"
             # xfade needs both inputs on one timebase, and concat changes it
-            f"{',settb=AVTB' if any(overlaps) else ''}[v{i}]"
+            # ffmpeg 7.0's setpts forgets the frame rate, which xfade requires:
+            # restate it, then put every input on one timebase
+            f"{f',fps={fps},settb=AVTB' if any(overlaps) else ''}[v{i}]"
         )
         if i in silence:
             graph.append(f"{_audio_norm(f'[{silence[i]}:a]')}[a{i}]")

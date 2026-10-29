@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Cut the background music**: the music block now has start / end handles to choose the part of the song that plays, and dragging the block makes the music come in later. When looping, that part repeats (dashed lines mark each pass) and the rest of the song shows faintly behind it. The music panel has exact **Song start**, **Song end** and **Comes in at** fields; undo and projects include them
+- **Hear the music in the preview**: the play button now plays the background music with the video, as it will be rendered: the chosen part of the song, from its start time, looping, at the music volume, with the original audio turned down and the end fade
 - **One pinned ffmpeg everywhere: 9.0.2.** The Windows and Linux executables used to bundle different, unpinned builds (the newest development build on Windows, a 7.x static release on Linux), so behaviour could differ between platforms and change between builds without any code change. Both now ship the same ffmpeg 9.0.2, pinned in `ffmpeg/pin.json` with SHA-256 checks; every CI job tests that exact binary, and `make ffmpeg` gives developers the same one
 
 ## 3.2.0

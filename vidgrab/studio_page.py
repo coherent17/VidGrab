@@ -52,6 +52,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -796,7 +797,7 @@ class StudioPage(QWidget):
         top.addWidget(self._build_inspector())
         top.setStretchFactor(0, 1)
         top.setStretchFactor(1, 0)
-        top.setSizes([900, 300])
+        top.setSizes([880, 350])
         root.addWidget(top, stretch=1)
         root.addWidget(self._build_timeline())
 
@@ -900,8 +901,8 @@ class StudioPage(QWidget):
 
     def _build_inspector(self) -> QWidget:
         panel, lay = self._panel()
-        panel.setMinimumWidth(280)
-        panel.setMaximumWidth(420)
+        panel.setMinimumWidth(340)
+        panel.setMaximumWidth(440)
         self.insp_title = QLabel()
         self.insp_title.setObjectName("panel_title")
         lay.addWidget(self.insp_title)
@@ -1041,6 +1042,18 @@ class StudioPage(QWidget):
         lay.addSpacing(4)
         lay.addWidget(sep)
         lay.addWidget(self._label("STYLE (ALL LINES)", "field_cap"))
+        preset_row = QHBoxLayout()
+        preset_row.setSpacing(6)
+        self.preset_combo = QComboBox()
+        self.preset_combo.setCursor(QCursor(_HAND))
+        self.preset_combo.activated.connect(
+            lambda _i: self.apply_preset(self.preset_combo.currentData() or ""))
+        preset_row.addWidget(self.preset_combo, stretch=1)
+        preset_row.addWidget(self._btn("Save\u2026", self._save_preset, "Save as preset\u2026"))
+        self.preset_del = self._btn("\u2715", self._delete_preset, "Delete preset")
+        self.preset_del.setFixedWidth(40)
+        preset_row.addWidget(self.preset_del)
+        lay.addLayout(preset_row)
         style = QFormLayout()
         style.setSpacing(8)
         style.setRowWrapPolicy(QFormLayout.WrapLongRows)
@@ -1220,6 +1233,7 @@ class StudioPage(QWidget):
         self._fill_colors(self.sub_color, TEXT_COLORS, default="#FFFFFF")
         self._fill_colors(self.sub_bg, BG_COLORS, none=True, default="#000000")
         self._fill(self.sub_pos, [(t("Bottom"), "bottom"), (t("Top"), "top")])
+        self.refresh_presets()
         if not self._busy:
             self.render_btn.setText(t("✦  Render"))
             self.status.setText("")
@@ -1644,6 +1658,76 @@ class StudioPage(QWidget):
         self.select_cue(self._cues.index(copy))
         self.preview.seek(copy.start + 0.01)
 
+    # subtitle style presets (stored in the app settings) -------------------------
+
+    def refresh_presets(self) -> None:
+        names = sorted(self.host.subtitle_presets()) if hasattr(self.host, "subtitle_presets") else []
+        current = self.preset_combo.currentData()
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.clear()
+        self.preset_combo.addItem(self.t("Choose a preset…"), "")
+        for name in names:
+            self.preset_combo.addItem(name, name)
+        self.preset_combo.setCurrentIndex(max(0, self.preset_combo.findData(current)))
+        self.preset_combo.blockSignals(False)
+        self.preset_del.setEnabled(bool(self.preset_combo.currentData()))
+
+    def _style_dict(self) -> dict:
+        st = self._style()
+        return {"font": st.font, "size": st.size, "bold": st.bold, "color": st.color,
+                "background": st.background, "bg_opacity": st.bg_opacity,
+                "fade": st.fade, "position": st.position}
+
+    def _select_color(self, combo: QComboBox, color: str | None) -> None:
+        idx = combo.findData(color or "")
+        if idx < 0 and color:
+            idx = combo.count() - 1  # a custom colour goes just before "Custom…"
+            combo.insertItem(idx, _swatch(color), color, color)
+        combo.setCurrentIndex(max(idx, 0))
+        self._combo_prev[combo] = combo.currentIndex()
+
+    def apply_preset(self, name: str) -> None:
+        preset = self.host.subtitle_presets().get(name)
+        if not preset:
+            self.preset_del.setEnabled(False)
+            return
+        for w in (self.sub_font, self.sub_size, self.sub_bold, self.sub_bg_opacity,
+                  self.sub_fade, self.sub_pos):
+            w.blockSignals(True)
+        font_idx = self.sub_font.findData(preset.get("font", SUBTITLE_FONT_NAME))
+        self.sub_font.setCurrentIndex(max(font_idx, 0))
+        self.sub_size.setValue(int(preset.get("size", 24)))
+        self.sub_bold.setChecked(bool(preset.get("bold")))
+        self._select_color(self.sub_color, preset.get("color", "#FFFFFF"))
+        self._select_color(self.sub_bg, preset.get("background"))
+        self.sub_bg_opacity.setValue(round(float(preset.get("bg_opacity", 0.6)) * 100))
+        self.sub_fade.setValue(float(preset.get("fade", 0.0)))
+        self.sub_pos.setCurrentIndex(max(0, self.sub_pos.findData(preset.get("position", "bottom"))))
+        for w in (self.sub_font, self.sub_size, self.sub_bold, self.sub_bg_opacity,
+                  self.sub_fade, self.sub_pos):
+            w.blockSignals(False)
+        self.preset_del.setEnabled(True)
+        self._push_style()
+
+    def _save_preset(self) -> None:
+        name, ok = QInputDialog.getText(self, self.t("Save as preset…"),
+                                        self.t("Preset name:"))
+        name = name.strip()
+        if ok and name:
+            self.host.save_subtitle_preset(name, self._style_dict())
+            self.preset_combo.setCurrentIndex(self.preset_combo.findData(name))
+            self.preset_del.setEnabled(True)
+
+    def _delete_preset(self) -> None:
+        name = self.preset_combo.currentData()
+        if name:
+            self.host.delete_subtitle_preset(name)
+
+    def set_default_resolution(self, value: str | None) -> None:
+        idx = self.res.findData(value or "auto")
+        if idx >= 0:
+            self.res.setCurrentIndex(idx)
+
     def _reset_cue_pos(self) -> None:
         if self._sel and self._sel[0] == "cue":
             cue = self._cues[self._sel[1]]
@@ -1788,6 +1872,8 @@ class StudioPage(QWidget):
                 "subtitles": self.cues() or None,
                 "subtitle_style": self._style(),
                 "music": music,
+                "render_quality": (self.host.setting("render_quality")
+                                   if hasattr(self.host, "setting") else "balanced"),
             })
         else:
             ext = self.afmt.currentData() or ".mp3"

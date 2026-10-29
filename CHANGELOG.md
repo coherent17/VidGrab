@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.1.0
+
+- **Settings page** in two columns with five sections:
+  - **Download defaults**: save folder, format, video / audio quality, subtitles (language, save or burn), a file-name pattern (title, title + video ID, channel – title, upload date + title), and a sound plus message when the download queue finishes
+  - **Studio**: render quality (Fast / Balanced / High quality), default output resolution, and saved subtitle style presets
+  - **Storage**: thumbnail cache size and clear, clear download history, export the log file, reset all settings
+  - **About**: VidGrab, yt-dlp, ffmpeg, Qt and Python versions
+- **Subtitle style presets**: save the current font, size, colours, background, fade and position from the Studio's subtitle panel and apply them in one click
+- The theme choice is now translated, and the About text describes the current features
+- User guide: fixed list bullets that showed as boxes and added the Settings page; demo video re-recorded with presets and Settings; README rewritten
+
+
 ## 3.0.0
 
 - **Studio (new)** — an editor-style workspace that replaces the Edit page. It fits the window with no scrolling:

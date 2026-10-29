@@ -29,6 +29,15 @@ class DownloadCancelled(yt_dlp.utils.DownloadCancelled):
     Subclasses yt-dlp's own cancellation so yt-dlp lets it propagate."""
 
 
+# file-name patterns (yt-dlp output templates) offered in Settings
+NAME_TEMPLATES: dict[str, str] = {
+    "title": "%(title)s",
+    "title_id": "%(title)s [%(id)s]",
+    "uploader_title": "%(uploader)s - %(title)s",
+    "date_title": "%(upload_date>%Y-%m-%d)s %(title)s",
+}
+DEFAULT_NAME = NAME_TEMPLATES["title"]
+
 MIN_SPEED = 0.25
 MAX_SPEED = 4.0
 
@@ -430,10 +439,11 @@ def _ytdl_options(
     noplaylist: bool = True,
     outtmpl: str | None = None,
     player_client: str = "tv_embedded",
+    name_template: str = DEFAULT_NAME,
 ) -> dict:
     common: dict = {
         "outtmpl": outtmpl
-        or str(output_path / f"%(title)s{suffix}.%(ext)s"),
+        or str(output_path / f"{name_template}{suffix}.%(ext)s"),
         "noplaylist": noplaylist,
         "quiet": True,
         "no_warnings": True,
@@ -691,6 +701,7 @@ def download_playlist(
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
     translate: TranslateFn | None = None,
+    name_template: str = DEFAULT_NAME,
 ) -> list[Path]:
     """
     Download every video in a playlist (or channel) as MP4 / MP3.
@@ -762,7 +773,7 @@ def download_playlist(
             quality=quality,
             progress_hook=progress_hook,
             noplaylist=False,
-            outtmpl=str(output_path / "%(playlist_index)02d - %(title)s.%(ext)s"),
+            outtmpl=str(output_path / f"%(playlist_index)02d - {name_template}.%(ext)s"),
             player_client=client,
         )
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -806,6 +817,7 @@ def download(
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
     translate: TranslateFn | None = None,
+    name_template: str = DEFAULT_NAME,
 ) -> Path:
     """
     Download a YouTube URL as MP4 or MP3.
@@ -883,6 +895,7 @@ def download(
             quality=quality,
             progress_hook=progress_hook,
             player_client=client,
+            name_template=name_template,
         )
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -974,6 +987,7 @@ def download_both(
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
     translate: TranslateFn | None = None,
+    name_template: str = DEFAULT_NAME,
 ) -> tuple[Path, Path]:
     """
     Download a video once as MP4, then derive the MP3 from it locally.
@@ -995,6 +1009,7 @@ def download_both(
         on_progress=on_progress,
         on_log=on_log,
         translate=translate,
+        name_template=name_template,
     )
     mp3_path = derive_mp3(
         mp4_path,

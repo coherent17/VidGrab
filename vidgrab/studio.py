@@ -51,6 +51,13 @@ RESOLUTIONS: dict[str, tuple[int, int] | None] = {
     "square": (1080, 1080),
 }
 
+# render quality presets: libx264 preset, CRF, AAC bitrate
+RENDER_QUALITY: dict[str, tuple[str, int, str]] = {
+    "fast": ("veryfast", 23, "160k"),
+    "balanced": ("medium", 20, "192k"),
+    "high": ("slow", 17, "256k"),
+}
+
 # named presets (older settings used these names); styles store "#RRGGBB"
 SUBTITLE_COLORS: dict[str, str] = {
     "white": "#FFFFFF",
@@ -771,6 +778,7 @@ def build_video_command(
     fonts_dir: str | None = None,
     music: BackgroundMusic | None = None,
     music_has_audio: bool = True,
+    quality: str = "balanced",
 ) -> tuple[list[str], float]:
     """ffmpeg argv + output length for a video montage.
 
@@ -779,6 +787,7 @@ def build_video_command(
     directory — the subtitles filter's own escaping rules make absolute
     Windows paths (``C:\\…``) fragile, so callers run ffmpeg from a temp dir."""
     width, height = _canvas(clips, resolution)
+    preset, crf, abr = RENDER_QUALITY.get(quality, RENDER_QUALITY["balanced"])
     total = sum(c.duration for c in clips)
     cmd = [ffmpeg, "-y"]
     for c in clips:
@@ -842,8 +851,8 @@ def build_video_command(
     cmd += [
         "-filter_complex", ";".join(graph),
         "-map", vout, "-map", aout,
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-        "-c:a", "aac", "-b:a", "192k",
+        "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+        "-c:a", "aac", "-b:a", abr,
         "-movflags", "+faststart",
         str(output),
     ]
@@ -858,6 +867,7 @@ def compose_video(
     subtitles: list[SubtitleCue] | None = None,
     subtitle_style: SubtitleStyle | None = None,
     music: BackgroundMusic | None = None,
+    quality: str = "balanced",
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
     translate: TranslateFn | None = None,
@@ -914,6 +924,7 @@ def compose_video(
             fonts_dir=fonts_name,
             music=music,
             music_has_audio=music_has_audio,
+            quality=quality,
         )
         _run_with_progress(
             cmd, total, cwd=work, label=tr("Rendering…"),

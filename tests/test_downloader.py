@@ -576,3 +576,34 @@ def test_ytdl_options_playlist_outtmpl(tmp_path) -> None:
     )
     assert opts["noplaylist"] is False
     assert opts["outtmpl"] == "%(playlist_index)02d - %(title)s.%(ext)s"
+
+def test_unreachable_network_retries_over_ipv4() -> None:
+    from vidgrab import downloader
+
+    calls = []
+
+    def attempt(client: str, ipv4: bool) -> str:
+        calls.append((client, ipv4))
+        if not ipv4:
+            raise RuntimeError("ERROR: [download] Got error: [Errno 101] Network is unreachable")
+        return "ok"
+
+    logs: list[str] = []
+    assert downloader._try_clients(attempt, logs.append, lambda t, **kw: t.format(**kw)) == "ok"
+    assert calls == [("tv_embedded", False), ("tv_embedded", True)]
+    assert "IPv4" in logs[0]
+
+    # other errors still fall through to the next player client, then fail
+    calls.clear()
+
+    def forbidden(client: str, ipv4: bool) -> str:
+        calls.append((client, ipv4))
+        raise RuntimeError("HTTP Error 403: Forbidden")
+
+    with pytest.raises(RuntimeError, match="403"):
+        downloader._try_clients(forbidden, logs.append, lambda t, **kw: t.format(**kw))
+    assert calls == [("tv_embedded", False), ("android", False)]
+
+    opts = downloader._ytdl_options("u", Path("."), "mp4", ffmpeg=None, ipv4=True)
+    assert opts["source_address"] == "0.0.0.0"
+    assert "source_address" not in downloader._ytdl_options("u", Path("."), "mp4", ffmpeg=None)

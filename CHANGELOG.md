@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **Downloads retry over IPv4 when the network is unreachable**: on networks (and CI runners) with IPv6 but no route for it, YouTube downloads and link previews failed with "Network is unreachable"; they now retry the same way over IPv4
+- **Releases run the tests first**: the release workflow runs the same lint and test suite as CI (Linux and Windows) before building, so a tag can't publish untested code. The checks live in one shared workflow (`checks.yml`) used by both
+- Fixed the trim integration test, which asked for 50 s–110 s of an 8 s video (a four-part time) and so never trimmed; it was hidden because YouTube's bot-check made CI skip it
+
 ## 3.3.0
 
 - **Images over the video**: "＋ Image…" (or drop a picture on the window, or double-click the new **Images** row) shows a picture from the playhead for 4 s, placed by what it is: a cut-out with transparency (a logo, a sticker) small in the top-right corner, a photo as large as fits in the middle (several pictures follow one another). Drag its block in the Images row to change when it shows; in the preview drag the picture to move it, its corner to resize it and the knob above it to **rotate** it (snaps to 0 / 90 / 180 / 270°, Alt = free). The Image panel has start / end, size, opacity, fade in / out, rotation (± 90° buttons), a 3 × 3 position grid and "Fill the frame". Any number of pictures render in the same single ffmpeg pass, under the subtitles; undo and projects include them

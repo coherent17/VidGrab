@@ -83,7 +83,7 @@ jobs:
 
           ### 示範影片與使用手冊 (Demo & user guide)
 
-          - 🎬 `VidGrab-demo.mp4`: 示範影片（繁體中文旁白，約 2 分鐘）
+          - 🎬 `VidGrab-demo.mp4`: 示範影片（繁體中文旁白，約 3 分鐘）
           - 📘 `VidGrab-user-guide-zh-TW.pdf`: 使用手冊（繁體中文 PDF）
           EOF
           cat notes.md

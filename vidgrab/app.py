@@ -1393,6 +1393,7 @@ class _Worker(QThread):
                     subtitles=self._kw.get("subtitles"),
                     subtitle_style=self._kw.get("subtitle_style"),
                     music=self._kw.get("music"),
+                    images=self._kw.get("images"),
                     quality=self._kw.get("render_quality", "balanced"),
                     on_progress=self._cb_progress,
                     on_log=self._cb_log,
@@ -2328,7 +2329,8 @@ class VidGrabWindow(QMainWindow):
         self._statusbar.showMessage(msg, 10000)
         QApplication.alert(self)  # flash the taskbar entry
         if _QT_MULTIMEDIA_OK:
-            chime = _chime_path()
+            # headless (tests, scripts): never make a sound on the speakers
+            chime = _chime_path() if QApplication.platformName() != "offscreen" else None
             if chime is not None:
                 from PySide6.QtMultimedia import QSoundEffect
 

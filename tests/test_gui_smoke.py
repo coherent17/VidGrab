@@ -862,7 +862,7 @@ def test_music_cut_offset_and_preview_bed(qapp, tmp_path, monkeypatch) -> None:
         assert st.preview._segments[0].volume == 0.5
 
         # dragging the block's handles / body arrives here
-        st.track.music_changed.emit(10.0, 14.0, 2.0)
+        st.track.music_changed.emit(0, 10.0, 14.0, 2.0)
         bed = st.preview.music_bed()
         assert (bed.start, bed.end, bed.offset) == (10.0, 14.0, 2.0)
         assert bed.position(1.0) is None and bed.position(3.0) == 11.0
@@ -880,13 +880,13 @@ def test_music_cut_offset_and_preview_bed(qapp, tmp_path, monkeypatch) -> None:
         st.render_requested.connect(lambda task, kw: got.update(kw))
         monkeypatch.setattr(win, "_start_studio", lambda *_a: None)
         st.render()
-        m = got["music"]
+        m = got["music"][0]
         assert (m.start, m.end, m.offset, m.loop) == (10.0, 14.0, 2.0, False)
 
         proj = tmp_path / "p.vgproj"
         monkeypatch.setattr(win, "pick_save", lambda *_a: str(proj))
         st.save_project()
-        assert json.loads(proj.read_text(encoding="utf-8"))["music"]["start"] == 10.0
+        assert json.loads(proj.read_text(encoding="utf-8"))["music"][0]["start"] == 10.0
         st.new_project()
         assert st.preview.music_bed() is None
         st.open_project(str(proj))
@@ -902,3 +902,263 @@ def test_music_cut_offset_and_preview_bed(qapp, tmp_path, monkeypatch) -> None:
         assert tl._hit(QPointF(first.right() - 2, y)) == ("music", 0, "end")
     finally:
         win.close()
+
+
+def test_several_background_songs(qapp, tmp_path, monkeypatch) -> None:
+    """Songs one after another (or overlapping with fades), each with its own
+    part, start time and level; only the last one loops."""
+    import json
+    import shutil
+    import subprocess
+
+    from vidgrab import app as appmod
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        pytest.skip("ffmpeg / ffprobe not on PATH")
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    clip = tmp_path / "c.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc=size=160x120:rate=10", "-t", "20", str(clip)], check=True)
+    songs = []
+    for name, freq in (("a.wav", 330), ("b.wav", 550)):
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                        f"sine=frequency={freq}", "-t", "12", str(tmp_path / name)], check=True)
+        songs.append(str(tmp_path / name))
+    win = appmod.VidGrabWindow()
+    try:
+        st = win._studio
+        st.preview.set_muted(True)
+        st.add_clips([str(clip)])
+        st.add_song(songs[0])
+        st._set_song_cut(0, 0.0, 8.0, 0.0)
+        st.add_song(songs[1])  # lands right after the first song's part
+        assert [s.offset for s in st.songs()] == [0.0, 8.0]
+        assert st._sel == ("music", 1)
+        st.music_vol.setValue(80)
+        st.song_fade.setValue(1.5)
+        assert (st.songs()[1].volume, st.songs()[1].fade) == (80, 1.5)
+        beds = st.preview.music_beds()
+        assert [b.loop for b in beds] == [False, True]  # only the last song loops
+        assert beds[0].position(9.0) is None and beds[1].position(9.0) == 1.0
+        assert beds[1].gain(8.75, 20.0) == pytest.approx(0.8 * 0.5)  # halfway into its fade
+
+        # the timeline shows one block per song; clicking selects that song
+        assert len(st.track._music) == 2
+        st.track.music_selected.emit(0)
+        assert st._sel == ("music", 0) and st.music_fields["end"].text() == "0:08.00"
+        st.track.music_changed.emit(1, 2.0, 12.0, 7.0)  # drag song 2 to overlap song 1
+        assert (st.songs()[1].start, st.songs()[1].offset) == (2.0, 7.0)
+        st.undo()
+        assert st.songs()[1].offset == 8.0
+
+        got = {}
+        st.render_requested.connect(lambda task, kw: got.update(kw))
+        monkeypatch.setattr(win, "_start_studio", lambda *_a: None)
+        st.render()
+        music = got["music"]
+        assert [(m.offset, m.loop, m.volume, m.fade) for m in music] == [
+            (0.0, False, 0.35, 0.0), (8.0, True, 0.8, 1.5)]
+
+        proj = tmp_path / "p.vgproj"
+        monkeypatch.setattr(win, "pick_save", lambda *_a: str(proj))
+        st.save_project()
+        data = json.loads(proj.read_text(encoding="utf-8"))
+        assert len(data["music"]) == 2 and data["music_options"]["loop_last"] is True
+        st.new_project()
+        st.open_project(str(proj))
+        assert [(s.offset, s.volume) for s in st.songs()] == [(0.0, 35), (8.0, 80)]
+
+        # a 3.2 project (one song, options on it) still opens
+        old = dict(data, music={**data["music"][0], "volume": 50, "original_volume": 40,
+                                "loop": False, "fade_out": False})
+        old.pop("music_options")
+        legacy = tmp_path / "old.vgproj"
+        legacy.write_text(json.dumps(old), encoding="utf-8")
+        st.open_project(str(legacy))
+        assert len(st.songs()) == 1 and st.songs()[0].volume == 50
+        assert st.orig_vol.value() == 40 and not st.music_loop.isChecked()
+
+        st.select_music(0)
+        st._delete_selected()
+        assert st.songs() == []
+    finally:
+        win.close()
+
+
+def test_overlapping_subtitles_stack_into_lanes(qapp) -> None:
+    from PySide6.QtCore import QPointF
+
+    from vidgrab.studio_page import TrackTimeline
+
+    tl = TrackTimeline()
+    tl.resize(900, 300)
+    tl.set_data([], [(0.0, 4.0, "a"), (1.0, 3.0, "b"), (4.0, 6.0, "c"), (2.0, 5.0, "d")], None)
+    assert tl._cue_lanes() == [0, 1, 0, 2]  # c reuses lane 0 once a has ended
+    one = TrackTimeline()
+    one.set_data([], [(0.0, 1.0, "x")], None)
+    assert tl.height() - one.height() == 2 * tl.LANE_H  # the row grows for 3 lanes
+    rects = tl._cue_rects()
+    assert rects[1].top() > rects[0].top() and rects[2].top() == rects[0].top()
+    # every line can be picked, even where they overlap in time
+    assert tl._hit(QPointF(rects[3].center().x(), rects[3].center().y()))[:2] == ("cue", 3)
+    assert tl._hit(QPointF(rects[1].center().x(), rects[1].center().y()))[:2] == ("cue", 1)
+    tl.close()
+    one.close()
+
+
+def test_image_overlays(qapp, tmp_path, monkeypatch) -> None:
+    import json
+    import shutil
+    import subprocess
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QColor, QImage
+
+    from vidgrab import app as appmod
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        pytest.skip("ffmpeg / ffprobe not on PATH")
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    clip = tmp_path / "c.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc=size=320x180:rate=10", "-t", "10", str(clip)], check=True)
+    logo = QImage(200, 100, QImage.Format_ARGB32)  # a cut-out with transparency
+    logo.fill(Qt.transparent)
+    logo.save(str(tmp_path / "logo.png"))
+    photo = QImage(400, 300, QImage.Format_RGB32)  # an opaque 4:3 photo
+    photo.fill(QColor("#3366cc"))
+    photo.save(str(tmp_path / "photo.jpg"))
+    win = appmod.VidGrabWindow()
+    try:
+        st = win._studio
+        st.preview.set_muted(True)
+        st.add_clips([str(clip)])
+        st.preview.seek(2.0)
+        st.add_images([str(tmp_path / "logo.png"), str(tmp_path / "photo.jpg")])
+        logo_o, photo_o = st.images()
+        # smart placement: the logo small in the top-right corner, the photo large in
+        # the middle; the second picture follows the first in time
+        assert (logo_o.start, logo_o.end, photo_o.start, photo_o.end) == (2.0, 6.0, 6.0, 10.0)
+        assert logo_o.width == 0.22 and logo_o.x > 0.8 and logo_o.y < 0.2
+        assert (photo_o.x, photo_o.y) == (0.5, 0.5) and photo_o.width == pytest.approx(0.6)
+        assert st._sel == ("image", 1) and st.insp.currentIndex() == st.INSP_IMAGE
+
+        # the Images row: one block each, sharing a lane (they don't overlap)
+        assert len(st.track._images) == 2 and st.track._image_lanes() == [0, 0]
+        st.track.image_timing.emit(1, 4.0, 9.0)  # drag the photo to overlap the logo
+        assert st.track._image_lanes() == [0, 1]
+
+        # move / resize in the preview, position grid, sliders
+        st.preview.image_changed.emit(0, 0.3, 0.4, 0.5, 0.0)
+        assert (st.images()[0].x, st.images()[0].y, st.images()[0].width) == (0.3, 0.4, 0.5)
+        st.select_image(0)
+        st._place_image(9)  # top-right, its edge 4 % in
+        assert st.images()[0].x == pytest.approx(1 - 0.04 - 0.25)
+        st._turn_image(90)
+        st._turn_image(90)
+        st._turn_image(90)  # 270 -> shown as -90
+        assert st.images()[0].rotation == -90.0 and st.image_rotation.value() == -90.0
+        st._turn_image(90)
+        st.image_opacity.setValue(70)
+        st.image_fade.setValue(0.5)
+        assert (st.images()[0].opacity, st.images()[0].fade) == (0.7, 0.5)
+        st.undo()
+        assert st.images()[0].fade == 0.0
+
+        # the preview shows a picture only while it is on
+        st.preview.seek(3.0)
+        assert [row for row, _i in st.preview.canvas._images] == [0]
+        st.preview.seek(7.0)
+        assert [row for row, _i in st.preview.canvas._images] == [1]
+
+        got = {}
+        st.render_requested.connect(lambda task, kw: got.update(kw))
+        monkeypatch.setattr(win, "_start_studio", lambda *_a: None)
+        st.render()
+        assert [(i.start, i.end) for i in got["images"]] == [(2.0, 6.0), (4.0, 9.0)]
+
+        proj = tmp_path / "p.vgproj"
+        monkeypatch.setattr(win, "pick_save", lambda *_a: str(proj))
+        st.save_project()
+        saved = json.loads(proj.read_text(encoding="utf-8"))["images"]
+        assert saved[1]["rel"] == "photo.jpg" and saved[0]["rotation"] == 0.0
+        st.new_project()
+        assert st.images() == []
+        st.open_project(str(proj))
+        assert [(i.start, i.opacity) for i in st.images()] == [(2.0, 0.7), (4.0, 1.0)]
+
+        st.select_image(1)
+        st._delete_selected()
+        assert len(st.images()) == 1
+
+        # dropping a picture on the window adds an overlay, not a clip
+        st.add_clips([str(tmp_path / "photo.jpg")])
+        assert len(st.clips()) == 1 and len(st.images()) == 2
+    finally:
+        win.close()
+
+
+def test_headless_runs_make_no_sound(qapp) -> None:
+    """Tests and scripts run offscreen: no chime, preview players muted."""
+    from vidgrab.preview import QT_MULTIMEDIA_OK, MusicBed, StudioPreview
+
+    if not QT_MULTIMEDIA_OK:
+        pytest.skip("QtMultimedia not available")
+    pv = StudioPreview()
+    pv.set_music(MusicBed("x.mp3", 0.0, 1.0))
+    assert pv._audio.isMuted() and all(out.isMuted() for _p, out, _s in pv._music_players)
+    pv.close()
+
+
+def test_render_worker_passes_everything_to_compose_video(qapp, monkeypatch) -> None:
+    """The Studio's render request must reach the renderer whole (images were dropped)."""
+    from vidgrab import app as appmod
+    from vidgrab.studio import BackgroundMusic, Clip, ImageOverlay, SubtitleCue
+
+    got = {}
+    monkeypatch.setattr(appmod, "compose_video",
+                        lambda clips, out, **kw: got.update(kw, clips=clips) or out)
+    kw = {"clips": [Clip("a.mp4")], "output_file": "o.mp4", "resolution": "720p",
+          "subtitles": [SubtitleCue(0, 1, "x")], "music": [BackgroundMusic("m.mp3")],
+          "images": [ImageOverlay("i.png", 0, 1)], "render_quality": "high"}
+    worker = appmod._Worker("compose_video", **kw)
+    worker.run()
+    for key in ("resolution", "subtitles", "music", "images"):
+        assert got[key] == kw[key], key
+    assert got["quality"] == "high"
+
+
+def test_preview_draws_transitions(qapp) -> None:
+    """Halfway through, each kind mixes the outgoing (red) and incoming (blue)
+    frames the way ffmpeg's xfade does."""
+    from PySide6.QtGui import QColor, QImage
+
+    from vidgrab.preview import TransitionMark, VideoCanvas
+
+    red, blue = QImage(160, 90, QImage.Format_RGB32), QImage(160, 90, QImage.Format_RGB32)
+    red.fill(QColor("#ff0000"))
+    blue.fill(QColor("#0000ff"))
+    canvas = VideoCanvas()
+    canvas.resize(320, 180)
+    canvas.set_aspect(16, 9)
+    canvas.set_frame(red)
+    fit = ("fit", 1.0, 0.5, 0.5)
+
+    def at(kind: str, prog: float, x: float, y: float = 0.5) -> QColor:
+        canvas.set_blend(kind, prog, red, fit, blue, fit)
+        img = canvas.grab().toImage()
+        r = canvas.canvas_rect()
+        return img.pixelColor(int(r.x() + x * (r.width() - 1)), int(r.y() + y * (r.height() - 1)))
+
+    mid = at("fade", 0.5, 0.5)
+    assert 100 < mid.red() < 160 and 100 < mid.blue() < 160  # half and half
+    assert at("wipeleft", 0.5, 0.1).red() > 200 and at("wipeleft", 0.5, 0.9).blue() > 200
+    assert at("slideleft", 0.25, 0.5).red() > 200 and at("slideleft", 0.25, 0.9).blue() > 200
+    assert at("circleopen", 0.3, 0.5).blue() > 200 and at("circleopen", 0.3, 0.02, 0.02).red() > 200
+    assert at("zoomin", 0.9, 0.5).blue() > 200  # the outgoing clip has nearly faded away
+    canvas.clear_blend()
+    assert canvas.grab().toImage().pixelColor(160, 90).red() > 200
+
+    mark = TransitionMark(at=5.0, duration=2.0, kind="fade", label="", incoming=1)
+    assert mark.progress(3.9) is None and mark.progress(4.5) == 0.25 and mark.progress(6.1) is None
+    canvas.close()

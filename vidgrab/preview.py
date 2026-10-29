@@ -26,6 +26,7 @@ from PySide6.QtGui import (
     QPixmap,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -37,6 +38,7 @@ from PySide6.QtWidgets import (
 from vidgrab.studio import (
     SUBTITLE_FONT_NAME,
     SUBTITLE_MARGIN,
+    ImageOverlay,
     SubtitleCue,
     SubtitleStyle,
     box_padding,
@@ -81,6 +83,19 @@ class MusicBed:
     loop: bool = True
     volume: float = 0.35
     fade_out: bool = True
+    fade: float = 0.0  # fade in / out at the song's own edges
+
+    def gain(self, t: float, total: float) -> float:
+        """Volume at montage time *t*: edge fades and the end-of-video fade."""
+        level = self.volume
+        if self.fade > 0:
+            level *= min(1.0, max(0.0, (t - self.offset) / self.fade))
+            if not self.loop:
+                stop = self.offset + (self.end - self.start)
+                level *= min(1.0, max(0.0, (stop - t) / self.fade))
+        if self.fade_out and total > 4:
+            level *= min(1.0, max(0.0, (total - t) / 3))
+        return level
 
     def position(self, t: float) -> float | None:
         """Song time to play at montage time *t* (None = silent there)."""
@@ -97,14 +112,25 @@ class MusicBed:
 
 @dataclass
 class TransitionMark:
-    """A transition on the montage timeline. The preview cuts at its middle
-    (one player can't show two clips at once); dips to black / white are
-    drawn, other kinds are labelled while they play."""
+    """A transition on the montage timeline. The main player switches clips
+    at its middle; a second player shows the other clip meanwhile, and the
+    canvas blends the two the way the render does (dips just fade the frame)."""
 
     at: float  # middle of the transition (s)
     duration: float
     kind: str
     label: str
+    incoming: int = -1  # the segment it leads into (the outgoing one is incoming - 1)
+
+    def progress(self, t: float) -> float | None:
+        """0..1 through the transition at time *t* (None outside it)."""
+        if self.duration <= 0 or abs(t - self.at) >= self.duration / 2:
+            return None
+        return (t - (self.at - self.duration / 2)) / self.duration
+
+
+# transitions the canvas draws from two frames (the rest are dips or cuts)
+BLENDED = ("fade", "dissolve", "wipeleft", "slideleft", "circleopen", "zoomin")
 
 
 def frame_geometry(fw: float, fh: float, rect: QRectF, fit: str, zoom: float,
@@ -161,6 +187,8 @@ class VideoCanvas(QWidget):
     cue_clicked = Signal(int)
     pan_dragged = Signal(float, float)  # new pan_x, pan_y while dragging the picture
     pan_finished = Signal()
+    image_clicked = Signal(int)
+    image_changed = Signal(int, float, float, float, float)  # row, centre x, y, width, rotation
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -183,6 +211,19 @@ class VideoCanvas(QWidget):
         self._pan_drag: tuple[QPointF, float, float] | None = None
         self._dip: tuple[str, float] | None = None  # colour, opacity
         self._badge = ""
+        # a transition in progress: the other clip's frame and framing, the
+        # kind, how far through (0..1), and whether the main frame is the outgoing one
+        # (kind, progress, outgoing frame, its framing, incoming frame, its framing)
+        self._blend: tuple | None = None
+        self._images: list[tuple[int, ImageOverlay]] = []  # the ones showing now
+        self._selected_image: int | None = None
+        self._pictures: dict[str, QImage] = {}  # loaded once per file
+        # row, box (unrotated), its rotation, resize grip, rotate knob (unrotated frame)
+        self._img_hits: list[tuple[int, QRectF, float, QRectF, QRectF]] = []
+        # dragging a picture: row, "move" | "size" | "turn", press point, original
+        # x / y / width / rotation
+        self._img_drag: tuple[int, str, QPointF, float, float, float, float] | None = None
+        self._img_live: tuple[float, float, float, float] | None = None
 
     def sizeHint(self) -> QSize:
         return QSize(640, 360)
@@ -214,6 +255,84 @@ class VideoCanvas(QWidget):
         self._style = style
         self.update()
 
+    def set_images(self, images: list[tuple[int, ImageOverlay]], selected: int | None) -> None:
+        self._images, self._selected_image = images, selected
+        self.update()
+
+    def picture(self, path: str) -> QImage:
+        img = self._pictures.get(path)
+        if img is None:
+            img = QImage(path)
+            self._pictures[path] = img
+        return img
+
+    def _image_box(self, img: ImageOverlay, rect: QRectF) -> QRectF:
+        pic = self.picture(img.path)
+        w = rect.width() * img.width
+        h = w * pic.height() / max(1, pic.width()) if not pic.isNull() else w
+        cx, cy = rect.x() + img.x * rect.width(), rect.y() + img.y * rect.height()
+        return QRectF(cx - w / 2, cy - h / 2, w, h)
+
+    def _paint_images(self, p: QPainter, rect: QRectF) -> None:
+        self._img_hits = []
+        p.save()
+        p.setClipRect(rect)
+        for row, img in self._images:
+            if self._img_drag is not None and self._img_drag[0] == row and self._img_live:
+                x, y, w, rot = self._img_live
+                img = ImageOverlay(img.path, img.start, img.end, x, y, w,
+                                   opacity=img.opacity, fade=img.fade, rotation=rot)
+            pic = self.picture(img.path)
+            box = self._image_box(img, rect)
+            level = img.opacity
+            if img.fade > 0 and self._img_drag is None:
+                fade = min(img.fade, (img.end - img.start) / 2) or 1.0
+                level *= min(1.0, max(0.0, min(self._time - img.start, img.end - self._time) / fade))
+            # draw in the picture's own (rotated) frame, centred on its centre
+            p.save()
+            p.translate(box.center())
+            p.rotate(img.rotation)
+            local = QRectF(-box.width() / 2, -box.height() / 2, box.width(), box.height())
+            p.setOpacity(level)
+            if not pic.isNull():
+                p.drawImage(local, pic)
+            p.setOpacity(1.0)
+            grip = QRectF(local.right() - 7, local.bottom() - 7, 14, 14)
+            knob = QRectF(-7, local.top() - 30, 14, 14)
+            if row == self._selected_image:
+                p.setPen(QPen(QColor(self._colors["accent"]), 1.5, Qt.DashLine))
+                p.setBrush(Qt.NoBrush)
+                p.drawRect(local)
+                p.drawLine(QPointF(0, local.top()), QPointF(0, knob.bottom()))
+                p.setPen(QPen(QColor("#ffffff"), 1.2))
+                p.setBrush(QColor(self._colors["accent"]))
+                p.drawRect(grip)
+                p.drawEllipse(knob)
+            p.restore()
+            self._img_hits.append((row, box, img.rotation, grip, knob))
+        p.restore()
+
+    @staticmethod
+    def _to_local(pos: QPointF, box: QRectF, rotation: float) -> QPointF:
+        """*pos* in a picture's own frame: centred on it, rotation undone."""
+        from math import cos, radians, sin
+
+        d = pos - box.center()
+        a = radians(-rotation)
+        return QPointF(d.x() * cos(a) - d.y() * sin(a), d.x() * sin(a) + d.y() * cos(a))
+
+    def _image_hit(self, pos: QPointF) -> tuple[int, str] | None:
+        for row, box, rotation, grip, knob in reversed(self._img_hits):  # top-most first
+            local = self._to_local(pos, box, rotation)
+            if row == self._selected_image:
+                if knob.adjusted(-5, -5, 5, 5).contains(local):
+                    return row, "turn"
+                if grip.adjusted(-4, -4, 4, 4).contains(local):
+                    return row, "size"
+            if QRectF(-box.width() / 2, -box.height() / 2, box.width(), box.height()).contains(local):
+                return row, "move"
+        return None
+
     def set_framing(self, fit: str, zoom: float, pan_x: float, pan_y: float) -> None:
         self._framing = (fit, zoom, pan_x, pan_y)
         self.update()
@@ -224,6 +343,63 @@ class VideoCanvas(QWidget):
         if not on:
             self._pan_drag = None
         self.update()
+
+    def set_blend(self, kind: str, progress: float, outgoing: QImage | None, out_framing: tuple,
+                  incoming: QImage | None, in_framing: tuple) -> None:
+        self._blend = (kind, progress, outgoing, out_framing, incoming, in_framing)
+        self.update()
+
+    def clear_blend(self) -> None:
+        if self._blend is not None:
+            self._blend = None
+            self.update()
+
+    def blending(self) -> bool:
+        b = self._blend
+        return b is not None and all(img is not None and not img.isNull() for img in (b[2], b[4]))
+
+    def _draw_frame(self, p: QPainter, rect: QRectF, img: QImage, framing: tuple, *,
+                    dx: float = 0.0, scale: float = 1.0, opacity: float = 1.0,
+                    clip: QPainterPath | None = None) -> None:
+        source, target = frame_geometry(img.width(), img.height(), rect, *framing)
+        p.save()
+        p.setClipRect(rect)
+        if clip is not None:
+            p.setClipPath(clip, Qt.IntersectClip)
+        if scale != 1.0:
+            p.translate(rect.center())
+            p.scale(scale, scale)
+            p.translate(-rect.center())
+        p.translate(dx, 0)
+        p.setOpacity(max(0.0, min(1.0, opacity)))
+        p.drawImage(target, img, source)
+        p.restore()
+
+    def _paint_transition(self, p: QPainter, rect: QRectF) -> None:
+        """Both clips, combined like ffmpeg's xfade of the same name."""
+        from math import hypot
+
+        kind, prog, o_img, o_fr, i_img, i_fr = self._blend
+        w, h = rect.width(), rect.height()
+        if kind == "slideleft":  # both move left together
+            self._draw_frame(p, rect, o_img, o_fr, dx=-w * prog)
+            self._draw_frame(p, rect, i_img, i_fr, dx=w * (1 - prog))
+        elif kind == "zoomin":  # the outgoing clip grows and fades away
+            self._draw_frame(p, rect, i_img, i_fr)
+            self._draw_frame(p, rect, o_img, o_fr, scale=1 + prog, opacity=1 - prog)
+        else:
+            self._draw_frame(p, rect, o_img, o_fr)
+            if kind == "wipeleft":  # the edge sweeps from right to left
+                clip = QPainterPath()
+                clip.addRect(QRectF(rect.right() - w * prog, rect.top(), w * prog, h))
+                self._draw_frame(p, rect, i_img, i_fr, clip=clip)
+            elif kind == "circleopen":  # a circle opening from the centre
+                clip = QPainterPath()
+                r = prog * hypot(w, h) / 2
+                clip.addEllipse(rect.center(), r, r)
+                self._draw_frame(p, rect, i_img, i_fr, clip=clip)
+            else:  # fade / dissolve: the incoming clip fades in on top
+                self._draw_frame(p, rect, i_img, i_fr, opacity=prog)
 
     def set_transition_overlay(self, dip: tuple[str, float] | None, badge: str) -> None:
         if (dip, badge) != (self._dip, self._badge):
@@ -298,9 +474,12 @@ class VideoCanvas(QWidget):
         p.fillRect(rect, QColor("#000000"))
 
         if self._frame is not None and not self._frame.isNull():
-            source, target = frame_geometry(self._frame.width(), self._frame.height(), rect,
-                                            *self._framing)
-            p.drawImage(target, self._frame, source)
+            if self.blending():
+                self._paint_transition(p, rect)
+            else:
+                source, target = frame_geometry(self._frame.width(), self._frame.height(), rect,
+                                                *self._framing)
+                p.drawImage(target, self._frame, source)
             if self._pannable and (self._pan_drag is not None or self.underMouse()):
                 p.setPen(QPen(QColor(self._colors["accent"]), 1.5, Qt.DashLine))
                 p.setBrush(Qt.NoBrush)
@@ -316,6 +495,10 @@ class VideoCanvas(QWidget):
             color = QColor(self._dip[0])
             color.setAlphaF(min(max(self._dip[1], 0.0), 1.0))
             p.fillRect(rect, color)
+        if self._images:
+            self._paint_images(p, rect)
+        else:
+            self._img_hits = []
         self._hits = []
         if self._cues:
             self._paint_cues(p, rect)
@@ -395,6 +578,15 @@ class VideoCanvas(QWidget):
 
     def mousePressEvent(self, event) -> None:
         hit = self._hit(event.position())
+        img_hit = self._image_hit(event.position()) if hit is None else None
+        if img_hit is not None and event.button() == Qt.LeftButton:
+            row, part = img_hit
+            img = next(i for r, i in self._images if r == row)
+            self._img_drag = (row, part, event.position(), img.x, img.y, img.width, img.rotation)
+            self._img_live = None
+            self.setCursor(QCursor(Qt.SizeFDiagCursor if part == "size" else Qt.ClosedHandCursor))
+            self.image_clicked.emit(row)
+            return None
         if hit is None and event.button() == Qt.LeftButton and self._pannable \
                 and self.canvas_rect().contains(event.position()):
             _fit, _zoom, px, py = self._framing
@@ -410,6 +602,35 @@ class VideoCanvas(QWidget):
         self.cue_clicked.emit(row)
 
     def mouseMoveEvent(self, event) -> None:
+        if self._img_drag is not None:
+            row, part, start, x0, y0, w0, r0 = self._img_drag
+            rect = self.canvas_rect()
+            delta = event.position() - start
+            if part == "move":
+                x = min(max(x0 + delta.x() / rect.width(), 0.0), 1.0)
+                y = min(max(y0 + delta.y() / rect.height(), 0.0), 1.0)
+                self._img_live = (x, y, w0, r0)
+            elif part == "size":  # the corner: grow / shrink around the centre
+                img = next(i for r, i in self._images if r == row)
+                box = self._image_box(img, rect)
+                grow = self._to_local(event.position(), box, r0).x() \
+                    - self._to_local(start, box, r0).x()
+                w = min(max(w0 + 2 * grow / rect.width(), 0.03), 2.0)
+                self._img_live = (x0, y0, w, r0)
+            else:  # the knob: the angle from the centre to the mouse
+                from math import atan2, degrees
+
+                centre = QPointF(rect.x() + x0 * rect.width(), rect.y() + y0 * rect.height())
+                d = event.position() - centre
+                angle = (degrees(atan2(d.y(), d.x())) + 90) % 360
+                if not event.modifiers() & Qt.AltModifier:  # snap to the square angles
+                    nearest = round(angle / 90) * 90
+                    if abs(angle - nearest) < 6:
+                        angle = nearest % 360
+                angle = round(angle - 360 if angle > 180 else angle, 1)
+                self._img_live = (x0, y0, w0, angle)
+            self.update()
+            return
         if self._pan_drag is not None:
             start, px0, py0 = self._pan_drag
             ow, oh, _scale = self._overflow()
@@ -421,8 +642,15 @@ class VideoCanvas(QWidget):
             return
         if self._drag is None:
             over = self._hit(event.position()) is not None
+            img = None if over else self._image_hit(event.position())
             pan = self._pannable and self.canvas_rect().contains(event.position())
-            self.setCursor(QCursor(Qt.OpenHandCursor if over or pan else Qt.ArrowCursor))
+            if img is not None and img[1] == "size":
+                self.setCursor(QCursor(Qt.SizeFDiagCursor))
+            elif img is not None and img[1] == "turn":
+                self.setCursor(QCursor(Qt.CrossCursor))
+            else:
+                self.setCursor(QCursor(Qt.OpenHandCursor if over or pan or img
+                                       else Qt.ArrowCursor))
             self.update()
             return
         rect = self.canvas_rect()
@@ -437,6 +665,14 @@ class VideoCanvas(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event) -> None:
+        if self._img_drag is not None:
+            row, live = self._img_drag[0], self._img_live
+            self._img_drag = self._img_live = None
+            self.setCursor(QCursor(Qt.OpenHandCursor))
+            if live is not None:
+                self.image_changed.emit(row, *(round(v, 4) for v in live))
+            self.update()
+            return
         if self._pan_drag is not None:
             self._pan_drag = None
             self.setCursor(QCursor(Qt.OpenHandCursor))
@@ -465,6 +701,8 @@ class StudioPreview(QWidget):
     cue_clicked = Signal(int)
     pan_dragged = Signal(int, float, float)  # segment, pan_x, pan_y
     pan_finished = Signal()
+    image_clicked = Signal(int)
+    image_changed = Signal(int, float, float, float, float)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -489,8 +727,20 @@ class StudioPreview(QWidget):
         self._icon_color = "#eceeff"
         self._transitions: list[TransitionMark] = []
         self._pan_segment: int | None = None
-        self._music: MusicBed | None = None
-        self._music_source = ""
+        self._images: list[tuple[int, ImageOverlay]] = []
+        self._selected_image: int | None = None
+        self._aux_source = ""
+        self._aux_pending: float | None = None
+        self._aux_awaiting = False  # like the main player: ignore the old file's "loaded"
+        self._aux_img: QImage | None = None
+        # the latest frame of each file (from either player): a transition
+        # blends these, so the two players swapping files never leaves a gap
+        self._last_frame: dict[str, QImage] = {}
+        self._main_img: QImage | None = None  # the main player's own latest frame
+        self._music: list[MusicBed] = []
+        self._music_players: list[tuple[QMediaPlayer, QAudioOutput, str]] = []
+        # headless (tests, scripts): the speakers stay silent
+        self._muted = QApplication.platformName() == "offscreen"
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -500,6 +750,8 @@ class StudioPreview(QWidget):
         self.canvas.cue_clicked.connect(self.cue_clicked)
         self.canvas.pan_dragged.connect(lambda x, y: self.pan_dragged.emit(self._seg_idx, x, y))
         self.canvas.pan_finished.connect(self.pan_finished)
+        self.canvas.image_clicked.connect(self.image_clicked)
+        self.canvas.image_changed.connect(self.image_changed)
         lay.addWidget(self.canvas, stretch=1)
 
         row = QHBoxLayout()
@@ -522,6 +774,7 @@ class StudioPreview(QWidget):
         if QT_MULTIMEDIA_OK:
             self.player = QMediaPlayer(self)
             self._audio = QAudioOutput(self)
+            self._audio.setMuted(self._muted)
             self.player.setAudioOutput(self._audio)
             self._sink = QVideoSink(self)
             self._sink.videoFrameChanged.connect(self._on_frame)
@@ -531,11 +784,19 @@ class StudioPreview(QWidget):
             self.player.sourceChanged.connect(self._on_source_changed)
             self.player.playbackStateChanged.connect(lambda _s: self._update_play_icon())
             self.player.playbackStateChanged.connect(lambda _s: self._sync_music())
-            # the background music plays on its own player, kept in step with
+            # the other clip of a transition plays on a second player, kept in
+            # step with the playhead by _sync_transition()
+            self.aux_player = QMediaPlayer(self)
+            self._aux_audio = QAudioOutput(self)
+            self._aux_audio.setMuted(self._muted)
+            self.aux_player.setAudioOutput(self._aux_audio)
+            self._aux_sink = QVideoSink(self)
+            self._aux_sink.videoFrameChanged.connect(self._on_aux_frame)
+            self.aux_player.setVideoSink(self._aux_sink)
+            self.aux_player.mediaStatusChanged.connect(self._on_aux_status)
+            self.aux_player.sourceChanged.connect(self._on_aux_source_changed)
+            # each background song plays on its own player, kept in step with
             # the montage timeline by _sync_music()
-            self.music_player = QMediaPlayer(self)
-            self._music_audio = QAudioOutput(self)
-            self.music_player.setAudioOutput(self._music_audio)
         self._update_play_icon()
         self._refresh_controls()
 
@@ -598,48 +859,73 @@ class StudioPreview(QWidget):
         self._selected_cue = selected
         self._refresh_overlay()
 
-    def set_music(self, bed: MusicBed | None) -> None:
-        self._music = bed
+    def set_music(self, beds: MusicBed | list[MusicBed] | None) -> None:
+        if beds is None:
+            beds = []
+        elif isinstance(beds, MusicBed):
+            beds = [beds]
+        self._music = list(beds)
         if self.player is None:
             return
-        path = bed.path if bed else ""
-        if path != self._music_source:
-            self._music_source = path
-            self.music_player.stop()
-            self.music_player.setSource(QUrl.fromLocalFile(path) if path else QUrl())
+        while len(self._music_players) < len(self._music):
+            player, out = QMediaPlayer(self), QAudioOutput(self)
+            out.setMuted(self._muted)
+            player.setAudioOutput(out)
+            self._music_players.append((player, out, ""))
+        for k, (player, out, source) in enumerate(self._music_players):
+            path = self._music[k].path if k < len(self._music) else ""
+            if path != source:
+                player.stop()
+                player.setSource(QUrl.fromLocalFile(path) if path else QUrl())
+                self._music_players[k] = (player, out, path)
         self._sync_music(force=True)
 
     def music_bed(self) -> MusicBed | None:
-        return self._music
+        return self._music[0] if self._music else None
+
+    def music_beds(self) -> list[MusicBed]:
+        return list(self._music)
+
+    @property
+    def music_player(self) -> QMediaPlayer | None:
+        """The first song's player (tests / scripts)."""
+        return self._music_players[0][0] if self._music_players else None
 
     def set_muted(self, muted: bool) -> None:
-        """Silence both players (tests and scripted recordings)."""
+        """Silence every player (tests and scripted recordings)."""
+        self._muted = muted
         if self.player is not None:
             self._audio.setMuted(muted)
-            self._music_audio.setMuted(muted)
+            self._aux_audio.setMuted(muted)
+            for _player, out, _source in self._music_players:
+                out.setMuted(muted)
 
     def _sync_music(self, force: bool = False) -> None:
-        """Play / pause / re-seek the music to match the montage playhead."""
+        """Play / pause / re-seek each song to match the montage playhead."""
         if self.player is None:
             return
-        mp, bed, t = self.music_player, self._music, self._pos
-        pos = bed.position(t) if bed and t < self._duration else None
+        t = self._pos
         playing = self.is_playing() or (self._want_play and bool(self._segments))
-        if bed is not None:
-            fade = 1.0
-            if bed.fade_out and self._duration > 4:
-                fade = min(1.0, max(0.0, (self._duration - t) / 3))
-            self._music_audio.setVolume(min(1.0, max(0.0, bed.volume * fade)))
-        if pos is None or not playing:
-            if mp.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
-                mp.pause()
-            if pos is not None and force:
+        for k, (mp, out, _source) in enumerate(self._music_players):
+            bed = self._music[k] if k < len(self._music) else None
+            pos = bed.position(t) if bed and t < self._duration else None
+            if bed is not None:
+                out.setVolume(min(1.0, max(0.0, bed.gain(t, self._duration))))
+            if pos is None or not playing:
+                if mp.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                    mp.pause()
+                if pos is not None and force:
+                    mp.setPosition(int(pos * 1000))
+                continue
+            if force or abs(mp.position() / 1000 - pos) > 0.3:
                 mp.setPosition(int(pos * 1000))
-            return
-        if force or abs(mp.position() / 1000 - pos) > 0.3:
-            mp.setPosition(int(pos * 1000))
-        if mp.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
-            mp.play()
+            if mp.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+                mp.play()
+
+    def set_images(self, images: list[tuple[int, ImageOverlay]], selected: int | None) -> None:
+        """Every picture (row, overlay); the canvas shows those active now."""
+        self._images, self._selected_image = images, selected
+        self._refresh_overlay()
 
     def set_transitions(self, marks: list[TransitionMark]) -> None:
         self._transitions = marks
@@ -707,7 +993,9 @@ class StudioPreview(QWidget):
         if self.player is not None:
             self.player.stop()
             self.player.setSource(QUrl())
-            self.music_player.pause()
+            for mp, _out, _source in self._music_players:
+                mp.pause()
+            self.aux_player.pause()
         self._source = ""
         self._want_play = False
 
@@ -770,6 +1058,8 @@ class StudioPreview(QWidget):
         active = [(row, c) for row, c in self._cues if c.start <= t < c.end]
         self.canvas.set_time(t)
         self.canvas.set_cues(active, self._selected_cue)
+        self.canvas.set_images([(row, img) for row, img in self._images
+                                if img.start <= t < img.end], self._selected_image)
         dip, badge = None, ""
         for mark in self._transitions:
             half = mark.duration / 2
@@ -777,10 +1067,114 @@ class StudioPreview(QWidget):
                 if mark.kind in ("fadeblack", "fadewhite"):
                     color = "#000000" if mark.kind == "fadeblack" else "#ffffff"
                     dip = (color, 1.0 - abs(t - mark.at) / half)
-                else:
+                elif mark.kind not in BLENDED:
                     badge = mark.label
                 break
         self.canvas.set_transition_overlay(dip, badge)
+        self._sync_transition()
+
+    # transitions: the second player --------------------------------------
+
+    def _active_mark(self, t: float) -> TransitionMark | None:
+        for mark in self._transitions:
+            if mark.kind in BLENDED and 1 <= mark.incoming < len(self._segments) \
+                    and mark.progress(t) is not None:
+                return mark
+        return None
+
+    def _sync_transition(self) -> None:
+        """Inside a transition: show the other clip on the second player and
+        blend; just before one: load it so the first frame is ready."""
+        if self.player is None:
+            return
+        t = self._pos
+        mark = self._active_mark(t)
+        if mark is None:
+            self.canvas.clear_blend()
+            if self.aux_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                self.aux_player.pause()
+            self._set_main_level(1.0)
+            upcoming = next((m for m in self._transitions if m.kind in BLENDED
+                             and 1 <= m.incoming < len(self._segments)
+                             and 0 < (m.at - m.duration / 2) - t < 1.5), None)
+            if upcoming is not None:  # preload the clip that is about to come in
+                seg = self._segments[upcoming.incoming]
+                self._aux_to(seg, seg.start - upcoming.duration / 2, play=False)
+            return
+        prog = mark.progress(t)
+        out_seg, in_seg = self._segments[mark.incoming - 1], self._segments[mark.incoming]
+        main_out = self._seg_idx == mark.incoming - 1
+        other = in_seg if main_out else out_seg
+        if not (out_seg.has_video and in_seg.has_video):
+            self.canvas.clear_blend()
+            return
+        # the other clip at this moment of the montage (its tail or its head)
+        self._aux_to(other, other.start + (t - other.offset), play=self.is_playing())
+        if out_seg.path == in_seg.path:  # one file, two parts: tell them apart by player
+            main_img = self._main_img
+            aux_img = self._aux_img if self._aux_pending is None else None
+            out_img, in_img = (main_img, aux_img) if main_out else (aux_img, main_img)
+        else:
+            out_img = self._last_frame.get(out_seg.path)
+            in_img = self._last_frame.get(in_seg.path)
+        self.canvas.set_blend(mark.kind, prog,
+                              out_img, (out_seg.fit, out_seg.zoom, out_seg.pan_x, out_seg.pan_y),
+                              in_img, (in_seg.fit, in_seg.zoom, in_seg.pan_x, in_seg.pan_y))
+        # the sound crossfades too (acrossfade in the render)
+        main_w = (1 - prog) if main_out else prog
+        self._set_main_level(main_w)
+        self._aux_audio.setVolume(min(1.0, max(0.0, other.volume * (1 - main_w))))
+
+    def _set_main_level(self, weight: float) -> None:
+        seg = self._segments[self._seg_idx] if 0 <= self._seg_idx < len(self._segments) else None
+        if seg is not None:
+            self._audio.setVolume(min(1.0, max(0.0, seg.volume * weight)))
+
+    def _aux_to(self, seg: Segment, local: float, *, play: bool) -> None:
+        aux = self.aux_player
+        local = max(0.0, local)
+        if self._aux_source != seg.path:
+            self._aux_source, self._aux_img = seg.path, None
+            self._aux_pending = local
+            self._aux_awaiting = True
+            aux.setSource(QUrl.fromLocalFile(seg.path))
+            if play:
+                aux.play()
+            else:
+                aux.pause()
+            return
+        if self._aux_pending is not None:
+            self._aux_pending = local
+            return
+        drift = abs(aux.position() / 1000 - local)
+        if drift > (0.25 if play else 0.04):
+            aux.setPosition(int(local * 1000))
+        playing = aux.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+        if play and not playing:
+            aux.play()
+        elif not play and playing:
+            aux.pause()
+
+    def _on_aux_status(self, status) -> None:
+        loaded = (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia)
+        if status in loaded and self._aux_pending is not None and not self._aux_awaiting:
+            target, self._aux_pending = self._aux_pending, None
+            self.aux_player.setPosition(int(target * 1000))
+
+    def _on_aux_source_changed(self, _url) -> None:
+        self._aux_awaiting = False
+        self._on_aux_status(self.aux_player.mediaStatus())
+
+    def _on_aux_frame(self, frame) -> None:
+        if self._aux_pending is not None or self._aux_awaiting:
+            return
+        img = frame.toImage()
+        if img.isNull():
+            return
+        self._aux_img = img
+        self._last_frame[self._aux_source] = img
+        if self.canvas._blend is not None:
+            self._sync_transition()
 
     def _update_placeholder(self) -> None:
         seg = self._segments[self._seg_idx] if 0 <= self._seg_idx < len(self._segments) else None
@@ -806,9 +1200,15 @@ class StudioPreview(QWidget):
         seg = self._segments[self._seg_idx] if 0 <= self._seg_idx < len(self._segments) else None
         if seg is None or not seg.has_video:
             return
+        if self._pending_seek is not None or self._awaiting_source:
+            return  # a new file's first frame, before the jump: keep the last picture
         img = frame.toImage()
         if not img.isNull():
+            self._main_img = img
+            self._last_frame[self._source] = img
             self.canvas.set_frame(img)
+            if self.canvas._blend is not None:
+                self._sync_transition()
 
     def _on_status(self, status) -> None:
         loaded = (

@@ -20,7 +20,7 @@ import sys
 import tempfile
 import threading
 from array import array
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from yt_dlp.utils import parse_duration
@@ -169,9 +169,44 @@ class BackgroundMusic:
     end: float | None = None
     offset: float = 0.0
     length: float = 0.0  # the song's full length (filled in by compose_video)
+    fade: float = 0.0  # fade in / out at this song's own edges (s), e.g. for crossfades
 
     def trimmed(self) -> bool:
         return self.start > 0 or self.end is not None
+
+    def part(self) -> float | None:
+        """Length of the part of the song that plays (None if unknown)."""
+        end = self.end or self.length or None
+        return end - self.start if end else None
+
+
+Music = BackgroundMusic | list[BackgroundMusic] | None
+
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
+
+
+@dataclass
+class ImageOverlay:
+    """A picture shown over the video from *start* to *end* (montage time).
+
+    Placed by its centre (x, y as fractions of the frame) and sized by its
+    width as a fraction of the frame width (height follows the picture)."""
+
+    path: str
+    start: float
+    end: float
+    x: float = 0.5
+    y: float = 0.5
+    width: float = 0.3
+    opacity: float = 1.0
+    fade: float = 0.0  # fade in / out (s)
+    rotation: float = 0.0  # degrees, clockwise, around the centre
+
+
+def _songs(music: Music) -> list[BackgroundMusic]:
+    if music is None:
+        return []
+    return [music] if isinstance(music, BackgroundMusic) else list(music)
 
 
 @dataclass
@@ -868,6 +903,52 @@ def _frame_filter(c: _ResolvedClip, width: int, height: int) -> str:
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black")
 
 
+def _music_bed(label: str, m: BackgroundMusic, total: float) -> str:
+    """One song as the montage hears it: its part, looped or not, coming in
+    at its offset, with its own fades, volume and the end-of-video fade."""
+    bed = _audio_norm(label)
+    if m.trimmed():
+        end = m.end or m.length or None
+        bed += f",atrim=start={m.start:.3f}" + (f":end={end:.3f}" if end else "")
+        bed += ",asetpts=PTS-STARTPTS"
+        if m.loop and end and end > m.start:
+            bed += f",aloop=loop=-1:size={int((end - m.start) * SAMPLE_RATE)}"
+    if m.offset > 0:  # comes in later on the timeline
+        # cut to the length still needed and restart the timestamps first
+        # (adelay misreads aloop's output), then rebuild them from the
+        # sample count (atrim / afade misread adelay's)
+        bed += (f",atrim=0:{max(total - m.offset, 0.01):.3f},asetpts=PTS-STARTPTS"
+                f",adelay={int(m.offset * 1000)}:all=1,asetpts=N/SR/TB")
+    bed += f",atrim=0:{total:.3f}"
+    part = m.part()
+    if m.fade > 0:
+        bed += f",afade=t=in:st={m.offset:.3f}:d={m.fade:.3f}"
+        if not m.loop and part:
+            stop = min(m.offset + part, total)
+            bed += f",afade=t=out:st={max(m.offset, stop - m.fade):.3f}:d={m.fade:.3f}"
+    bed += f",volume={max(0.0, m.volume):.3f}"
+    if m.fade_out and total > 4:
+        bed += f",afade=t=out:st={total - 3:.3f}:d=3"
+    return bed
+
+
+def _image_filter(img: ImageOverlay, frame_width: int) -> str:
+    """Scale a picture to its width on the frame, with opacity and fades."""
+    w = _even(frame_width * min(max(img.width, 0.01), 4.0))
+    chain = f"format=rgba,scale={w}:-2"
+    if img.opacity < 1.0:
+        chain += f",colorchannelmixer=aa={max(img.opacity, 0.0):.3f}"
+    if img.fade > 0:
+        fade = min(img.fade, (img.end - img.start) / 2)
+        chain += (f",fade=t=in:st={img.start:.3f}:d={fade:.3f}:alpha=1"
+                  f",fade=t=out:st={img.end - fade:.3f}:d={fade:.3f}:alpha=1")
+    angle = img.rotation % 360
+    if angle:  # turn around the centre; the corners it uncovers stay transparent
+        rad = f"{angle:.3f}*PI/180"
+        chain += f",rotate=a={rad}:c=none:ow=rotw({rad}):oh=roth({rad})"
+    return chain
+
+
 def build_video_command(
     ffmpeg: str,
     clips: list[_ResolvedClip],
@@ -877,9 +958,10 @@ def build_video_command(
     fps: int = 30,
     subtitles_file: str | None = None,
     fonts_dir: str | None = None,
-    music: BackgroundMusic | None = None,
+    music: Music = None,
     music_has_audio: bool = True,
     quality: str = "balanced",
+    images: list[ImageOverlay] | None = None,
 ) -> tuple[list[str], float]:
     """ffmpeg argv + output length for a video montage.
 
@@ -908,12 +990,21 @@ def build_video_command(
             silence[i] = next_input
             next_input += 1
 
-    music_idx = None
-    if music is not None and music_has_audio:
-        if music.loop and not music.trimmed():  # a trimmed part loops in the graph
+    # pictures: one looped still per overlay, only as long as it is needed
+    image_inputs: list[int] = []
+    for img in images or []:
+        cmd += ["-loop", "1", "-framerate", str(fps), "-t", f"{min(img.end, total):.3f}",
+                "-i", str(img.path)]
+        image_inputs.append(next_input)
+        next_input += 1
+
+    songs = _songs(music) if music_has_audio else []
+    song_inputs: list[int] = []
+    for m in songs:
+        if m.loop and not m.trimmed():  # a trimmed part loops in the graph
             cmd += ["-stream_loop", "-1"]
-        cmd += ["-i", str(music.path)]
-        music_idx = next_input
+        cmd += ["-i", str(m.path)]
+        song_inputs.append(next_input)
         next_input += 1
 
     graph: list[str] = []
@@ -954,36 +1045,29 @@ def build_video_command(
             vprev, aprev = vnext, anext
 
     vout = "[vc]"
+    # pictures go under the subtitles, each only between its start and end
+    for k, (img, idx) in enumerate(zip(images or [], image_inputs)):
+        graph.append(f"[{idx}:v]{_image_filter(img, width)}[im{k}]")
+        graph.append(
+            f"{vout}[im{k}]overlay=x='main_w*{img.x:.4f}-overlay_w/2'"
+            f":y='main_h*{img.y:.4f}-overlay_h/2'"
+            f":enable='between(t,{img.start:.3f},{img.end:.3f})':eof_action=pass[vo{k}]")
+        vout = f"[vo{k}]"
     if subtitles_file:
         opts = f"filename={subtitles_file}"
         if fonts_dir:
             opts += f":fontsdir={fonts_dir}"
-        graph.append(f"[vc]subtitles={opts}[vs]")
+        graph.append(f"{vout}subtitles={opts}[vs]")
         vout = "[vs]"
 
     aout = "[ac]"
-    if music is not None and music_idx is not None:
-        bed = _audio_norm(f"[{music_idx}:a:0]")
-        if music.trimmed():
-            end = music.end or music.length or None
-            bed += f",atrim=start={music.start:.3f}" + (f":end={end:.3f}" if end else "")
-            bed += ",asetpts=PTS-STARTPTS"
-            if music.loop and end and end > music.start:
-                bed += f",aloop=loop=-1:size={int((end - music.start) * SAMPLE_RATE)}"
-        if music.offset > 0:  # comes in later on the timeline
-            # cut to the length still needed and restart the timestamps first
-            # (adelay misreads aloop's output), then rebuild them from the
-            # sample count (atrim / afade misread adelay's)
-            bed += (f",atrim=0:{max(total - music.offset, 0.01):.3f},asetpts=PTS-STARTPTS"
-                    f",adelay={int(music.offset * 1000)}:all=1,asetpts=N/SR/TB")
-        bed += f",atrim=0:{total:.3f},volume={max(0.0, music.volume):.3f}"
-        if music.fade_out and total > 4:
-            bed += f",afade=t=out:st={total - 3:.3f}:d=3"
-        graph.append(f"{bed}[bg]")
-        graph.append(f"[ac]volume={max(0.0, music.original_volume):.3f}[orig]")
-        graph.append(
-            "[orig][bg]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[am]"
-        )
+    if songs:
+        for k, (m, idx) in enumerate(zip(songs, song_inputs)):
+            graph.append(f"{_music_bed(f'[{idx}:a:0]', m, total)}[bg{k}]")
+        graph.append(f"[ac]volume={max(0.0, songs[0].original_volume):.3f}[orig]")
+        beds = "".join(f"[bg{k}]" for k in range(len(songs)))
+        graph.append(f"[orig]{beds}amix=inputs={len(songs) + 1}:duration=first"
+                     ":dropout_transition=0:normalize=0[am]")
         aout = "[am]"
 
     # hand AAC whole 1024-sample frames (crossfades emit bigger ones, which some
@@ -1008,8 +1092,9 @@ def compose_video(
     resolution: str = "auto",
     subtitles: list[SubtitleCue] | None = None,
     subtitle_style: SubtitleStyle | None = None,
-    music: BackgroundMusic | None = None,
+    music: Music = None,
     quality: str = "balanced",
+    images: list[ImageOverlay] | None = None,
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
     translate: TranslateFn | None = None,
@@ -1021,26 +1106,18 @@ def compose_video(
         on_progress(tr("Reading clips…"), None)
     resolved = _resolve(clips, need_video=True, translate=translate)
 
-    music_has_audio = True
-    if music is not None:
-        mpath = Path(music.path)
+    songs: list[BackgroundMusic] = []
+    for m in _songs(music):
+        mpath = Path(m.path)
         if not mpath.is_file():
             raise FileNotFoundError(tr("File not found: {src}", src=mpath))
         info = probe_media(mpath, translate=translate)
-        music_has_audio = info["has_audio"]
-        if not music_has_audio and on_log:
-            on_log(tr("Background music has no audio track; skipping it."))
-        music = BackgroundMusic(
-            path=str(mpath.resolve()),
-            volume=music.volume,
-            original_volume=music.original_volume,
-            loop=music.loop,
-            fade_out=music.fade_out,
-            start=max(0.0, music.start),
-            end=music.end,
-            offset=max(0.0, music.offset),
-            length=info["duration"],
-        )
+        if not info["has_audio"]:
+            if on_log:
+                on_log(tr("Background music has no audio track; skipping it."))
+            continue
+        songs.append(replace(m, path=str(mpath.resolve()), start=max(0.0, m.start),
+                             offset=max(0.0, m.offset), length=info["duration"]))
 
     out = unique_path(Path(output_file).resolve())
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -1068,8 +1145,8 @@ def compose_video(
             resolution=resolution,
             subtitles_file=subs_name,
             fonts_dir=fonts_name,
-            music=music,
-            music_has_audio=music_has_audio,
+            music=songs,
+            images=[img for img in images or [] if img.end > img.start],
             quality=quality,
         )
         _run_with_progress(

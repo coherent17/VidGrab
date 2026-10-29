@@ -81,6 +81,19 @@ class MusicBed:
     loop: bool = True
     volume: float = 0.35
     fade_out: bool = True
+    fade: float = 0.0  # fade in / out at the song's own edges
+
+    def gain(self, t: float, total: float) -> float:
+        """Volume at montage time *t*: edge fades and the end-of-video fade."""
+        level = self.volume
+        if self.fade > 0:
+            level *= min(1.0, max(0.0, (t - self.offset) / self.fade))
+            if not self.loop:
+                stop = self.offset + (self.end - self.start)
+                level *= min(1.0, max(0.0, (stop - t) / self.fade))
+        if self.fade_out and total > 4:
+            level *= min(1.0, max(0.0, (total - t) / 3))
+        return level
 
     def position(self, t: float) -> float | None:
         """Song time to play at montage time *t* (None = silent there)."""
@@ -489,8 +502,9 @@ class StudioPreview(QWidget):
         self._icon_color = "#eceeff"
         self._transitions: list[TransitionMark] = []
         self._pan_segment: int | None = None
-        self._music: MusicBed | None = None
-        self._music_source = ""
+        self._music: list[MusicBed] = []
+        self._music_players: list[tuple[QMediaPlayer, QAudioOutput, str]] = []
+        self._muted = False
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -531,11 +545,8 @@ class StudioPreview(QWidget):
             self.player.sourceChanged.connect(self._on_source_changed)
             self.player.playbackStateChanged.connect(lambda _s: self._update_play_icon())
             self.player.playbackStateChanged.connect(lambda _s: self._sync_music())
-            # the background music plays on its own player, kept in step with
+            # each background song plays on its own player, kept in step with
             # the montage timeline by _sync_music()
-            self.music_player = QMediaPlayer(self)
-            self._music_audio = QAudioOutput(self)
-            self.music_player.setAudioOutput(self._music_audio)
         self._update_play_icon()
         self._refresh_controls()
 
@@ -598,48 +609,67 @@ class StudioPreview(QWidget):
         self._selected_cue = selected
         self._refresh_overlay()
 
-    def set_music(self, bed: MusicBed | None) -> None:
-        self._music = bed
+    def set_music(self, beds: MusicBed | list[MusicBed] | None) -> None:
+        if beds is None:
+            beds = []
+        elif isinstance(beds, MusicBed):
+            beds = [beds]
+        self._music = list(beds)
         if self.player is None:
             return
-        path = bed.path if bed else ""
-        if path != self._music_source:
-            self._music_source = path
-            self.music_player.stop()
-            self.music_player.setSource(QUrl.fromLocalFile(path) if path else QUrl())
+        while len(self._music_players) < len(self._music):
+            player, out = QMediaPlayer(self), QAudioOutput(self)
+            out.setMuted(self._muted)
+            player.setAudioOutput(out)
+            self._music_players.append((player, out, ""))
+        for k, (player, out, source) in enumerate(self._music_players):
+            path = self._music[k].path if k < len(self._music) else ""
+            if path != source:
+                player.stop()
+                player.setSource(QUrl.fromLocalFile(path) if path else QUrl())
+                self._music_players[k] = (player, out, path)
         self._sync_music(force=True)
 
     def music_bed(self) -> MusicBed | None:
-        return self._music
+        return self._music[0] if self._music else None
+
+    def music_beds(self) -> list[MusicBed]:
+        return list(self._music)
+
+    @property
+    def music_player(self) -> QMediaPlayer | None:
+        """The first song's player (tests / scripts)."""
+        return self._music_players[0][0] if self._music_players else None
 
     def set_muted(self, muted: bool) -> None:
-        """Silence both players (tests and scripted recordings)."""
+        """Silence every player (tests and scripted recordings)."""
+        self._muted = muted
         if self.player is not None:
             self._audio.setMuted(muted)
-            self._music_audio.setMuted(muted)
+            for _player, out, _source in self._music_players:
+                out.setMuted(muted)
 
     def _sync_music(self, force: bool = False) -> None:
-        """Play / pause / re-seek the music to match the montage playhead."""
+        """Play / pause / re-seek each song to match the montage playhead."""
         if self.player is None:
             return
-        mp, bed, t = self.music_player, self._music, self._pos
-        pos = bed.position(t) if bed and t < self._duration else None
+        t = self._pos
         playing = self.is_playing() or (self._want_play and bool(self._segments))
-        if bed is not None:
-            fade = 1.0
-            if bed.fade_out and self._duration > 4:
-                fade = min(1.0, max(0.0, (self._duration - t) / 3))
-            self._music_audio.setVolume(min(1.0, max(0.0, bed.volume * fade)))
-        if pos is None or not playing:
-            if mp.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
-                mp.pause()
-            if pos is not None and force:
+        for k, (mp, out, _source) in enumerate(self._music_players):
+            bed = self._music[k] if k < len(self._music) else None
+            pos = bed.position(t) if bed and t < self._duration else None
+            if bed is not None:
+                out.setVolume(min(1.0, max(0.0, bed.gain(t, self._duration))))
+            if pos is None or not playing:
+                if mp.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                    mp.pause()
+                if pos is not None and force:
+                    mp.setPosition(int(pos * 1000))
+                continue
+            if force or abs(mp.position() / 1000 - pos) > 0.3:
                 mp.setPosition(int(pos * 1000))
-            return
-        if force or abs(mp.position() / 1000 - pos) > 0.3:
-            mp.setPosition(int(pos * 1000))
-        if mp.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
-            mp.play()
+            if mp.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+                mp.play()
 
     def set_transitions(self, marks: list[TransitionMark]) -> None:
         self._transitions = marks
@@ -707,7 +737,8 @@ class StudioPreview(QWidget):
         if self.player is not None:
             self.player.stop()
             self.player.setSource(QUrl())
-            self.music_player.pause()
+            for mp, _out, _source in self._music_players:
+                mp.pause()
         self._source = ""
         self._want_play = False
 

@@ -459,6 +459,30 @@ def _brightness(img: QImage) -> float:
     return sum(values) / max(1, len(values))
 
 
+@dataclass
+class _Song:
+    """One background song: the part that plays, when it comes in, its level."""
+
+    path: str
+    info: dict
+    wave: list[float] = field(default_factory=list)
+    start: float = 0.0
+    end: float | None = None  # None = to the end of the song
+    offset: float = 0.0  # where it comes in on the montage timeline
+    volume: int = 35  # percent
+    fade: float = 0.0  # fade in / out at its own edges (s)
+
+    @property
+    def length(self) -> float:
+        return float(self.info.get("duration") or 0.0)
+
+    def span(self) -> tuple[float, float]:
+        return self.start, (self.end if self.end is not None else self.length)
+
+    def edit(self) -> tuple:
+        return (self.path, self.start, self.end, self.offset, self.volume, self.fade)
+
+
 def clip_overlaps(clips: list[_MediaClip]) -> list[float]:
     return transition_overlaps([c.kept() for c in clips],
                                [(c.transition, c.transition_d) for c in clips])
@@ -479,8 +503,8 @@ class TrackTimeline(QWidget):
     cue_selected = Signal(int)
     cue_changed = Signal(int, float, float)
     cue_add_requested = Signal(float)
-    music_selected = Signal()
-    music_changed = Signal(float, float, float)  # song start, song end, offset on the timeline
+    music_selected = Signal(int)  # song index
+    music_changed = Signal(int, float, float, float)  # song, its start / end, offset on the timeline
     add_media_requested = Signal()
     music_requested = Signal()
     view_changed = Signal()  # zoom or horizontal scroll changed
@@ -498,7 +522,7 @@ class TrackTimeline(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._clips: list[_MediaClip] = []
         self._cues: list[tuple[float, float, str]] = []
-        self._music: dict | None = None
+        self._music: list[dict] = []  # one entry per background song
         self._labels = {"subs": "Subtitles", "music": "Music", "empty": "",
                         "empty_subs": "", "empty_music": "", "mute": "", "unmute": ""}
         self._show_subs = True
@@ -560,10 +584,10 @@ class TrackTimeline(QWidget):
         self._show_subs, self._show_music = subs, music
         self._update_height()
 
-    def set_data(self, clips: list[_MediaClip], cues, music: dict | None) -> None:
+    def set_data(self, clips: list[_MediaClip], cues, music: list[dict] | None) -> None:
         if self._drag is not None:
             return
-        self._clips, self._cues, self._music = clips, cues, music
+        self._clips, self._cues, self._music = clips, cues, list(music or [])
         self._update_height()
         self._clamp_view()
 
@@ -1011,29 +1035,27 @@ class TrackTimeline(QWidget):
                 p.drawText(inner, Qt.AlignVCenter | Qt.AlignLeft,
                            fm.elidedText(text.replace("\n", " "), Qt.ElideRight, inner.width()))
 
-    def _music_geom(self) -> tuple[float, float, float, float] | None:
-        """(offset, song start, song end, timeline end) of the music block,
+    def _music_geom(self, k: int) -> tuple[float, float, float, float]:
+        """(offset, song start, song end, timeline end) of song *k*,
         following an in-progress drag."""
-        m, d = self._music, self._drag or {}
-        if m is None:
-            return None
+        m, d = self._music[k], self._drag or {}
         start, end, offset = m["start"], m["end"], m["offset"]
-        if d.get("kind", "").startswith("music_"):
+        if d.get("kind", "").startswith("music_") and d.get("row") == k:
             start, end, offset = d["s"], d["e"], d["o"]
         part = max(end - start, 0.01)
         total = self.total()
         stop = total if m["loop"] else min(offset + part, total)
         return offset, start, end, max(stop, offset)
 
-    def _music_rects(self) -> tuple[QRectF, QRectF] | None:
+    def _music_rects(self, k: int = 0) -> tuple[QRectF, QRectF] | None:
         """(whole block, first pass of the song part — the one with handles)."""
-        r, geom = self._row_rect("music"), self._music_geom()
-        if r is None or geom is None:
+        r = self._row_rect("music")
+        if r is None or not 0 <= k < len(self._music):
             return None
-        offset, start, end, stop = geom
+        offset, start, end, stop = self._music_geom(k)
         d = self._drag or {}
         left = offset
-        if d.get("kind") == "music_start":  # the song stays put, the handle slides
+        if d.get("kind") == "music_start" and d.get("row") == k:  # the song stays, the handle slides
             left = offset + (start - d["s0"])
         block = QRectF(self._x(left), r.top() + 3, max(4.0, (stop - offset) * self._pps()),
                        r.height() - 6)
@@ -1045,24 +1067,32 @@ class TrackTimeline(QWidget):
         r = self._row_rect("music")
         if r is None:
             return
-        if self._music is None:
+        if not self._music:
             if self._clips:
                 p.setPen(c["muted"])
                 p.drawText(r, Qt.AlignCenter, self._labels["empty_music"])
             return
-        rects = self._music_rects()
-        if total <= 0 or rects is None:
+        if total <= 0:
             return
-        block, first = rects
-        offset, start, end, _stop = self._music_geom()
-        dur, loop = self._music["dur"], self._music["loop"]
-        sel = self._selection == ("music", 0)
-        base = QColor(c["music"])
-        d = self._drag or {}
+        selected = self._selection[1] if self._selection and self._selection[0] == "music" \
+            else None
+        # the selected song last, so it sits on top where songs overlap
+        order = [k for k in range(len(self._music)) if k != selected]
+        if selected is not None and selected < len(self._music):
+            order.append(selected)
+        for k in order:
+            self._paint_song(p, c, fm, k, k == selected)
+
+    def _paint_song(self, p, c, fm, k: int, sel: bool) -> None:
+        block, first = self._music_rects(k)
+        offset, start, end, _stop = self._music_geom(k)
+        m, d = self._music[k], self._drag or {}
+        dur, loop = m["dur"], m["loop"]
+        dragging = d.get("kind", "").startswith("music_") and d.get("row") == k
+        base = QColor(c["music"] if k % 2 == 0 else c["accent"])
         # the whole song, faint, so it's clear how far the handles can go
-        if dur and (sel or d.get("kind", "").startswith("music_")):
-            s0 = d.get("s0", start)
-            ghost_left = self._x(offset - s0) if d.get("kind") == "music_start" \
+        if dur and (sel or dragging):
+            ghost_left = self._x(offset - d["s0"]) if dragging and d["kind"] == "music_start" \
                 else self._x(offset - start)
             ghost = QColor(base)
             ghost.setAlpha(40)
@@ -1070,10 +1100,10 @@ class TrackTimeline(QWidget):
             p.setBrush(ghost)
             p.drawRoundedRect(QRectF(ghost_left, block.top() + 3, dur * self._pps(),
                                      block.height() - 6), 5, 5)
-        p.setPen(QPen(QColor(c["sel"]), 2) if sel else Qt.NoPen)
+        p.setPen(QPen(QColor(c["sel"]), 2) if sel else QPen(QColor(base).lighter(130), 1))
         p.setBrush(QColor(base).darker(250))
         p.drawRoundedRect(block, 6, 6)
-        wave = self._music.get("wave") or []
+        wave = m.get("wave") or []
         part = max(end - start, 0.01)
         if wave and dur:
             p.save()
@@ -1089,17 +1119,29 @@ class TrackTimeline(QWidget):
                 if not loop:
                     break
             p.restore()
+        fade = m.get("fade", 0.0)
+        if fade > 0:  # fade ramps at the song's edges
+            p.save()
+            p.setClipRect(block, Qt.IntersectClip)
+            p.setPen(QPen(QColor(255, 255, 255, 170), 1.2))
+            fw = fade * self._pps()
+            p.drawLine(QPointF(first.left(), first.bottom() - 2),
+                       QPointF(first.left() + fw, first.top() + 2))
+            if not loop:
+                p.drawLine(QPointF(first.right() - fw, first.top() + 2),
+                           QPointF(first.right(), first.bottom() - 2))
+            p.restore()
         # in / out handles on the first pass of the song part
-        hover = self._hover is not None and self._hover[0] == "music"
-        if sel or hover or d.get("kind", "").startswith("music_"):
+        hover = self._hover is not None and self._hover[:2] == ("music", k)
+        if sel or hover or dragging:
             for x, left_edge in ((first.left(), True), (first.right(), False)):
                 grip = QRectF(x if left_edge else x - 8, first.top(), 8, first.height())
                 p.setPen(Qt.NoPen)
                 p.setBrush(QColor(c["sel"]))
                 p.drawRoundedRect(grip, 3, 3)
         p.setPen(QColor("#ffffff"))
-        label = ("↻ " if loop else "") + self._music["name"]
-        if d.get("kind", "").startswith("music_"):
+        label = ("↻ " if loop else "") + m["name"]
+        if dragging:
             label = f"{fmt_time(start)} – {fmt_time(end)}  @ {fmt_time(offset)}"
         inner = block.adjusted(12, 0, -10, 0)
         p.drawText(inner, Qt.AlignVCenter | Qt.AlignLeft,
@@ -1131,16 +1173,19 @@ class TrackTimeline(QWidget):
                 if abs(pos.x() - rect.right()) <= 6:
                     return "cue", i, "end"
                 return "cue", i, "body"
-        rects = self._music_rects()
-        if rects is not None:
-            block, first = rects
+        songs = [(k, self._music_rects(k)) for k in reversed(range(len(self._music)))]
+        songs = [(k, rects) for k, rects in songs if rects is not None]
+        sel = self._selection[1] if self._selection and self._selection[0] == "music" else None
+        songs.sort(key=lambda item: item[0] != sel)  # the selected (top-most) song first
+        for k, (block, first) in songs:  # handles win over the bodies of other songs
             if block.adjusted(-6, 0, 6, 0).contains(pos):
                 if abs(pos.x() - first.left()) <= self.EDGE:
-                    return "music", 0, "start"
+                    return "music", k, "start"
                 if abs(pos.x() - first.right()) <= self.EDGE:
-                    return "music", 0, "end"
-                if block.contains(pos):
-                    return "music", 0, "body"
+                    return "music", k, "end"
+        for k, (block, _first) in songs:
+            if block.contains(pos):
+                return "music", k, "body"
         return None
 
     # mouse -------------------------------------------------------------------
@@ -1178,11 +1223,11 @@ class TrackTimeline(QWidget):
                           "s0": s, "e0": e, "head": head}
             self.cue_selected.emit(i)
         else:
-            m = self._music
-            self._drag = {"kind": f"music_{part}", "x0": pos.x(), "pps": self._pps(),
+            m = self._music[i]
+            self._drag = {"kind": f"music_{part}", "row": i, "x0": pos.x(), "pps": self._pps(),
                           "s0": m["start"], "e0": m["end"], "o0": m["offset"],
                           "s": m["start"], "e": m["end"], "o": m["offset"], "head": head}
-            self.music_selected.emit()
+            self.music_selected.emit(i)
         self.update()
 
     def mouseDoubleClickEvent(self, event) -> None:
@@ -1278,7 +1323,8 @@ class TrackTimeline(QWidget):
     def _music_move(self, dt: float, free: bool) -> None:
         """Music drags: the handles choose the part of the song (in / out),
         the body moves when it comes in on the timeline."""
-        d, dur = self._drag, self._music["dur"] or 1e9
+        d = self._drag
+        dur = self._music[d["row"]]["dur"] or 1e9
         if d["kind"] == "music_start":
             d["s"] = round(min(max(0.0, d["s0"] + dt), d["e0"] - MIN_MUSIC), 2)
         elif d["kind"] == "music_end":
@@ -1356,7 +1402,7 @@ class TrackTimeline(QWidget):
         elif kind in ("trim_start", "trim_end"):
             self.clip_trimmed.emit(d["row"], d["s"], d["e"])
         elif kind.startswith("music_") and (d["s"], d["e"], d["o"]) != (d["s0"], d["e0"], d["o0"]):
-            self.music_changed.emit(d["s"], d["e"], d["o"])
+            self.music_changed.emit(d["row"], d["s"], d["e"], d["o"])
         elif kind.startswith("cue_") and (d["s"], d["e"]) != (d["s0"], d["e0"]):
             self.cue_changed.emit(d["row"], d["s"], d["e"])
         self.setCursor(QCursor(_HAND))
@@ -1380,10 +1426,7 @@ class StudioPage(QWidget):
         self.host = host
         self._clips: list[_MediaClip] = []
         self._cues: list[SubtitleCue] = []
-        self._music_info: dict | None = None
-        self._music_wave: list[float] = []
-        # the part of the song used (end None = to its end) and its start on the timeline
-        self._music_cut: tuple[float, float | None, float] = (0.0, None, 0.0)
+        self._songs: list[_Song] = []  # background music, in timeline order of adding
         self._sel: tuple[str, int] | None = None
         self._busy = False
         self._i18n: list[tuple[object, str, str]] = []
@@ -2242,38 +2285,26 @@ class StudioPage(QWidget):
         self.preview.set_pan_segment(self._sel[1] if pannable else None)
 
     def _build_music_inspector(self) -> QWidget:
-        w, lay = self._page()
+        """The selected song (part, start time, level, fades), then what
+        applies to all background music."""
+        inner, lay = self._page()
+        lay.setContentsMargins(0, 0, 4, 0)
+        lay.setSpacing(6)
         self.music_name = QLabel()
         self.music_name.setObjectName("info_name")
-        self.music_name.setWordWrap(True)
+        self.music_name.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         lay.addWidget(self.music_name)
         row = QHBoxLayout()
-        row.addWidget(self._btn("Change…", self._browse_music))
-        row.addWidget(self._btn("Remove", self._clear_music))
+        row.setSpacing(6)
+        row.addWidget(self._btn("Change…", self._change_song, "Replace this song"))
+        row.addWidget(self._btn("Remove", self._remove_song, "Remove this song"))
+        row.addWidget(self._btn("＋ Add song…", self._browse_music,
+                                "Add another song to the Music row"))
         lay.addLayout(row)
-        self.music_vol, mv = self._level(35)
-        self.orig_vol, ov = self._level(100)
-        self.music_vol.valueChanged.connect(lambda _v: self._record("music_vol"))
-        self.orig_vol.valueChanged.connect(lambda _v: self._record("orig_vol"))
-        lay.addWidget(self._label("Music volume:"))
-        lay.addLayout(mv)
-        lay.addWidget(self._label("Original audio:"))
-        lay.addLayout(ov)
-        self.music_loop = QCheckBox()
-        self.music_loop.setChecked(True)
-        self.music_loop.toggled.connect(
-            lambda _c: (self._refresh_track(), self._push_music(), self._record()))
-        self._tr(self.music_loop, "Loop music to fit the video")
-        self.music_fade = QCheckBox()
-        self.music_fade.setChecked(True)
-        self.music_fade.toggled.connect(lambda _c: self._record())
-        self._tr(self.music_fade, "Fade out at the end")
-        lay.addWidget(self.music_loop)
-        lay.addWidget(self.music_fade)
 
-        lay.addWidget(self._label("PART OF THE SONG", "field_cap"))
+        lay.addWidget(self._label("THIS SONG", "field_cap"))
         cut = QFormLayout()
-        cut.setSpacing(8)
+        cut.setSpacing(7)
         self.music_fields: dict[str, QLineEdit] = {}
         for key, label in (("start", "Song start:"), ("end", "Song end:"),
                            ("offset", "Comes in at:")):
@@ -2281,15 +2312,41 @@ class StudioPage(QWidget):
             f.editingFinished.connect(lambda k=key: self._music_typed(k))
             self.music_fields[key] = f
             cut.addRow(self._label(label), f)
+        self.music_vol, mv = self._level(35)
+        self.music_vol.valueChanged.connect(self._set_song_volume)
+        cut.addRow(self._label("Volume:"), mv)
+        self.song_fade = QDoubleSpinBox()
+        self.song_fade.setRange(0.0, 10.0)
+        self.song_fade.setSingleStep(0.5)
+        self.song_fade.setDecimals(1)
+        self.song_fade.setSuffix(" s")
+        self.song_fade.valueChanged.connect(self._set_song_fade)
+        cut.addRow(self._label("Fade in / out:"), self.song_fade)
         lay.addLayout(cut)
+
+        lay.addWidget(self._label("ALL MUSIC", "field_cap"))
+        self.orig_vol, ov = self._level(100)
+        self.orig_vol.valueChanged.connect(lambda _v: (self._push_music(), self._record("orig_vol")))
+        orow = QHBoxLayout()
+        orow.addWidget(self._label("Original audio:"))
+        orow.addLayout(ov, stretch=1)
+        lay.addLayout(orow)
+        self.music_loop = QCheckBox()
+        self.music_loop.setChecked(True)
+        self.music_loop.toggled.connect(
+            lambda _c: (self._refresh_track(), self._push_music(), self._record()))
+        self._tr(self.music_loop, "Loop the last song to the end of the video")
+        self.music_fade = QCheckBox()
+        self.music_fade.setChecked(True)
+        self.music_fade.toggled.connect(lambda _c: (self._push_music(), self._record()))
+        self._tr(self.music_fade, "Fade out at the end")
+        lay.addWidget(self.music_loop)
+        lay.addWidget(self.music_fade)
         lay.addWidget(self._label(
-            "Drag the handles on the music block to cut the song; drag the block to make "
-            "it start later.", "hint"))
+            "Drag a song's handles to cut it and the block to move it. Overlap two songs "
+            "and give them a fade to crossfade.", "hint"))
         lay.addStretch()
-        for k in ("music_vol", "orig_vol"):
-            getattr(self, k).valueChanged.connect(lambda _v: self._push_music())
-        self.music_fade.toggled.connect(lambda _c: self._push_music())
-        return w
+        return self._scroll(inner)
 
     def _level(self, value: int) -> tuple[QSlider, QHBoxLayout]:
         s = QSlider(Qt.Horizontal)
@@ -2299,6 +2356,7 @@ class StudioPage(QWidget):
         s.setCursor(QCursor(_HAND))
         lbl = QLabel(f"{value}%")
         lbl.setObjectName("level_value")
+        s.setProperty("value_label", lbl)
         lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         s.valueChanged.connect(lambda v: lbl.setText(f"{v}%"))
         row = QHBoxLayout()
@@ -2480,11 +2538,10 @@ class StudioPage(QWidget):
         self._show_inspector(self.INSP_CUE, "Subtitle")
         self.track.set_selection(self._sel)
 
-    def select_music(self) -> None:
-        if not self.music_path():
+    def select_music(self, k: int = 0) -> None:
+        if not 0 <= k < len(self._songs):
             return
-        self._sel = ("music", 0)
-        self.music_name.setText(Path(self.music_path()).name)
+        self._sel = ("music", k)
         self._fill_music_inspector()
         self._show_inspector(self.INSP_MUSIC, "Background music")
         self.track.set_selection(self._sel)
@@ -2551,12 +2608,13 @@ class StudioPage(QWidget):
 
     def _refresh_track(self) -> None:
         music = None
-        if self.music_path():
-            start, end, offset = self._music_span()
-            music = {"name": Path(self.music_path()).name,
-                     "dur": float((self._music_info or {}).get("duration") or 0),
-                     "loop": self.music_loop.isChecked(), "wave": self._music_wave,
-                     "start": start, "end": end, "offset": offset}
+        if self._songs:
+            last = len(self._songs) - 1
+            music = [{"name": Path(song.path).name, "dur": song.length, "wave": song.wave,
+                      "loop": k == last and self.music_loop.isChecked(),
+                      "start": song.span()[0], "end": song.span()[1],
+                      "offset": song.offset, "fade": song.fade}
+                     for k, song in enumerate(self._songs)]
         self.track.set_data(
             list(self._clips),
             [(c.start, c.end, c.text) for c in self._cues] if self.is_video() else [],
@@ -2674,7 +2732,7 @@ class StudioPage(QWidget):
             self._cues_changed()
             self._record()
         elif kind == "music":
-            self._clear_music()
+            self._remove_song()
 
     def clips(self) -> list[_MediaClip]:
         return list(self._clips)
@@ -2964,95 +3022,194 @@ class StudioPage(QWidget):
     # music ---------------------------------------------------------------------------
 
     def music_path(self) -> str:
-        return (self._music_info or {}).get("path", "")
+        """The selected song's file (else the first song's; "" if none)."""
+        song = self._cur_song() or (self._songs[0] if self._songs else None)
+        return song.path if song else ""
 
-    def _browse_music(self) -> None:
-        path = self.host.pick_file(
+    def songs(self) -> list[_Song]:
+        return list(self._songs)
+
+    def _cur_song(self) -> _Song | None:
+        if self._sel and self._sel[0] == "music" and 0 <= self._sel[1] < len(self._songs):
+            return self._songs[self._sel[1]]
+        return None
+
+    def _pick_song(self) -> str:
+        return self.host.pick_file(
             self.t("Choose background music"), ("Music", "Downloads"),
             "Audio (*.mp3 *.m4a *.wav *.flac *.ogg *.opus *.aac *.mp4);;All files (*)",
         )
+
+    def _browse_music(self) -> None:
+        path = self._pick_song()
+        if path:
+            self.add_song(path)
+
+    def _load_song(self, path: str) -> _Song | None:
+        if path not in self._music_media:
+            try:
+                info = probe_media(path, translate=self.host.t)
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.warning(self, self.t("Choose background music"), str(exc))
+                return None
+            self._music_media[path] = (info, waveform(path))
+        info, wave = self._music_media[path]
+        return _Song(path, info, wave)
+
+    def add_song(self, path: str) -> None:
+        """Add a song to the Music row, after the songs already there."""
+        song = self._load_song(path)
+        if song is None:
+            return
+        if self._songs:  # straight after the previous song's part
+            last = self._songs[-1]
+            start, end = last.span()
+            song.offset = round(min(last.offset + (end - start),
+                                    max(0.0, self.track.total() - MIN_MUSIC)), 2)
+        self._songs.append(song)
+        self._refresh_track()
+        self._push_music()
+        self.select_music(len(self._songs) - 1)
+        self._record()
+
+    def set_music(self, path: str) -> None:
+        """Use *path* as background music: the first song if there is none,
+        else it replaces the selected (or first) song, keeping its timing."""
+        if not self._songs:
+            self.add_song(path)
+            return
+        k = self._sel[1] if self._cur_song() is not None else 0
+        song = self._load_song(path)
+        if song is None:
+            return
+        old = self._songs[k]
+        song.offset, song.volume, song.fade = old.offset, old.volume, old.fade
+        self._songs[k] = song
+        self._refresh_track()
+        self._push_music()
+        self.select_music(k)
+        self._record()
+
+    def _change_song(self) -> None:
+        path = self._pick_song()
         if path:
             self.set_music(path)
 
-    def set_music(self, path: str) -> None:
-        try:
-            info = probe_media(path, translate=self.host.t)
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.warning(self, self.t("Choose background music"), str(exc))
+    def _remove_song(self) -> None:
+        if self._cur_song() is None:
             return
-        self._music_info = {**info, "path": path}
-        self._music_wave = waveform(path)
-        self._music_media[path] = (info, self._music_wave)
-        self._music_cut = (0.0, None, 0.0)
+        del self._songs[self._sel[1]]
+        self.deselect()
         self._refresh_track()
         self._push_music()
-        self.select_music()
         self._record()
 
-    def _music_span(self) -> tuple[float, float, float]:
-        """(song start, song end, offset) with the end filled in."""
-        start, end, offset = self._music_cut
-        dur = float((self._music_info or {}).get("duration") or 0)
-        return start, (end if end is not None else dur), offset
-
-    def _set_music_cut(self, start: float, end: float, offset: float, kind: str = "") -> None:
-        dur = float((self._music_info or {}).get("duration") or 0) or max(end, start + MIN_MUSIC)
-        start = min(max(0.0, start), max(0.0, dur - MIN_MUSIC))
-        end = min(max(end, start + MIN_MUSIC), dur)
-        self._music_cut = (round(start, 2), None if end >= dur - 0.05 else round(end, 2),
-                           round(max(0.0, offset), 2))
-        self._refresh_track()
-        self._push_music()
-        self._fill_music_inspector()
-        self._record(kind)
-
-    def _on_music_dragged(self, start: float, end: float, offset: float) -> None:
-        self._set_music_cut(start, end, offset)
-
-    def _music_typed(self, key: str) -> None:
-        value = parse_timecode(self.music_fields[key].text())
-        if value is None or not self.music_path():
-            self._fill_music_inspector()
-            return
-        start, end, offset = self._music_span()
-        span = {"start": start, "end": end, "offset": offset}
-        span[key] = value
-        self._set_music_cut(span["start"], span["end"], span["offset"])
-
-    def _fill_music_inspector(self) -> None:
-        if not self.music_path():
-            return
-        for key, value in zip(("start", "end", "offset"), self._music_span()):
-            if not self.music_fields[key].hasFocus():
-                self.music_fields[key].setText(_fmt_precise(value))
-
-    def _push_music(self) -> None:
-        """Hand the preview the music bed (and the clips' level under it)."""
-        if not self.music_path() or not self.is_video():
-            self.preview.set_music(None)
-        else:
-            start, end, offset = self._music_span()
-            self.preview.set_music(MusicBed(
-                self.music_path(), start, end, offset, loop=self.music_loop.isChecked(),
-                volume=self.music_vol.value() / 100, fade_out=self.music_fade.isChecked()))
-        for i, c in enumerate(self._clips):
-            self.preview.set_segment_volume(i, c.gain() * self._orig_level())
-
-    def _orig_level(self) -> float:
-        """The clips' own sound is turned down under the music (as rendered)."""
-        if self.music_path() and self.is_video():
-            return self.orig_vol.value() / 100
-        return 1.0
-
     def _clear_music(self) -> None:
-        self._music_info = None
-        self._music_wave = []
-        self._music_cut = (0.0, None, 0.0)
+        """Remove every song."""
+        self._songs = []
         if self._sel and self._sel[0] == "music":
             self.deselect()
         self._refresh_track()
         self._push_music()
         self._record()
+
+    def _set_song_cut(self, k: int, start: float, end: float, offset: float,
+                      kind: str = "") -> None:
+        song = self._songs[k]
+        dur = song.length or max(end, start + MIN_MUSIC)
+        start = min(max(0.0, start), max(0.0, dur - MIN_MUSIC))
+        end = min(max(end, start + MIN_MUSIC), dur)
+        song.start = round(start, 2)
+        song.end = None if end >= dur - 0.05 else round(end, 2)
+        song.offset = round(max(0.0, offset), 2)
+        self._refresh_track()
+        self._push_music()
+        self.select_music(k)
+        self._record(kind)
+
+    def _set_music_cut(self, start: float, end: float, offset: float, kind: str = "") -> None:
+        """The selected (or first) song's part and offset."""
+        k = self._sel[1] if self._cur_song() is not None else 0
+        if self._songs:
+            self._set_song_cut(k, start, end, offset, kind)
+
+    @property
+    def _music_cut(self) -> tuple[float, float | None, float]:
+        """(start, end or None, offset) of the selected (or first) song."""
+        song = self._cur_song() or (self._songs[0] if self._songs else None)
+        return (song.start, song.end, song.offset) if song else (0.0, None, 0.0)
+
+    def _on_music_dragged(self, k: int, start: float, end: float, offset: float) -> None:
+        if 0 <= k < len(self._songs):
+            self._set_song_cut(k, start, end, offset)
+
+    def _music_typed(self, key: str) -> None:
+        song = self._cur_song()
+        value = parse_timecode(self.music_fields[key].text())
+        if song is None or value is None:
+            self._fill_music_inspector()
+            return
+        start, end = song.span()
+        span = {"start": start, "end": end, "offset": song.offset}
+        span[key] = value
+        self._set_song_cut(self._sel[1], span["start"], span["end"], span["offset"])
+
+    def _set_song_volume(self, value: int) -> None:
+        song = self._cur_song()
+        if song is not None and song.volume != value:
+            song.volume = value
+            self._push_music()
+            self._record("song_volume")
+
+    def _set_song_fade(self, value: float) -> None:
+        song = self._cur_song()
+        if song is not None and song.fade != round(value, 2):
+            song.fade = round(value, 2)
+            self._refresh_track()
+            self._push_music()
+            self._record("song_fade")
+
+    def _fill_music_inspector(self) -> None:
+        song = self._cur_song()
+        if song is None:
+            return
+        self.music_name.setText(QFontMetricsF(self.music_name.font()).elidedText(
+            Path(song.path).name, Qt.ElideMiddle, max(120, self.insp.width() - 16)))
+        self.music_name.setToolTip(Path(song.path).name)
+        for key, value in zip(("start", "end", "offset"), (*song.span(), song.offset)):
+            if not self.music_fields[key].hasFocus():
+                self.music_fields[key].setText(_fmt_precise(value))
+        for w, v in ((self.music_vol, song.volume), (self.song_fade, song.fade)):
+            w.blockSignals(True)
+            w.setValue(v)
+            w.blockSignals(False)
+        self._sync_level_label(self.music_vol)
+
+    @staticmethod
+    def _sync_level_label(slider: QSlider) -> None:
+        lbl = slider.property("value_label")
+        if lbl is not None:
+            lbl.setText(f"{slider.value()}%")
+
+    def _music_beds(self) -> list[MusicBed]:
+        last = len(self._songs) - 1
+        return [MusicBed(song.path, *song.span(), song.offset,
+                         loop=k == last and self.music_loop.isChecked(),
+                         volume=song.volume / 100, fade_out=self.music_fade.isChecked(),
+                         fade=song.fade)
+                for k, song in enumerate(self._songs)]
+
+    def _push_music(self) -> None:
+        """Hand the preview the music (and the clips' level under it)."""
+        self.preview.set_music(self._music_beds() if self.is_video() else [])
+        for i, c in enumerate(self._clips):
+            self.preview.set_segment_volume(i, c.gain() * self._orig_level())
+
+    def _orig_level(self) -> float:
+        """The clips' own sound is turned down under the music (as rendered)."""
+        if self._songs and self.is_video():
+            return self.orig_vol.value() / 100
+        return 1.0
 
     # playhead editing ------------------------------------------------------------
 
@@ -3114,10 +3271,9 @@ class StudioPage(QWidget):
         return {
             "clips": [(c.path, c.edit()) for c in self._clips],
             "cues": [astuple(c) for c in self._cues],
-            "music": self.music_path(),
-            "music_opts": (self.music_vol.value(), self.orig_vol.value(),
-                           self.music_loop.isChecked(), self.music_fade.isChecked()),
-            "music_cut": self._music_cut,
+            "music": [song.edit() for song in self._songs],
+            "music_opts": (self.orig_vol.value(), self.music_loop.isChecked(),
+                           self.music_fade.isChecked()),
             "style": self._style_dict(),
         }
 
@@ -3171,20 +3327,17 @@ class StudioPage(QWidget):
             self._clips = [self._media[path].with_edit(edit)
                            for path, edit in state["clips"] if path in self._media]
             self._cues = [SubtitleCue(*row) for row in state["cues"]]
-            music = state["music"]
-            if music and music in self._music_media:
-                info, wave = self._music_media[music]
-                self._music_info, self._music_wave = {**info, "path": music}, wave
-            else:
-                self._music_info, self._music_wave = None, []
+            self._songs = []
+            for path, start, end, offset, volume, fade in state["music"]:
+                if path in self._music_media:
+                    info, wave = self._music_media[path]
+                    self._songs.append(_Song(path, info, wave, start, end, offset, volume, fade))
             kind, i = self._sel or ("", 0)
             if (kind == "clip" and i >= len(self._clips)) or (kind == "cue" and i >= len(self._cues)) \
-                    or (kind == "music" and not self.music_path()):
+                    or (kind == "music" and i >= len(self._songs)):
                 self._sel = None
-            self._music_cut = tuple(state.get("music_cut", (0.0, None, 0.0)))
-            vol, orig, loop, fade = state["music_opts"]
-            for w, v in ((self.music_vol, vol), (self.orig_vol, orig)):
-                w.setValue(v)
+            orig, loop, fade = state["music_opts"]
+            self.orig_vol.setValue(orig)
             self.music_loop.setChecked(loop)
             self.music_fade.setChecked(fade)
             self._apply_style_dict(state["style"])
@@ -3257,8 +3410,8 @@ class StudioPage(QWidget):
     def new_project(self) -> None:
         if self._busy or not self.maybe_save():
             return
-        self._load_state({"clips": [], "cues": [], "music": "",
-                          "music_opts": (35, 100, True, True),
+        self._load_state({"clips": [], "cues": [], "music": [],
+                          "music_opts": (100, True, True),
                           "style": self._style_dict()})
         self._project_path = ""
         self.name.clear()
@@ -3278,13 +3431,9 @@ class StudioPage(QWidget):
                     pass
             return out
 
-        music = None
-        if self.music_path():
-            start, end, offset = self._music_cut
-            music = {**ref(self.music_path()), "volume": self.music_vol.value(),
-                     "original_volume": self.orig_vol.value(),
-                     "loop": self.music_loop.isChecked(), "fade_out": self.music_fade.isChecked(),
-                     "start": start, "end": end, "offset": offset}
+        music = [{**ref(song.path), "start": song.start, "end": song.end,
+                  "offset": song.offset, "volume": song.volume, "fade": song.fade}
+                 for song in self._songs]
         return {
             "app": "VidGrab", "version": PROJECT_VERSION,
             "mode": "video" if self.is_video() else "audio",
@@ -3301,6 +3450,9 @@ class StudioPage(QWidget):
                       for c in self._clips],
             "subtitles": [asdict(c) for c in self._cues],
             "music": music,
+            "music_options": {"original_volume": self.orig_vol.value(),
+                              "loop_last": self.music_loop.isChecked(),
+                              "fade_out": self.music_fade.isChecked()},
             "style": self._style_dict(),
         }
 
@@ -3373,22 +3525,33 @@ class StudioPage(QWidget):
                     float(ref.get("pan_x", 0.5)), float(ref.get("pan_y", 0.5)),
                     min(2.0, max(0.0, float(ref.get("volume", 1.0)))),
                     bool(ref.get("muted", False)))))
-        music, opts, cut = "", (35, 100, True, True), (0.0, None, 0.0)
-        if data.get("music"):
-            m = data["music"]
-            music = find(m)
-            if music and music not in self._music_media:
+        songs: list[tuple] = []
+        raw = data.get("music") or []
+        if isinstance(raw, dict):  # 3.2 projects: one song, options on the song
+            raw = [raw]
+        opts = data.get("music_options") or {}
+        if raw and not opts:
+            opts = {"original_volume": raw[0].get("original_volume", 100),
+                    "loop_last": raw[0].get("loop", True), "fade_out": raw[0].get("fade_out", True)}
+        for m in raw:
+            if not isinstance(m, dict):
+                continue
+            found = find(m)
+            if not found:
+                continue
+            if found not in self._music_media:
                 try:
-                    info = probe_media(music, translate=self.host.t)
-                    self._music_media[music] = (info, waveform(music))
+                    info = probe_media(found, translate=self.host.t)
+                    self._music_media[found] = (info, waveform(found))
                 except Exception as exc:  # noqa: BLE001 - report and skip the file
-                    self.host.log(f"{Path(music).name}: {exc}")
-                    music = ""
-            opts = (int(m.get("volume", 35)), int(m.get("original_volume", 100)),
-                    bool(m.get("loop", True)), bool(m.get("fade_out", True)))
-            cut = (max(0.0, float(m.get("start") or 0.0)),
-                   float(m["end"]) if m.get("end") is not None else None,
-                   max(0.0, float(m.get("offset") or 0.0)))
+                    self.host.log(f"{Path(found).name}: {exc}")
+                    continue
+            songs.append((found, max(0.0, float(m.get("start") or 0.0)),
+                          float(m["end"]) if m.get("end") is not None else None,
+                          max(0.0, float(m.get("offset") or 0.0)),
+                          int(m.get("volume", 35)), max(0.0, float(m.get("fade") or 0.0))))
+        music_opts = (int(opts.get("original_volume", 100)), bool(opts.get("loop_last", True)),
+                      bool(opts.get("fade_out", True)))
         fields = {f for f in SubtitleCue.__dataclass_fields__}
         cues = [astuple(SubtitleCue(**{k: v for k, v in c.items() if k in fields}))
                 for c in data.get("subtitles", []) if isinstance(c, dict)]
@@ -3403,8 +3566,8 @@ class StudioPage(QWidget):
         self.name.setText(str(data.get("name", "")))
         if data.get("output_dir"):
             self.out_dir.setText(str(data["output_dir"]))
-        self._load_state({"clips": clips, "cues": cues, "music": music, "music_opts": opts,
-                          "music_cut": cut,
+        self._load_state({"clips": clips, "cues": cues, "music": songs,
+                          "music_opts": music_opts,
                           "style": {**self._style_dict(), **(data.get("style") or {})}})
         self._project_path = path
         self._reset_history()
@@ -3507,18 +3670,14 @@ class StudioPage(QWidget):
         name = self.name.text().strip() or self.name.placeholderText()
         name = "".join(ch for ch in name if ch not in '<>:"/\\|?*').strip() or "vidgrab"
         if self.is_video():
-            music = None
-            if self.music_path():
-                music = BackgroundMusic(
-                    path=self.music_path(),
-                    volume=self.music_vol.value() / 100,
-                    original_volume=self.orig_vol.value() / 100,
-                    loop=self.music_loop.isChecked(),
-                    fade_out=self.music_fade.isChecked(),
-                    start=self._music_cut[0],
-                    end=self._music_cut[1],
-                    offset=self._music_cut[2],
-                )
+            last = len(self._songs) - 1
+            music = [BackgroundMusic(
+                path=song.path, volume=song.volume / 100,
+                original_volume=self.orig_vol.value() / 100,
+                loop=k == last and self.music_loop.isChecked(),
+                fade_out=self.music_fade.isChecked(),
+                start=song.start, end=song.end, offset=song.offset, fade=song.fade,
+            ) for k, song in enumerate(self._songs)] or None
             self.render_requested.emit("compose_video", {
                 "clips": clips,
                 "output_file": folder / f"{name}.mp4",

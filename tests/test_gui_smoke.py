@@ -862,7 +862,7 @@ def test_music_cut_offset_and_preview_bed(qapp, tmp_path, monkeypatch) -> None:
         assert st.preview._segments[0].volume == 0.5
 
         # dragging the block's handles / body arrives here
-        st.track.music_changed.emit(10.0, 14.0, 2.0)
+        st.track.music_changed.emit(0, 10.0, 14.0, 2.0)
         bed = st.preview.music_bed()
         assert (bed.start, bed.end, bed.offset) == (10.0, 14.0, 2.0)
         assert bed.position(1.0) is None and bed.position(3.0) == 11.0
@@ -880,13 +880,13 @@ def test_music_cut_offset_and_preview_bed(qapp, tmp_path, monkeypatch) -> None:
         st.render_requested.connect(lambda task, kw: got.update(kw))
         monkeypatch.setattr(win, "_start_studio", lambda *_a: None)
         st.render()
-        m = got["music"]
+        m = got["music"][0]
         assert (m.start, m.end, m.offset, m.loop) == (10.0, 14.0, 2.0, False)
 
         proj = tmp_path / "p.vgproj"
         monkeypatch.setattr(win, "pick_save", lambda *_a: str(proj))
         st.save_project()
-        assert json.loads(proj.read_text(encoding="utf-8"))["music"]["start"] == 10.0
+        assert json.loads(proj.read_text(encoding="utf-8"))["music"][0]["start"] == 10.0
         st.new_project()
         assert st.preview.music_bed() is None
         st.open_project(str(proj))
@@ -900,5 +900,86 @@ def test_music_cut_offset_and_preview_bed(qapp, tmp_path, monkeypatch) -> None:
         y = first.center().y()
         assert tl._hit(QPointF(first.left() + 2, y)) == ("music", 0, "start")
         assert tl._hit(QPointF(first.right() - 2, y)) == ("music", 0, "end")
+    finally:
+        win.close()
+
+
+def test_several_background_songs(qapp, tmp_path, monkeypatch) -> None:
+    """Songs one after another (or overlapping with fades), each with its own
+    part, start time and level; only the last one loops."""
+    import json
+    import shutil
+    import subprocess
+
+    from vidgrab import app as appmod
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        pytest.skip("ffmpeg / ffprobe not on PATH")
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    clip = tmp_path / "c.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc=size=160x120:rate=10", "-t", "20", str(clip)], check=True)
+    songs = []
+    for name, freq in (("a.wav", 330), ("b.wav", 550)):
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                        f"sine=frequency={freq}", "-t", "12", str(tmp_path / name)], check=True)
+        songs.append(str(tmp_path / name))
+    win = appmod.VidGrabWindow()
+    try:
+        st = win._studio
+        st.preview.set_muted(True)
+        st.add_clips([str(clip)])
+        st.add_song(songs[0])
+        st._set_song_cut(0, 0.0, 8.0, 0.0)
+        st.add_song(songs[1])  # lands right after the first song's part
+        assert [s.offset for s in st.songs()] == [0.0, 8.0]
+        assert st._sel == ("music", 1)
+        st.music_vol.setValue(80)
+        st.song_fade.setValue(1.5)
+        assert (st.songs()[1].volume, st.songs()[1].fade) == (80, 1.5)
+        beds = st.preview.music_beds()
+        assert [b.loop for b in beds] == [False, True]  # only the last song loops
+        assert beds[0].position(9.0) is None and beds[1].position(9.0) == 1.0
+        assert beds[1].gain(8.75, 20.0) == pytest.approx(0.8 * 0.5)  # halfway into its fade
+
+        # the timeline shows one block per song; clicking selects that song
+        assert len(st.track._music) == 2
+        st.track.music_selected.emit(0)
+        assert st._sel == ("music", 0) and st.music_fields["end"].text() == "0:08.00"
+        st.track.music_changed.emit(1, 2.0, 12.0, 7.0)  # drag song 2 to overlap song 1
+        assert (st.songs()[1].start, st.songs()[1].offset) == (2.0, 7.0)
+        st.undo()
+        assert st.songs()[1].offset == 8.0
+
+        got = {}
+        st.render_requested.connect(lambda task, kw: got.update(kw))
+        monkeypatch.setattr(win, "_start_studio", lambda *_a: None)
+        st.render()
+        music = got["music"]
+        assert [(m.offset, m.loop, m.volume, m.fade) for m in music] == [
+            (0.0, False, 0.35, 0.0), (8.0, True, 0.8, 1.5)]
+
+        proj = tmp_path / "p.vgproj"
+        monkeypatch.setattr(win, "pick_save", lambda *_a: str(proj))
+        st.save_project()
+        data = json.loads(proj.read_text(encoding="utf-8"))
+        assert len(data["music"]) == 2 and data["music_options"]["loop_last"] is True
+        st.new_project()
+        st.open_project(str(proj))
+        assert [(s.offset, s.volume) for s in st.songs()] == [(0.0, 35), (8.0, 80)]
+
+        # a 3.2 project (one song, options on it) still opens
+        old = dict(data, music={**data["music"][0], "volume": 50, "original_volume": 40,
+                                "loop": False, "fade_out": False})
+        old.pop("music_options")
+        legacy = tmp_path / "old.vgproj"
+        legacy.write_text(json.dumps(old), encoding="utf-8")
+        st.open_project(str(legacy))
+        assert len(st.songs()) == 1 and st.songs()[0].volume == 50
+        assert st.orig_vol.value() == 40 and not st.music_loop.isChecked()
+
+        st.select_music(0)
+        st._delete_selected()
+        assert st.songs() == []
     finally:
         win.close()

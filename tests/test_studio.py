@@ -342,3 +342,33 @@ def test_compose_video_music_comes_in_at_offset(tmp_path: Path) -> None:
     assert abs(probe_media(out)["duration"] - 6.0) < 0.3
     assert _peak_db(out, 0.2, 1.5) < -60  # before the offset: silence
     assert _peak_db(out, 2.5, 1.5) > -20  # the cut-in part of the song (the tone)
+
+
+@requires_ffmpeg
+def test_compose_video_two_songs_in_sequence(tmp_path: Path) -> None:
+    video = _make(tmp_path / "v.mp4", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25",
+                  "-t", "6")
+    low = _make(tmp_path / "a.wav", "-f", "lavfi", "-i", "sine=frequency=300", "-t", "10")
+    high = _make(tmp_path / "b.wav", "-f", "lavfi", "-i", "sine=frequency=3000", "-t", "10")
+    out = compose_video(
+        [Clip(str(video))], tmp_path / "o.mp4",
+        music=[BackgroundMusic(str(low), volume=1.0, end=3.0, loop=False, fade_out=False),
+               BackgroundMusic(str(high), volume=1.0, offset=3.0, fade_out=False)])
+    assert abs(probe_media(out)["duration"] - 6.0) < 0.3
+
+    def dominant(start: float) -> str:
+        """Which song is playing: compare energy below / above 1 kHz."""
+        lo = _peak_db_filtered(out, start, "lowpass=f=1000")
+        hi = _peak_db_filtered(out, start, "highpass=f=1000")
+        return "low" if lo > hi else "high"
+
+    assert dominant(1.0) == "low" and dominant(4.5) == "high"
+
+
+def _peak_db_filtered(path: Path, start: float, filt: str) -> float:
+    proc = subprocess.run(
+        ["ffmpeg", "-v", "info", "-ss", str(start), "-t", "1", "-i", str(path),
+         "-af", f"{filt},volumedetect", "-vn", "-f", "null", "-"],
+        capture_output=True, text=True, check=True)
+    line = next(x for x in proc.stderr.splitlines() if "max_volume" in x)
+    return float(line.split("max_volume:")[1].split("dB")[0])

@@ -768,9 +768,11 @@ def test_precise_trimming(qapp, tmp_path, monkeypatch) -> None:
         pps = tl._pps()
         assert abs((20.04 - tl._drag["e"]) - 10 / pps) < 0.02
         tl._trim_move(tl.width() + 80, Qt.KeyboardModifier.NoModifier)  # past the edge
+        assert tl._edge_timer.isActive()  # keeps extending while held there
         before = tl._drag["e"]
-        wait(400)
-        assert tl._drag["e"] > before + 1  # still extending while held there
+        for _ in range(15):  # step the timer by hand: CI machines tick unevenly
+            tl._edge_tick()
+        assert tl._drag["e"] > before + 1
         assert tl._x(tl._drag["offsets"][0] - tl._drag["s0"] + tl._drag["e"]) <= tl.width()
         QTest.mouseRelease(tl, Qt.LeftButton, Qt.NoModifier, QPoint(tl.width() + 80, y))
         assert st.clips()[0].span()[1] > before + 1

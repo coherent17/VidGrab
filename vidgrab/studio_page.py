@@ -511,6 +511,7 @@ class TrackTimeline(QWidget):
 
     HEADER_W, RULER_H, GAP = 168, 24, 5
     CLIP_H, SUBS_H, MUSIC_H = 46, 30, 36
+    LANE_H = 26  # one lane of overlapping subtitle lines
     EDGE = 10  # px around a block edge that grabs its trim handle
     HEADROOM = 1.12  # spare width on the right so clips can be lengthened
     MAX_ZOOM = 200.0
@@ -699,7 +700,8 @@ class TrackTimeline(QWidget):
         rows = [("clip", i, self.CLIP_H) for i in range(len(self._clips))] or \
             [("empty", 0, self.CLIP_H)]
         if self._show_subs:
-            rows.append(("subs", 0, self.SUBS_H))
+            lanes = max(1, max(self._cue_lanes(), default=0) + 1)
+            rows.append(("subs", 0, self.SUBS_H + (lanes - 1) * self.LANE_H))
         if self._show_music:
             rows.append(("music", 0, self.MUSIC_H))
         return rows
@@ -756,12 +758,32 @@ class TrackTimeline(QWidget):
         left = self._x(offs[i]) - s0 * self._pps()
         return QRectF(left, row.top(), clip.length * self._pps(), row.height())
 
+    def _cue_lanes(self) -> list[int]:
+        """A lane per line so that lines overlapping in time sit one under
+        another (first free lane, in start order). Frozen while dragging."""
+        d = self._drag or {}
+        if d.get("kind", "").startswith("cue_") and "lanes" in d:
+            return d["lanes"]
+        lanes = [0] * len(self._cues)
+        ends: list[float] = []  # per lane: when its last line ends
+        for k in sorted(range(len(self._cues)), key=lambda k: self._cues[k][0]):
+            s, e, _t = self._cues[k]
+            lane = next((n for n, end in enumerate(ends) if end <= s + 1e-6), len(ends))
+            if lane == len(ends):
+                ends.append(e)
+            else:
+                ends[lane] = e
+            lanes[k] = lane
+        return lanes
+
     def _cue_rects(self) -> list[QRectF]:
         r = self._row_rect("subs")
         if r is None:
             return []
-        return [QRectF(self._x(s), r.top() + 3, max(4.0, (e - s) * self._pps()), r.height() - 6)
-                for s, e, _t in self._cues]
+        lanes = self._cue_lanes()
+        return [QRectF(self._x(s), r.top() + 3 + lanes[k] * self.LANE_H,
+                       max(4.0, (e - s) * self._pps()), self.SUBS_H - 6)
+                for k, (s, e, _t) in enumerate(self._cues)]
 
     # painting ------------------------------------------------------------
 
@@ -1221,6 +1243,7 @@ class TrackTimeline(QWidget):
             s, e, _txt = self._cues[i]
             self._drag = {"kind": f"cue_{part}", "row": i, "x0": pos.x(), "s": s, "e": e,
                           "s0": s, "e0": e, "head": head}
+            self._drag["lanes"] = self._cue_lanes()  # lines keep their lane while dragging
             self.cue_selected.emit(i)
         else:
             m = self._music[i]

@@ -983,3 +983,24 @@ def test_several_background_songs(qapp, tmp_path, monkeypatch) -> None:
         assert st.songs() == []
     finally:
         win.close()
+
+
+def test_overlapping_subtitles_stack_into_lanes(qapp) -> None:
+    from PySide6.QtCore import QPointF
+
+    from vidgrab.studio_page import TrackTimeline
+
+    tl = TrackTimeline()
+    tl.resize(900, 300)
+    tl.set_data([], [(0.0, 4.0, "a"), (1.0, 3.0, "b"), (4.0, 6.0, "c"), (2.0, 5.0, "d")], None)
+    assert tl._cue_lanes() == [0, 1, 0, 2]  # c reuses lane 0 once a has ended
+    one = TrackTimeline()
+    one.set_data([], [(0.0, 1.0, "x")], None)
+    assert tl.height() - one.height() == 2 * tl.LANE_H  # the row grows for 3 lanes
+    rects = tl._cue_rects()
+    assert rects[1].top() > rects[0].top() and rects[2].top() == rects[0].top()
+    # every line can be picked, even where they overlap in time
+    assert tl._hit(QPointF(rects[3].center().x(), rects[3].center().y()))[:2] == ("cue", 3)
+    assert tl._hit(QPointF(rects[1].center().x(), rects[1].center().y()))[:2] == ("cue", 1)
+    tl.close()
+    one.close()

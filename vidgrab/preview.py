@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 from vidgrab.studio import (
+    ANIM_IN,
     SUBTITLE_FONT_NAME,
     SUBTITLE_MARGIN,
     ImageOverlay,
@@ -43,7 +44,9 @@ from vidgrab.studio import (
     SubtitleStyle,
     box_padding,
     color_hex,
+    cue_style,
     subtitle_scale,
+    typewriter_time,
 )
 
 try:
@@ -69,6 +72,18 @@ class Segment:
     pan_x: float = 0.5
     pan_y: float = 0.5
     volume: float = 1.0  # 0 = muted
+    speed: float = 1.0  # the source plays this many times as fast
+
+    def source_at(self, t: float) -> float:
+        """Source time shown at montage time *t*."""
+        return self.start + (t - self.offset) * self.speed
+
+    def montage_at(self, local: float) -> float:
+        """Montage time of source time *local*."""
+        return self.offset + (local - self.start) / self.speed
+
+    def source_end(self) -> float:
+        return self.start + self.duration * self.speed
 
 
 @dataclass
@@ -217,6 +232,9 @@ class VideoCanvas(QWidget):
         self._blend: tuple | None = None
         self._images: list[tuple[int, ImageOverlay]] = []  # the ones showing now
         self._selected_image: int | None = None
+        self._guides = False  # always show the safe area + centre cross
+        # lines a dragged item has snapped to: ("x" | "y", fraction of the frame)
+        self._snapped: list[tuple[str, float]] = []
         self._pictures: dict[str, QImage] = {}  # loaded once per file
         # row, box (unrotated), its rotation, resize grip, rotate knob (unrotated frame)
         self._img_hits: list[tuple[int, QRectF, float, QRectF, QRectF]] = []
@@ -258,6 +276,54 @@ class VideoCanvas(QWidget):
     def set_images(self, images: list[tuple[int, ImageOverlay]], selected: int | None) -> None:
         self._images, self._selected_image = images, selected
         self.update()
+
+    SAFE = 0.05  # title-safe margin, a fraction of the frame on each side
+    SNAP_PX = 8
+
+    def set_guides(self, on: bool) -> None:
+        self._guides = on
+        self.update()
+
+    def _snap_axis(self, value: float, size: float, extent: float, targets: list[float],
+                   axis: str, free: bool) -> float:
+        """Snap a centre *value* (fraction) whose item is *size* (fraction) wide:
+        its centre to the middle, its edges to the safe margins."""
+        if free:
+            return value
+        tol = self.SNAP_PX / max(1.0, extent)
+        best = None
+        for target in targets:
+            for edge in (0.0, -size / 2, size / 2):  # centre, then the item's edges
+                if edge and target == 0.5:
+                    continue
+                d = target - (value + edge)
+                if abs(d) <= tol and (best is None or abs(d) < abs(best[0])):
+                    best = (d, target)
+        if best is None:
+            return value
+        self._snapped.append((axis, best[1]))
+        return value + best[0]
+
+    def _paint_guides(self, p: QPainter, rect: QRectF) -> None:
+        accent = QColor(self._colors["accent"])
+        p.save()
+        if self._guides:
+            p.setPen(QPen(QColor(255, 255, 255, 90), 1, Qt.DashLine))
+            p.setBrush(Qt.NoBrush)
+            m = self.SAFE
+            p.drawRect(QRectF(rect.x() + rect.width() * m, rect.y() + rect.height() * m,
+                              rect.width() * (1 - 2 * m), rect.height() * (1 - 2 * m)))
+            p.drawLine(QPointF(rect.center().x(), rect.top()), QPointF(rect.center().x(), rect.bottom()))
+            p.drawLine(QPointF(rect.left(), rect.center().y()), QPointF(rect.right(), rect.center().y()))
+        p.setPen(QPen(accent, 1.5))
+        for axis, f in self._snapped:
+            if axis == "x":
+                x = rect.x() + f * rect.width()
+                p.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
+            else:
+                y = rect.y() + f * rect.height()
+                p.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
+        p.restore()
 
     def picture(self, path: str) -> QImage:
         img = self._pictures.get(path)
@@ -431,13 +497,14 @@ class VideoCanvas(QWidget):
         cw, ch = aw * scale, ah * scale
         return QRectF((w - cw) / 2, (h - ch) / 2, cw, ch)
 
-    def _font(self, rect: QRectF) -> QFont:
+    def _font(self, rect: QRectF, style: SubtitleStyle | None = None) -> QFont:
         # libass treats Fontsize as the font's full line height (ascent +
         # descent), Qt's pixel size as its em height. CJK fonts are ~1.45 em
         # tall, so convert or the preview draws text far larger than the render.
-        target = self._style.size * subtitle_scale(int(rect.height()))
-        f = QFont(self._style.font or SUBTITLE_FONT_NAME)
-        f.setBold(self._style.bold)
+        style = style or self._style
+        target = style.size * subtitle_scale(int(rect.height()))
+        f = QFont(style.font or SUBTITLE_FONT_NAME)
+        f.setBold(style.bold)
         f.setPixelSize(100)
         fm = QFontMetricsF(f)
         ratio = (fm.ascent() + fm.descent()) / 100 or 1.0
@@ -502,6 +569,8 @@ class VideoCanvas(QWidget):
         self._hits = []
         if self._cues:
             self._paint_cues(p, rect)
+        if self._guides or self._snapped:
+            self._paint_guides(p, rect)
         if self._badge:
             f = QFont(self.font())
             f.setPixelSize(12)
@@ -518,48 +587,97 @@ class VideoCanvas(QWidget):
         p.end()
 
     def _paint_cues(self, p: QPainter, rect: QRectF) -> None:
-        font = self._font(rect)
-        fm = QFontMetricsF(font)
+        """Each line in its own look, with its entrance animation — the same
+        rules the ASS file gives libass (studio.format_ass)."""
         k = subtitle_scale(int(rect.height()))
-        fill = QColor(color_hex(self._style.color))
-        bg = None
-        if self._style.background:
-            bg = QColor(color_hex(self._style.background, "#000000"))
-            bg.setAlphaF(min(max(self._style.bg_opacity, 0.0), 1.0))
-            outline = 0.0
-        else:
-            outline = max(1.0, 2 * k) if self._style.outline else 0.0
-        pad = box_padding(self._style.size * k)
         p.save()
         p.setClipRect(rect)
         fade = max(0.0, self._style.fade)
         for row, cue in self._cues:
-            if self._drag is not None and self._drag[0] == row and self._drag_pos:
-                cue = SubtitleCue(cue.start, cue.end, cue.text, *self._drag_pos, anchor=5)
+            dragging = self._drag is not None and self._drag[0] == row and self._drag_pos
+            if dragging:
+                cue = SubtitleCue(cue.start, cue.end, cue.text, *self._drag_pos, anchor=5,
+                                  look=cue.look, animation=cue.animation)
+            style = cue_style(cue, self._style)
+            font = self._font(rect, style)
+            fm = QFontMetricsF(font)
+            fill = QColor(color_hex(style.color))
+            bg = None
+            if style.background:
+                bg = QColor(color_hex(style.background, "#000000"))
+                bg.setAlphaF(min(max(style.bg_opacity, 0.0), 1.0))
+                outline = 0.0
+            else:
+                outline = max(1.0, 2 * k) if style.outline else 0.0
+            pad = box_padding(style.size * k)
             lines = cue.text.split("\n")
             line_h = fm.height()
             text_h = line_h * len(lines)
             text_w = max(fm.horizontalAdvance(line) for line in lines)
             box, align = self._cue_box(cue, rect, text_w, text_h)
+            hit_box = QRectF(box)
+            el = self._time - cue.start  # seconds since the line came on
+            anim = "none" if self._drag is not None else cue.animation
             opacity = 1.0
             if fade > 0 and self._drag is None:
                 f = min(fade, (cue.end - cue.start) / 2) or 1.0
                 opacity = min(1.0, max(0.0, min(self._time - cue.start, cue.end - self._time) / f))
+            p.save()
+            if anim == "pop":  # grows from 40 % around its anchor point
+                grow = min(1.0, max(0.0, el / ANIM_IN["pop"]))
+                scale = 0.4 + 0.6 * grow
+                anchor = cue.anchor if cue.x is not None and 1 <= cue.anchor <= 9 else \
+                    (8 if self._style.position == "top" else 2)
+                col, rrow = (anchor - 1) % 3, (anchor - 1) // 3
+                ox = (box.left(), box.center().x(), box.right())[col]
+                oy = (box.bottom(), box.center().y(), box.top())[rrow]
+                p.translate(ox, oy)
+                p.scale(scale, scale)
+                p.translate(-ox, -oy)
+            elif anim == "slide":  # rises 5 % of the frame into place
+                rise = rect.height() * 0.05 * (1 - min(1.0, max(0.0, el / ANIM_IN["slide"])))
+                box.translate(0, rise)
+                if fade <= 0:
+                    opacity *= min(1.0, max(0.0, el / (ANIM_IN["slide"] * 0.7)))
+            # typewriter: how many characters are out; karaoke: how many are sung
+            chars = sum(len(line) for line in lines)
+            shown = chars
+            sung = None
+            if anim == "typewriter":
+                step = typewriter_time(cue.end - cue.start) / max(1, chars)
+                shown = min(chars, int(max(0.0, el) / step) + 1) if el >= 0 else 0
+            elif anim == "karaoke":
+                sweep = max(0.01, (cue.end - cue.start) * 0.9)
+                sung = int(chars * min(1.0, max(0.0, el / sweep)))
+                unsung = QColor("#AAAAAA") if fill.name().upper() == "#FFFFFF" else QColor("#FFFFFF")
             p.setOpacity(opacity)
-            path = QPainterPath()
+            path, sung_path = QPainterPath(), QPainterPath()
+            used = 0
             for i, line in enumerate(lines):
                 lw = fm.horizontalAdvance(line)
                 lx = box.left() + (0.0, (text_w - lw) / 2, text_w - lw)[align + 1]
                 top = box.top() + i * line_h
-                if bg is not None:  # one box per line, like libass
-                    p.fillRect(QRectF(lx - pad, top - pad / 2, lw + 2 * pad, line_h + pad), bg)
-                path.addText(QPointF(lx, top + fm.ascent()), font, line)
+                visible = line[:max(0, shown - used)]
+                if visible and bg is not None:  # one box per line, like libass
+                    vw = fm.horizontalAdvance(visible)
+                    p.fillRect(QRectF(lx - pad, top - pad / 2, vw + 2 * pad, line_h + pad), bg)
+                if visible:
+                    if sung is None:
+                        path.addText(QPointF(lx, top + fm.ascent()), font, visible)
+                    else:  # sung part in the line's colour, the rest light
+                        n = max(0, min(len(visible), sung - used))
+                        sung_path.addText(QPointF(lx, top + fm.ascent()), font, visible[:n])
+                        path.addText(QPointF(lx + fm.horizontalAdvance(visible[:n]),
+                                             top + fm.ascent()), font, visible[n:])
+                used += len(line)
             if outline:
-                p.strokePath(path, QPen(QColor("#000000"), outline * 2, Qt.SolidLine,
-                                        Qt.RoundCap, Qt.RoundJoin))
-            p.fillPath(path, fill)
-            p.setOpacity(1.0)
-            hit = box.adjusted(-8, -6, 8, 6)
+                pen = QPen(QColor("#000000"), outline * 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+                p.strokePath(path, pen)
+                p.strokePath(sung_path, pen)
+            p.fillPath(path, unsung if sung is not None else fill)
+            p.fillPath(sung_path, fill)
+            p.restore()
+            hit = hit_box.adjusted(-8, -6, 8, 6)
             if row == self._selected:
                 pen = QPen(QColor(self._colors["accent"]), 1.5, Qt.DashLine)
                 p.setPen(pen)
@@ -609,6 +727,14 @@ class VideoCanvas(QWidget):
             if part == "move":
                 x = min(max(x0 + delta.x() / rect.width(), 0.0), 1.0)
                 y = min(max(y0 + delta.y() / rect.height(), 0.0), 1.0)
+                img = next(i for r, i in self._images if r == row)
+                box = self._image_box(img, rect)
+                free = bool(event.modifiers() & Qt.AltModifier) or r0 % 90 != 0
+                self._snapped = []
+                targets = [self.SAFE, 0.5, 1 - self.SAFE]
+                x = self._snap_axis(x, box.width() / rect.width(), rect.width(), targets, "x", free)
+                y = self._snap_axis(y, box.height() / rect.height(), rect.height(), targets, "y",
+                                    free)
                 self._img_live = (x, y, w0, r0)
             elif part == "size":  # the corner: grow / shrink around the centre
                 img = next(i for r, i in self._images if r == row)
@@ -657,6 +783,15 @@ class VideoCanvas(QWidget):
         center = event.position() - self._drag[1]
         x = min(max((center.x() - rect.x()) / rect.width(), 0.0), 1.0)
         y = min(max((center.y() - rect.y()) / rect.height(), 0.0), 1.0)
+        # snap the line's centre to the middle, its edges to the safe margins
+        hit = next((r for row, r in self._hits if row == self._drag[0]), None)
+        w = (hit.width() - 16) / rect.width() if hit is not None else 0.0
+        h = (hit.height() - 12) / rect.height() if hit is not None else 0.0
+        free = bool(event.modifiers() & Qt.AltModifier)
+        self._snapped = []
+        targets = [self.SAFE, 0.5, 1 - self.SAFE]
+        x = self._snap_axis(x, w, rect.width(), targets, "x", free)
+        y = self._snap_axis(y, h, rect.height(), targets, "y", free)
         self._drag_pos = (x, y)
         self.update()
 
@@ -665,6 +800,7 @@ class VideoCanvas(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event) -> None:
+        self._snapped = []
         if self._img_drag is not None:
             row, live = self._img_drag[0], self._img_live
             self._img_drag = self._img_live = None
@@ -768,6 +904,12 @@ class StudioPreview(QWidget):
         row.addWidget(self.play_btn)
         row.addWidget(self.time_lbl)
         row.addStretch()
+        self.guides_btn = QPushButton()
+        self.guides_btn.setObjectName("secondary")
+        self.guides_btn.setCheckable(True)
+        self.guides_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        self.guides_btn.toggled.connect(self.canvas.set_guides)
+        row.addWidget(self.guides_btn)
         lay.addLayout(row)
 
         self.player = None
@@ -814,8 +956,11 @@ class StudioPreview(QWidget):
             and self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
         )
 
-    def set_texts(self, *, empty: str, audio: str) -> None:
+    def set_texts(self, *, empty: str, audio: str, guides: str = "Guides",
+                  guides_tip: str = "") -> None:
         self._texts = {"empty": empty, "audio": audio}
+        self.guides_btn.setText(guides)
+        self.guides_btn.setToolTip(guides_tip)
         self._update_placeholder()
 
     def set_colors(self, palette: dict[str, str]) -> None:
@@ -970,7 +1115,7 @@ class StudioPreview(QWidget):
                 idx = i
                 break
         seg = self._segments[idx]
-        self._show_segment(idx, seg.start + (seconds - seg.offset), play=self.is_playing())
+        self._show_segment(idx, seg.source_at(seconds), play=self.is_playing())
 
     def toggle_play(self) -> None:
         if self.player is None or not self._segments:
@@ -1005,7 +1150,9 @@ class StudioPreview(QWidget):
         self._refresh_framing()
         if self.player is not None:
             self._audio.setVolume(min(1.0, max(0.0, seg.volume)))
-        self._set_pos(seg.offset + (local - seg.start))
+            if self.player.playbackRate() != seg.speed:
+                self.player.setPlaybackRate(seg.speed)
+        self._set_pos(seg.montage_at(local))
         if not seg.has_video:
             self.canvas.set_frame(None)
         self._update_placeholder()
@@ -1099,7 +1246,7 @@ class StudioPreview(QWidget):
                              and 0 < (m.at - m.duration / 2) - t < 1.5), None)
             if upcoming is not None:  # preload the clip that is about to come in
                 seg = self._segments[upcoming.incoming]
-                self._aux_to(seg, seg.start - upcoming.duration / 2, play=False)
+                self._aux_to(seg, seg.start - upcoming.duration / 2 * seg.speed, play=False)
             return
         prog = mark.progress(t)
         out_seg, in_seg = self._segments[mark.incoming - 1], self._segments[mark.incoming]
@@ -1109,7 +1256,9 @@ class StudioPreview(QWidget):
             self.canvas.clear_blend()
             return
         # the other clip at this moment of the montage (its tail or its head)
-        self._aux_to(other, other.start + (t - other.offset), play=self.is_playing())
+        self._aux_to(other, other.source_at(t), play=self.is_playing())
+        if self.aux_player.playbackRate() != other.speed:
+            self.aux_player.setPlaybackRate(other.speed)
         if out_seg.path == in_seg.path:  # one file, two parts: tell them apart by player
             main_img = self._main_img
             aux_img = self._aux_img if self._aux_pending is None else None
@@ -1235,7 +1384,7 @@ class StudioPreview(QWidget):
                     or self._seek_misses > 30:
                 self._seek_target = None  # playing from there (or give up and follow)
             elif abs(local - self._seek_target) < 0.5:
-                self._set_pos(seg.offset + max(0.0, local - seg.start))
+                self._set_pos(max(seg.offset, seg.montage_at(local)))
                 return
             else:
                 # still somewhere else: the seek was dropped, ask again now and
@@ -1244,11 +1393,11 @@ class StudioPreview(QWidget):
                 if self._seek_misses % 3 == 0:
                     self.player.setPosition(int(self._seek_target * 1000))
                 return
-        if local >= seg.start + seg.duration:
+        if local >= seg.source_end():
             if self.is_playing():
                 self._advance()
             return
-        self._set_pos(seg.offset + max(0.0, local - seg.start))
+        self._set_pos(max(seg.offset, seg.montage_at(local)))
 
     def _advance(self) -> None:
         """Clip finished: continue with the next one, or park at the end."""

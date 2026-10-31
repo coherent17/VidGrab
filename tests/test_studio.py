@@ -438,3 +438,93 @@ def test_compose_video_rotated_image(tmp_path: Path) -> None:
 
     # a horizontal bar turned 90 degrees is vertical: red above the centre, not beside it
     assert red_at(158, 70) > 150 and red_at(60, 158) < 60
+
+
+def test_format_ass_per_line_look_and_animations() -> None:
+    style = SubtitleStyle(size=24, color="#FFFFFF", background="#000000")
+    cues = [SubtitleCue(0, 2, "same"), SubtitleCue(2, 4, "red", look={"color": "#FF0000"}),
+            SubtitleCue(4, 6, "again red", look={"color": "#FF0000"}),
+            SubtitleCue(6, 8, "pop", animation="pop"), SubtitleCue(8, 10, "ab", animation="typewriter"),
+            SubtitleCue(10, 12, "up", animation="slide"), SubtitleCue(12, 14, "k", animation="karaoke")]
+    text = format_ass(cues, 1280, 720, style)
+    styles = [ln for ln in text.splitlines() if ln.startswith("Style: ")]
+    assert [ln.split(",")[0] for ln in styles] == ["Style: Default", "Style: Look1"]  # one per look
+    assert "&H000000FF" in styles[1].split(",")[3]  # red, as ASS BGR
+    dialogue = [ln for ln in text.splitlines() if ln.startswith("Dialogue")]
+    events = {key: next(ln for ln in dialogue if ln.endswith(key))
+              for key in ("same", "red", "again red", "pop", "up")}
+    assert ",Look1," in events["red"] and ",Look1," in events["again red"] and ",Default," in events["same"]
+    assert "\\fscx40\\fscy40\\t(0,250,\\fscx100\\fscy100)" in events["pop"]
+    tw = next(ln for ln in text.splitlines() if "Dialogue" in ln and "\\alpha&HFF&" in ln)
+    assert tw.count("\\alpha&HFF&") == 2  # one reveal per character
+    # revealed back to the box's own see-through alpha, not \alpha&H00& (an opaque box)
+    assert "\\alpha&H00&" not in tw and tw.count("\\3a&H66&") == 2
+    assert "\\move(640,686,640,650,0,300)" in events["up"]  # rises 36 px into its usual place
+    assert "{\\kf" in next(ln for ln in text.splitlines() if "\\kf" in ln)
+
+
+def _text_pixels(path: Path, t: float, level: int = 150) -> tuple[int, float, int]:
+    """(bright pixels, their mean row, how many are yellow) in one frame."""
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-ss", f"{t}", "-i", str(path), "-frames:v", "1",
+         "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+    w, h = 320, 180
+    count, rows, yellow = 0, 0, 0
+    for i in range(0, w * h * 3, 3):
+        r, g, b = raw[i], raw[i + 1], raw[i + 2]
+        if r > level and g > level:
+            count += 1
+            rows += (i // 3) // w
+            if b < 100:
+                yellow += 1
+    return count, rows / max(1, count), yellow
+
+
+@requires_ffmpeg
+def test_compose_video_text_animations(tmp_path: Path) -> None:
+    video = _make(tmp_path / "v.mp4", "-f", "lavfi", "-i", "color=c=black:s=320x180:r=25", "-t", "8")
+    style = SubtitleStyle(size=40, color="#FFFFFF", outline=False)
+    out = compose_video([Clip(str(video))], tmp_path / "o.mp4", subtitle_style=style, subtitles=[
+        SubtitleCue(0.0, 2.0, "POP", animation="pop"),
+        SubtitleCue(2.0, 4.0, "WRITE", animation="typewriter"),
+        SubtitleCue(4.0, 6.0, "UP", animation="slide"),
+        SubtitleCue(6.0, 8.0, "SING", look={"color": "#FFE500"}, animation="karaoke"),
+    ])
+    pop_early, pop_late = _text_pixels(out, 0.05)[0], _text_pixels(out, 1.0)[0]
+    assert pop_early < pop_late * 0.6  # still scaling up
+    tw = [_text_pixels(out, 2.0 + d)[0] for d in (0.15, 0.6, 1.5)]
+    assert tw[0] < tw[1] < tw[2]  # letters appear one after another
+    slide_early, slide_late = _text_pixels(out, 4.12, 40)[1], _text_pixels(out, 5.0, 40)[1]
+    assert slide_early > slide_late  # comes up from lower down
+    k_early, k_late = _text_pixels(out, 6.2)[2], _text_pixels(out, 7.6)[2]
+    assert k_early < k_late  # the yellow (this line's own colour) sweeps across
+
+
+def test_speed_in_commands() -> None:
+    from vidgrab.studio import _atempo
+
+    assert _atempo(2.0) == "atempo=2" and _atempo(0.25) == "atempo=0.5,atempo=0.5"
+    assert _atempo(4.0) == "atempo=2,atempo=2" and _atempo(1.5) == "atempo=1.5"
+    fast, slow = _clip("a.mp4", 4), _clip("b.mp4", 2)
+    fast.speed, slow.speed = 2.0, 0.5
+    cmd, total = build_video_command("ffmpeg", [fast, slow], Path("o.mp4"))
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    assert total == 4 / 2 + 2 / 0.5  # 2 s + 4 s in the output
+    assert "setsar=1,setpts=(PTS-STARTPTS)/2,fps=30" in graph
+    assert "atempo=2[a0]" in graph and "atempo=0.5[a1]" in graph
+
+
+@requires_ffmpeg
+def test_compose_video_speed_and_export_formats(tmp_path: Path) -> None:
+    a = _make(tmp_path / "a.mp4", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25",
+              "-f", "lavfi", "-i", "sine=frequency=440", "-t", "4", "-shortest")
+    out = compose_video([Clip(str(a), speed=2.0), Clip(str(a), "0", "1", speed=0.25)],
+                        tmp_path / "o.mp4")
+    info = probe_media(out)
+    assert abs(info["duration"] - (2.0 + 4.0)) < 0.3  # 4 s at 2x + 1 s at 0.25x
+    gif = compose_video([Clip(str(a), "0", "1")], tmp_path / "o.gif", gif_width=200)
+    g = probe_media(gif)
+    assert gif.read_bytes()[:6] == b"GIF89a" and g["width"] == 200 and not g["has_audio"]
+    mp3 = compose_video([Clip(str(a), "0", "2")], tmp_path / "o.mp3")
+    m = probe_media(mp3)
+    assert m["has_audio"] and not m["has_video"] and abs(m["duration"] - 2.0) < 0.2

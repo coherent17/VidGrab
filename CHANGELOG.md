@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Never lose an edit: autosave and crash recovery.** The Studio keeps a recovery copy of the project while you work; if VidGrab closes without saving (a crash, a power cut), it offers to restore it at the next start
+- **Per-clip speed (0.25×–4×)**: in the Clip panel's Trim tab (0.5× / 1× / 1.5× / 2× or any value). The sound keeps its pitch, the timeline block shrinks or grows to match, transitions and subtitles line up with the sped-up clip, and the preview plays at that speed
+- **Subtitle effects and per-line looks**: a new **Effects** tab per line with entry animations (**Pop**, **Slide up**, **Typewriter**, **Karaoke**) and **Give this line its own look** (its own text colour, background, size and bold); the shared style moved to an **All lines** tab. The preview draws the animations as they will render
+- **Multi-select, copy and paste**: Ctrl+click or drag a box on the timeline to select several clips, subtitles and pictures; move them together, delete them, or copy (Ctrl+C) and paste them at the playhead (Ctrl+V), keeping their spacing. Ctrl+D duplicates, Ctrl+A selects everything
+- **Guides**: a **Guides** button over the preview shows the centre lines and the 5 % safe area; dragged subtitles and pictures snap to them (Alt = free)
+- **Export presets**: the Project panel picks what to make — **YouTube (1080p)**, **Shorts / Reels / TikTok** (vertical, with a reminder when the video is over 60 s), **Square (1:1)**, **Same as the clips**, **GIF** or **Audio only (MP3)** — with the matching resolution and file type
+- The Clip panel is split into **Trim**, **Transition** and **Picture and sound** tabs, so it fits without scrolling
 - **Downloads retry over IPv4 when the network is unreachable**: on networks (and CI runners) with IPv6 but no route for it, YouTube downloads and link previews failed with "Network is unreachable"; they now retry the same way over IPv4
 - **Releases run the tests first**: the release workflow runs the same lint and test suite as CI (Linux and Windows) before building, so a tag can't publish untested code. The checks live in one shared workflow (`checks.yml`) used by both
 - Fixed the trim integration test, which asked for 50 s–110 s of an 8 s video (a four-part time) and so never trimmed; it was hidden because YouTube's bot-check made CI skip it

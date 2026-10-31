@@ -60,14 +60,14 @@ the demo video, the user guide and `SHA256SUMS.txt` for verifying downloads.
 - **Video montage**: join videos of any size or orientation into one MP4 (match the first clip, 1080p / 720p / 480p, vertical 9:16 or square). Clips without sound get silence
 - **Music medley**: join songs or parts of songs into MP3 / M4A / WAV, with a crossfade between tracks
 - **Multi-track timeline**: one row per clip, with thumbnails or waveforms. Drag the left and right handles to trim, drag a clip up or down to reorder, and click to seek. Zoom with Ctrl+wheel; handles and subtitles snap to the playhead and to each other
-- **Editing like an editor**: undo / redo, split a clip at the playhead, keyboard trimming (I / O) and playback (J / K / L, frame steps)
-- **Projects**: save the timeline as a `.vgproj` file and pick up where you left off (Open recent)
+- **Editing like an editor**: undo / redo, split a clip at the playhead, keyboard trimming (I / O) and playback (J / K / L, frame steps), multi-select (Ctrl+click or a box) with copy / paste, and **per-clip speed** (0.25×–4×, pitch kept)
+- **Projects**: save the timeline as a `.vgproj` file and pick up where you left off (Open recent); an autosaved recovery copy brings back unsaved work after a crash
 - **Transitions** between clips (crossfade, dip to black / white, wipe, slide, circle, zoom…) and **framing**: fill a vertical or square frame from a landscape clip, zoom in, and drag to choose what stays in view
-- **Subtitles**: add a line at the playhead, then drag it in the preview or snap it with the position grid. Retime it by dragging its block, and split or duplicate lines. Style options: font, bold, text colour, background box with opacity, fade in / out, and reusable **style presets**
+- **Subtitles**: add a line at the playhead, then drag it in the preview or snap it with the position grid. Retime it by dragging its block, and split or duplicate lines. Style options: font, bold, text colour, background box with opacity, fade in / out, and reusable **style presets**; any line can have **its own look** and an animation (pop, slide up, typewriter, karaoke). **Guides** show the centre and safe area, and dragged items snap to them
 - **Background music**: cut the song with handles and choose when it comes in; separate music and original-audio volume, looping and an end fade. The preview plays it in sync with the video
 - **Per-clip sound**: mute any clip from its timeline row, or set its volume (0–200 %)
 - **Images**: put logos, stickers or photos over the video for any time range; move, resize and rotate them right in the preview
-- **One-pass render** with a live progress bar and Fast / Balanced / High quality presets
+- **One-pass render** with a live progress bar and Fast / Balanced / High quality presets, and **export presets**: YouTube 1080p, Shorts / Reels / TikTok, square, GIF or audio only
 
 ### ⚙ Settings
 
@@ -103,6 +103,9 @@ Keyboard shortcuts: `Ctrl+V` pastes a link and `F1` shows About. In the Studio:
 | `S` | Split the clip under the playhead |
 | `M` | Mute / unmute the selected clip |
 | `Delete` | Delete the selected clip or subtitle |
+| `Ctrl+click` / drag a box | Select several items |
+| `Ctrl+C` / `Ctrl+V` / `Ctrl+D` | Copy / paste at the playhead / duplicate |
+| `Ctrl+A` | Select everything |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
 | `Ctrl+wheel` · `Ctrl+0` | Zoom the timeline · fit the whole project |
 | `Z` | Zoom to the selected clip |

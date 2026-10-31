@@ -654,7 +654,7 @@ def test_studio_transitions_and_framing(qapp, tmp_path, monkeypatch) -> None:
         assert len(st.clips()[0].thumbs) >= 2  # a filmstrip, not one repeated frame
         st.select_clip(0)
         assert st.insp.currentIndex() == st.INSP_CLIP
-        assert st.trans_first.isVisibleTo(st) and not st.trans_box.isVisibleTo(st)
+        assert not st.trans_first.isHidden() and st.trans_box.isHidden()  # (Transition tab)
 
         # a 1 s crossfade into clip 2 overlaps it with clip 1
         st.select_clip(1)
@@ -1162,3 +1162,143 @@ def test_preview_draws_transitions(qapp) -> None:
     mark = TransitionMark(at=5.0, duration=2.0, kind="fade", label="", incoming=1)
     assert mark.progress(3.9) is None and mark.progress(4.5) == 0.25 and mark.progress(6.1) is None
     canvas.close()
+
+
+def test_studio_34_features(qapp, tmp_path, monkeypatch) -> None:
+    """Speed, per-line look + animation, guides, autosave / recovery,
+    multi-select + copy / paste, export presets."""
+    import json
+    import shutil
+    import subprocess
+
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QColor, QImage
+
+    from vidgrab import app as appmod
+    from vidgrab.studio import SubtitleCue
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        pytest.skip("ffmpeg / ffprobe not on PATH")
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    clip = tmp_path / "c.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc=size=320x180:rate=10", "-f", "lavfi", "-i", "sine", "-t", "10",
+                    str(clip)], check=True)
+    pic = QImage(100, 100, QImage.Format_RGB32)
+    pic.fill(QColor("#3366cc"))
+    pic.save(str(tmp_path / "p.png"))
+    win = appmod.VidGrabWindow()
+    try:
+        st = win._studio
+        st.add_clips([str(clip), str(clip)])
+        assert st.track.total() == 20.0
+
+        # speed: the clip lasts half as long, plays twice as fast, renders so
+        st.select_clip(0)
+        st.speed_btns[2.0].click()
+        assert st.clips()[0].speed == 2.0 and st.track.total() == 15.0
+        assert st.preview._segments[0].speed == 2.0 and st.preview._segments[1].offset == 5.0
+        assert st._clip_at(2.0) == (0, 4.0)  # 2 s into the montage = 4 s into the source
+        st.undo()
+        assert st.track.total() == 20.0
+        st.redo()
+
+        # per-line look + animation
+        st._cues = [SubtitleCue(1.0, 3.0, "a"), SubtitleCue(2.0, 4.0, "b"),
+                    SubtitleCue(6.0, 8.0, "c")]
+        st._cues_changed()
+        st.select_cue(1)
+        st.cue_anim_btns["pop"].click()
+        st.own_look.setChecked(True)
+        st.own_color._pick("#FF4D4D")
+        cue = st._cues[1]
+        assert cue.animation == "pop" and cue.look["color"] == "#FF4D4D"
+        st._animation_for_all()
+        assert {c.animation for c in st._cues} == {"pop"}
+        st.own_look.setChecked(False)
+        assert st._cues[1].look is None
+
+        # multi-select: Ctrl+click two lines, move them together, copy / paste
+        st.select_cue(0)
+        st._on_item_toggled("cue", 2)
+        assert set(st.selected_items()) == {("cue", 0), ("cue", 2)}
+        assert st.status.text().startswith("2")
+        st.select_cue(0)  # pressing on a picked line (to drag) keeps the group
+        assert set(st.selected_items()) == {("cue", 0), ("cue", 2)}
+        st._on_group_moved(1.0)  # dragging cue 0 by +1 s moves cue 2 too
+        assert st._cues[2].start == 7.0
+        st.copy_selection()
+        st.preview.seek(6.0)
+        st.paste()
+        starts = sorted(c.start for c in st._cues)
+        assert starts == [1.0, 2.0, 6.0, 7.0, 12.0]  # same spacing (6 s), from the playhead
+        assert len(st.selected_items()) == 2
+        st._delete_selected()  # the pasted pair is the selection now
+        assert sorted(c.start for c in st._cues) == [1.0, 2.0, 7.0]
+        box = QRectF(0, 0, 10_000, 10_000)
+        assert ("clip", 1) in st.track._items_in(box) and ("cue", 2) in st.track._items_in(box)
+        st.select_all()
+        assert len(st.selected_items()) == 2 + 3
+        st.select_clip(0)  # pressing on a picked item keeps the group (to drag it) ...
+        assert len(st.selected_items()) == 5
+        st.track.item_clicked.emit("clip", 0)  # ... releasing without a drag: just that one
+        assert st.selected_items() == [("clip", 0)]
+
+        # guides: a picture dragged near the centre snaps to it
+        st.add_images([str(tmp_path / "p.png")])
+        cv = st.preview.canvas
+        cv.resize(640, 360)
+        st.preview.seek(st.images()[0].start + 0.5)
+        r = cv.canvas_rect()
+        x = cv._snap_axis(0.5 + 3 / r.width(), 0.2, r.width(), [0.05, 0.5, 0.95], "x", False)
+        assert x == 0.5 and cv._snapped == [("x", 0.5)]
+        cv._snapped = []
+        assert cv._snap_axis(0.5 + 3 / r.width(), 0.2, r.width(), [0.5], "x", True) != 0.5
+        left = cv._snap_axis(0.05 + 0.1 + 2 / r.width(), 0.2, r.width(), [0.05], "x", False)
+        assert abs(left - 0.15) < 1e-9  # its left edge on the safe margin
+        st.preview.guides_btn.setChecked(True)
+        assert cv._guides
+
+        # export presets: frame size + file type, with a hint when it matters
+        st.deselect()
+        st.export_btns["shorts"].click()
+        assert st.res.currentData() == "vertical" and st.export_hint.isHidden()  # 15 s: fine
+        for i in (0, 1):
+            st.select_clip(i)
+            st.clip_speed.setValue(0.25)
+        st.deselect()
+        assert st.track.total() == 80.0 and "60" in st.export_hint.text()
+        got = {}
+        st.render_requested.connect(lambda task, kw: got.update(kw))
+        monkeypatch.setattr(win, "_start_studio", lambda *_a: None)
+        st.name.setText("x")
+        for preset, ext in (("gif", ".gif"), ("audio", ".mp3"), ("youtube", ".mp4")):
+            st.export_btns[preset].click()
+            st.render()
+            assert got["output_file"].suffix == ext
+        assert got["resolution"] == "1080p"
+        st.res.setCurrentIndex(st.res.findData("square"))  # by hand: the preset follows
+        assert st.export_btns["square"].isChecked()
+
+        # autosave: unsaved work is copied for recovery, and comes back unsaved
+        proj = tmp_path / "mine.vgproj"
+        monkeypatch.setattr(win, "pick_save", lambda *_a: str(proj))
+        st.save_project()
+        assert not win.autosave_path().exists()
+        st.select_clip(1)
+        st.clip_speed.setValue(1.0)
+        assert st.autosave() and win.autosave_path().is_file()
+        saved = json.loads(win.autosave_path().read_text(encoding="utf-8"))
+        assert saved["autosave_of"] == str(proj) and saved["clips"][1]["speed"] == 1.0
+        monkeypatch.setattr(appmod.QMessageBox, "question",
+                            staticmethod(lambda *_a, **_k: appmod.QMessageBox.Discard))
+        st.new_project()  # "save changes?" -> Discard
+        assert not win.autosave_path().exists()
+        win.autosave_path().write_text(json.dumps(saved), encoding="utf-8")
+        assert st.recover(str(win.autosave_path()))
+        assert [c.speed for c in st.clips()] == [0.25, 1.0] and len(st._cues) == 3
+        assert st.is_dirty() and st._project_path == str(proj)
+        st.save_project()
+        assert not win.autosave_path().exists() and not st.is_dirty()
+    finally:
+        win.close()

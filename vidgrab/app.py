@@ -1599,6 +1599,8 @@ class VidGrabWindow(QMainWindow):
         self._update_ffmpeg_status()
         self._start_internet_check()
         self._setup_shortcuts()
+        if QApplication.platformName() != "offscreen":  # not in tests / scripts
+            QTimer.singleShot(600, self._offer_recovery)
 
     # ── ui construction ────────────────────────────────────────────────
 
@@ -2540,6 +2542,9 @@ class VidGrabWindow(QMainWindow):
     # ── clipboard / file dialogs ───────────────────────────────────────
 
     def _paste_url(self) -> None:
+        if self._stack.currentIndex() == PAGE_STUDIO:  # Ctrl+V there pastes Studio items
+            self._studio.paste()
+            return
         text = QApplication.clipboard().text()
         if text:
             links = re.findall(r"https?://\S+", text)
@@ -2786,6 +2791,31 @@ class VidGrabWindow(QMainWindow):
 
     def pick_dir(self, caption: str, start: str) -> str:
         return _get_existing_directory(self, caption, start)
+
+    def autosave_path(self) -> Path:
+        return _config_dir() / "studio-recovery.vgproj"
+
+    def _offer_recovery(self) -> None:
+        """VidGrab closed with unsaved Studio work last time: offer it back."""
+        path = self.autosave_path()
+        if not path.is_file():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            path.unlink(missing_ok=True)
+            return
+        when = data.get("autosaved_at", "")
+        answer = QMessageBox.question(
+            self, self._t("Recover unsaved work?"),
+            self._t("VidGrab closed before your Studio project was saved. Restore the copy "
+                    "from {time}?", time=when),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if answer == QMessageBox.Yes:
+            self._sidebar.select(PAGE_STUDIO)
+            self._studio.recover(str(path))
+        else:
+            path.unlink(missing_ok=True)
 
     def ffmpeg_ok(self) -> bool:
         if find_ffmpeg():
@@ -3239,6 +3269,7 @@ class VidGrabWindow(QMainWindow):
                 worker.wait(3000)
         self._studio.preview.stop()
         self._studio.shutdown()
+        self._studio.clear_autosave()  # a normal close: nothing to recover
         event.accept()
 
 

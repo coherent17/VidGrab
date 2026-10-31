@@ -113,6 +113,7 @@ class Clip:
     pan_y: float = 0.5
     volume: float = 1.0  # level of the clip's own sound (0..2)
     muted: bool = False
+    speed: float = 1.0  # 0.25 .. 4: the part plays this many times as fast
 
     def gain(self) -> float:
         return 0.0 if self.muted else max(0.0, float(self.volume))
@@ -141,6 +142,20 @@ class SubtitleCue:
     # which point of the text sits on (x, y), numpad-style like ASS \\an:
     # 7 8 9 = top-left/centre/right, 4 5 6 = middle, 1 2 3 = bottom
     anchor: int = 5
+    # this line's own look, over the shared SubtitleStyle (any of LOOK_KEYS)
+    look: dict | None = None
+    animation: str = "none"  # one of ANIMATIONS
+
+
+# how a line comes on screen (the shared fade still applies on top)
+ANIMATIONS = ("none", "pop", "slide", "typewriter", "karaoke")
+LOOK_KEYS = ("color", "background", "bg_opacity", "size", "bold", "font")
+ANIM_IN = {"pop": 0.25, "slide": 0.3}  # seconds the entrance takes
+
+
+def typewriter_time(cue_length: float) -> float:
+    """How long the typewriter takes to write out a whole line."""
+    return min(1.5, max(0.2, cue_length * 0.6))
 
 
 @dataclass
@@ -225,6 +240,28 @@ class _ResolvedClip:
     pan_x: float = 0.5
     pan_y: float = 0.5
     gain: float = 1.0  # 0 = muted
+    speed: float = 1.0
+
+    @property
+    def out_duration(self) -> float:
+        """How long the clip lasts in the output (its source part / speed)."""
+        return self.duration / self.speed
+
+
+SPEED_RANGE = (0.25, 4.0)
+
+
+def _atempo(speed: float) -> str:
+    """atempo for *speed*: one filter handles 0.5..2, chain more outside that."""
+    parts, rest = [], speed
+    while rest < 0.5:
+        parts.append(0.5)
+        rest /= 0.5
+    while rest > 2.0:
+        parts.append(2.0)
+        rest /= 2.0
+    parts.append(rest)
+    return ",".join(f"atempo={p:.6g}" for p in parts)
 
 
 # ── ffprobe ───────────────────────────────────────────────────────────────
@@ -407,6 +444,7 @@ def _resolve(
                 pan_x=min(max(float(clip.pan_x), 0.0), 1.0),
                 pan_y=min(max(float(clip.pan_y), 0.0), 1.0),
                 gain=min(clip.gain(), 2.0),
+                speed=min(max(float(clip.speed or 1.0), SPEED_RANGE[0]), SPEED_RANGE[1]),
             )
         )
     return resolved
@@ -513,15 +551,13 @@ def _ass_text(text: str) -> str:
     return text.strip().replace("\r\n", "\n").replace("\n", "\\N")
 
 
-def format_ass(
-    cues: list[SubtitleCue], width: int, height: int, style: SubtitleStyle | None = None
-) -> str:
-    """Render cues as an ASS script for a *width* x *height* frame.
+def cue_style(cue: SubtitleCue, style: SubtitleStyle) -> SubtitleStyle:
+    """The shared style with this line's own look on top."""
+    look = {k: v for k, v in (cue.look or {}).items() if k in LOOK_KEYS}
+    return replace(style, **look) if look else style
 
-    Cues with an x/y are pinned there (``\\an5\\pos``: text centred on the
-    point); the rest use the style's top / bottom placement."""
-    style = style or SubtitleStyle()
-    k = subtitle_scale(height)
+
+def _ass_style_line(name: str, style: SubtitleStyle, k: float, align: int, margin: int) -> str:
     colour = ass_colour(style.color)
     size = round(style.size * k)
     if style.background:
@@ -534,8 +570,52 @@ def format_ass(
         outline = max(1, round(2 * k)) if style.outline else 0
         shadow = max(1, round(k))
         outline_colour = "&H00000000"
+    # karaoke: the part not yet sung is light grey (or white under a white line)
+    unsung = "&H00AAAAAA" if colour.upper() == "&H00FFFFFF" else "&H00FFFFFF"
+    return (
+        f"Style: {name},{style.font or SUBTITLE_FONT_NAME},{size},{colour},"
+        f"{unsung},{outline_colour},&H80000000,{-1 if style.bold else 0},0,0,0,"
+        f"100,100,0,0,{border},{outline},{shadow},{align},{margin},{margin},{margin},1"
+    )
+
+
+def _ass_chars(text: str) -> list[str]:
+    """ASS text split into characters, keeping \\N line breaks whole."""
+    out, i = [], 0
+    while i < len(text):
+        if text.startswith("\\N", i):
+            out.append("\\N")
+            i += 2
+        else:
+            out.append(text[i])
+            i += 1
+    return out
+
+
+def format_ass(
+    cues: list[SubtitleCue], width: int, height: int, style: SubtitleStyle | None = None
+) -> str:
+    """Render cues as an ASS script for a *width* x *height* frame.
+
+    Cues with an x/y are pinned there (``\\an5\\pos``: text centred on the
+    point); the rest use the style's top / bottom placement. Each distinct
+    look (a line's own colours / size over the shared style) is one ASS
+    style; animations are override tags."""
+    style = style or SubtitleStyle()
+    k = subtitle_scale(height)
     align = 8 if style.position == "top" else 2
     margin = round(SUBTITLE_MARGIN * k)
+    looks: dict[tuple, str] = {}
+    names: list[str] = []
+    styles_text: list[str] = []
+    for cue in [SubtitleCue(0, 0, ""), *cues]:  # the shared style is always "Default"
+        eff = cue_style(cue, style)
+        key = tuple(getattr(eff, f) for f in ("color", "background", "bg_opacity", "size",
+                                              "bold", "font", "outline"))
+        if key not in looks:
+            looks[key] = "Default" if not looks else f"Look{len(looks)}"
+            styles_text.append(_ass_style_line(looks[key], eff, k, align, margin))
+        names.append(looks[key])
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -551,32 +631,69 @@ def format_ass(
             "ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, "
             "MarginL, MarginR, MarginV, Encoding"
         ),
-        (
-            f"Style: Default,{style.font or SUBTITLE_FONT_NAME},{size},{colour},"
-            f"&H000000FF,{outline_colour},&H80000000,{-1 if style.bold else 0},0,0,0,"
-            f"100,100,0,0,{border},"
-            f"{outline},{shadow},{align},{margin},{margin},{margin},1"
-        ),
+        *styles_text,
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     fade_ms = round(max(0.0, style.fade) * 1000)
-    for cue in sorted(cues, key=lambda c: c.start):
+    order = sorted(range(len(cues)), key=lambda n: cues[n].start)
+    for n in order:
+        cue, name = cues[n], names[n + 1]
+        anim = cue.animation if cue.animation in ANIMATIONS else "none"
+        length_ms = round((cue.end - cue.start) * 1000)
         tags = ""
         if cue.x is not None and cue.y is not None:
             px = round(min(max(cue.x, 0.0), 1.0) * width)
             py = round(min(max(cue.y, 0.0), 1.0) * height)
             anchor = cue.anchor if 1 <= cue.anchor <= 9 else 5
-            tags += f"\\an{anchor}\\pos({px},{py})"
+        else:  # where the style would put it, so it can be moved / animated
+            anchor, px = align, round(width / 2)
+            py = margin if align == 8 else height - margin
+        if cue.x is not None or anim == "slide":
+            if anim == "slide":
+                rise = round(height * 0.05)
+                tags += (f"\\an{anchor}\\move({px},{py + rise},{px},{py},0,"
+                         f"{round(ANIM_IN['slide'] * 1000)})")
+            else:
+                tags += f"\\an{anchor}\\pos({px},{py})"
         if fade_ms:
             # never fade for longer than half the line is on screen
-            ms = min(fade_ms, round((cue.end - cue.start) * 500))
+            ms = min(fade_ms, length_ms // 2)
             tags += f"\\fad({ms},{ms})"
+        if anim == "pop":
+            ms = round(ANIM_IN["pop"] * 1000)
+            tags += f"\\fscx40\\fscy40\\t(0,{ms},\\fscx100\\fscy100)"
+        elif anim == "slide" and not fade_ms:
+            tags += f"\\fad({round(ANIM_IN['slide'] * 700)},0)"
+        text = _ass_text(cue.text)
+        if anim == "typewriter":
+            chars = _ass_chars(text)
+            visible = [c for c in chars if c != "\\N"]
+            step = typewriter_time(cue.end - cue.start) * 1000 / max(1, len(visible))
+            # reveal each channel back to the style's own alpha: a plain
+            # \\alpha&H00& would turn a see-through box or shadow opaque
+            eff = cue_style(cue, style)
+            box = ass_colour(eff.background, eff.bg_opacity)[2:4] if eff.background else "00"
+            shown_tags = f"\\1a&H00&\\3a&H{box}&\\4a&H80&"
+            out, shown = [], 0
+            for c in chars:
+                if c == "\\N":
+                    out.append(c)
+                    continue
+                t = round(shown * step)
+                out.append(f"{{\\alpha&HFF&\\t({t},{t + 1},{shown_tags})}}{c}")
+                shown += 1
+            text = "".join(out)
+        elif anim == "karaoke":  # the colour sweeps across over the whole line
+            chars = _ass_chars(text)
+            visible = [c for c in chars if c != "\\N"]
+            cs = max(1, round(length_ms / 10 * 0.9 / max(1, len(visible))))
+            text = "".join(c if c == "\\N" else f"{{\\kf{cs}}}{c}" for c in chars)
         tag = f"{{{tags}}}" if tags else ""
         lines.append(
-            f"Dialogue: 0,{_ass_ts(cue.start)},{_ass_ts(cue.end)},Default,,0,0,0,,"
-            f"{tag}{_ass_text(cue.text)}"
+            f"Dialogue: 0,{_ass_ts(cue.start)},{_ass_ts(cue.end)},{name},,0,0,0,,"
+            f"{tag}{text}"
         )
     return "\n".join(lines) + "\n"
 
@@ -793,15 +910,16 @@ def build_audio_command(
         cmd += _input_args(c)
     graph: list[str] = []
     for i, c in enumerate(clips):
-        graph.append(f"{_audio_norm(f'[{i}:a:0]', c.gain)}[a{i}]")
+        tempo = f",{_atempo(c.speed)}" if c.speed != 1.0 else ""
+        graph.append(f"{_audio_norm(f'[{i}:a:0]', c.gain)}{tempo}[a{i}]")
 
     # a crossfade can't be longer than either neighbour
     fade = 0.0
     if crossfade > 0 and len(clips) > 1:
-        shortest = min(c.duration for c in clips)
+        shortest = min(c.out_duration for c in clips)
         fade = max(0.0, min(crossfade, shortest / 2))
 
-    total = sum(c.duration for c in clips)
+    total = sum(c.out_duration for c in clips)
     if len(clips) == 1:
         out = "[a0]"
     elif fade > 0:
@@ -971,9 +1089,9 @@ def build_video_command(
     Windows paths (``C:\\…``) fragile, so callers run ffmpeg from a temp dir."""
     width, height = _canvas(clips, resolution)
     preset, crf, abr = RENDER_QUALITY.get(quality, RENDER_QUALITY["balanced"])
-    overlaps = transition_overlaps([c.duration for c in clips],
+    overlaps = transition_overlaps([c.out_duration for c in clips],
                                    [(c.transition, c.transition_duration) for c in clips])
-    total = sum(c.duration for c in clips) - sum(overlaps)
+    total = sum(c.out_duration for c in clips) - sum(overlaps)
     cmd = [ffmpeg, "-y"]
     for c in clips:
         cmd += _input_args(c)
@@ -984,7 +1102,7 @@ def build_video_command(
     for i, c in enumerate(clips):
         if not c.has_audio:
             cmd += [
-                "-f", "lavfi", "-t", f"{c.duration:.3f}",
+                "-f", "lavfi", "-t", f"{c.out_duration:.3f}",
                 "-i", f"anullsrc=r={SAMPLE_RATE}:cl=stereo",
             ]
             silence[i] = next_input
@@ -1010,8 +1128,10 @@ def build_video_command(
     graph: list[str] = []
     for i, c in enumerate(clips):
         graph.append(
-            f"[{i}:v:0]{_frame_filter(c, width, height)},"
-            f"setsar=1,fps={fps},format=yuv420p,setpts=PTS-STARTPTS"
+            f"[{i}:v:0]{_frame_filter(c, width, height)},setsar=1,"
+            # speed before fps, so the output still has a steady frame rate
+            + (f"setpts=(PTS-STARTPTS)/{c.speed:.6g}," if c.speed != 1.0 else "")
+            + f"fps={fps},format=yuv420p,setpts=PTS-STARTPTS"
             # xfade needs both inputs on one timebase, and concat changes it
             # ffmpeg 7.0's setpts forgets the frame rate, which xfade requires:
             # restate it, then put every input on one timebase
@@ -1020,14 +1140,15 @@ def build_video_command(
         if i in silence:
             graph.append(f"{_audio_norm(f'[{silence[i]}:a]')}[a{i}]")
         else:
-            graph.append(f"{_audio_norm(f'[{i}:a:0]', c.gain)}[a{i}]")
+            tempo = f",{_atempo(c.speed)}" if c.speed != 1.0 else ""
+            graph.append(f"{_audio_norm(f'[{i}:a:0]', c.gain)}{tempo}[a{i}]")
     if not any(overlaps):
         pairs = "".join(f"[v{i}][a{i}]" for i in range(len(clips)))
         graph.append(f"{pairs}concat=n={len(clips)}:v=1:a=1[vc][ac]")
     else:
         # join pairwise: xfade / acrossfade where a transition overlaps the
         # clips, a plain concat at cuts; `at` = where clip i starts in the output
-        vprev, aprev, at = "[v0]", "[a0]", clips[0].duration
+        vprev, aprev, at = "[v0]", "[a0]", clips[0].out_duration
         for i in range(1, len(clips)):
             d = overlaps[i]
             vnext, anext = ("[vc]", "[ac]") if i == len(clips) - 1 else (f"[vx{i}]", f"[ax{i}]")
@@ -1041,7 +1162,7 @@ def build_video_command(
                 # checks (some ffmpeg builds refuse the mismatch): restate them
                 graph.append(f"{vprev}[v{i}]concat=n=2:v=1:a=0,fps={fps},settb=AVTB{vnext}")
                 graph.append(f"{aprev}[a{i}]concat=n=2:v=0:a=1,{_AUDIO_FMT}{anext}")
-            at += clips[i].duration
+            at += clips[i].out_duration
             vprev, aprev = vnext, anext
 
     vout = "[vc]"
@@ -1085,6 +1206,24 @@ def build_video_command(
     return cmd, total
 
 
+EXPORT_FORMATS = (".mp4", ".gif", ".mp3", ".m4a", ".wav")
+
+
+def _export_args(kind: str, gif_width: int, gif_fps: int) -> list[str]:
+    """ffmpeg arguments that turn the rendered MP4 into *kind*."""
+    if kind == ".gif":  # two-pass palette: GIF has 256 colours, pick the right ones
+        graph = (f"[0:v]fps={gif_fps},scale={_even(gif_width)}:-2:flags=lanczos,split[a][b];"
+                 "[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4")
+        return ["-filter_complex", graph, "-an", "-loop", "0"]
+    if kind == ".mp3":
+        return ["-vn", "-c:a", "libmp3lame", "-b:a", "192k"]
+    if kind == ".m4a":
+        return ["-vn", "-c:a", "aac", "-b:a", "192k"]
+    if kind == ".wav":
+        return ["-vn", "-c:a", "pcm_s16le"]
+    raise ValueError(f"unsupported export format {kind}")
+
+
 def compose_video(
     clips: list[Clip],
     output_file: str | Path,
@@ -1095,11 +1234,15 @@ def compose_video(
     music: Music = None,
     quality: str = "balanced",
     images: list[ImageOverlay] | None = None,
+    gif_width: int = 480,
+    gif_fps: int = 15,
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
     translate: TranslateFn | None = None,
 ) -> Path:
-    """Join video clips, then optionally burn in subtitles and add music."""
+    """Join video clips, then optionally burn in subtitles and add music.
+    The output's suffix picks the format: .mp4, or .gif / .mp3 / .m4a / .wav
+    (rendered as MP4 first, then converted)."""
     tr = translate or _noop_tr
     ffmpeg = _require_ffmpeg(translate)
     if on_progress:
@@ -1134,14 +1277,18 @@ def compose_video(
             # hand libass the font files themselves: the bundled CJK font (also
             # the fallback for Chinese glyphs) plus the chosen font, if another
             wanted = [_subtitle_font()]
-            if subtitle_style and subtitle_style.font != SUBTITLE_FONT_NAME:
-                wanted.append(font_file(subtitle_style.font))
+            fonts = {subtitle_style.font} if subtitle_style else set()
+            fonts |= {c.look["font"] for c in subtitles if c.look and c.look.get("font")}
+            wanted += [font_file(f) for f in fonts if f and f != SUBTITLE_FONT_NAME]
             for font in filter(None, wanted):
                 (work / "fonts").mkdir(exist_ok=True)
                 shutil.copy2(font, work / "fonts" / font.name)
                 fonts_name = "fonts"
+        # GIF / audio-only exports: render the video first, then convert it
+        kind = out.suffix.lower()
+        render_to = out if kind == ".mp4" else work / "render.mp4"
         cmd, total = build_video_command(
-            ffmpeg, resolved, out,
+            ffmpeg, resolved, render_to,
             resolution=resolution,
             subtitles_file=subs_name,
             fonts_dir=fonts_name,
@@ -1153,6 +1300,15 @@ def compose_video(
             cmd, total, cwd=work, label=tr("Rendering…"),
             on_progress=on_progress, on_log=on_log, translate=translate,
         )
+        if render_to != out:
+            if on_progress:
+                on_progress(tr("Converting…"), None)
+            _run_with_progress(
+                [ffmpeg, "-y", "-i", str(render_to), *_export_args(kind, gif_width, gif_fps),
+                 str(out)],
+                total, cwd=work, label=tr("Converting…"),
+                on_progress=on_progress, on_log=on_log, translate=translate,
+            )
     if on_log:
         on_log(tr("Saved: {name}", name=out.name))
     if on_progress:

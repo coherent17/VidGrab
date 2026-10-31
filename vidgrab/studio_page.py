@@ -91,7 +91,9 @@ from PySide6.QtWidgets import (
 
 from vidgrab.preview import MusicBed, Segment, StudioPreview, TransitionMark, fmt_time
 from vidgrab.studio import (
+    ANIMATIONS,
     IMAGE_EXTS,
+    SPEED_RANGE,
     SUBTITLE_FONT_NAME,
     TRANSITIONS,
     BackgroundMusic,
@@ -100,6 +102,7 @@ from vidgrab.studio import (
     SubtitleCue,
     SubtitleStyle,
     canvas_size,
+    cue_style,
     parse_srt,
     parse_timecode,
     probe_media,
@@ -113,6 +116,7 @@ _HAND = Qt.PointingHandCursor
 MIN_CLIP = 0.2  # shortest a clip can be trimmed to (s)
 MIN_MUSIC = 0.5  # shortest part of a song that can be kept (s)
 PROJECT_EXT = ".vgproj"
+AUTOSAVE_MS = 60_000  # how often unsaved Studio work is copied for recovery
 PROJECT_VERSION = 1
 HISTORY_LIMIT = 200
 COALESCE_S = 1.0  # edits of the same kind this close together undo as one step
@@ -128,6 +132,9 @@ SHORTCUTS = (
     ("S", "Split the clip under the playhead"),
     ("M", "Mute / unmute the selected clip"),
     ("Delete", "Delete the selected clip or subtitle"),
+    ("Ctrl+click / drag a box", "Select several items"),
+    ("Ctrl+C / Ctrl+V / Ctrl+D", "Copy / paste at the playhead / duplicate"),
+    ("Ctrl+A", "Select everything"),
     ("Esc", "Back to the project settings"),
     ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
     ("Ctrl+wheel, Ctrl++ / Ctrl+−", "Zoom the timeline"),
@@ -176,6 +183,18 @@ TRANSITION_LABELS = {
     "fadewhite": "Dip to white", "dissolve": "Dissolve", "wipeleft": "Wipe",
     "slideleft": "Slide", "circleopen": "Circle", "zoomin": "Zoom in",
 }
+# label keys for studio.ANIMATIONS
+# export presets: label key, frame size (None = keep), file type
+EXPORT_PRESETS = {
+    "youtube": ("YouTube (1080p)", "1080p", ".mp4"),
+    "shorts": ("Shorts / Reels / TikTok", "vertical", ".mp4"),
+    "square": ("Square (1:1)", "square", ".mp4"),
+    "auto": ("Same as the clips", "auto", ".mp4"),
+    "gif": ("GIF", None, ".gif"),
+    "audio": ("Audio only (MP3)", None, ".mp3"),
+}
+ANIMATION_LABELS = {"none": "None", "pop": "Pop", "slide": "Slide up",
+                    "typewriter": "Typewriter", "karaoke": "Karaoke"}
 FILMSTRIP = 4  # frames probed up front (block label + fallback until the cache fills)
 # tile spacing in source seconds, chosen from these so cached frames line up
 THUMB_STEPS = (0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800)
@@ -399,7 +418,7 @@ class _MediaClip:
     pan_y: float = 0.5
     volume: float = 1.0  # the clip's own sound, 0..2
     muted: bool = False
-
+    speed: float = 1.0  # 0.25 .. 4
     @property
     def has_audio(self) -> bool:
         return bool(self.info.get("has_audio"))
@@ -410,14 +429,14 @@ class _MediaClip:
     def edit(self) -> tuple:
         """The user-editable part, as plain comparable data (undo / projects)."""
         return (self.start, self.end, self.transition, self.transition_d, self.fit,
-                self.zoom, self.pan_x, self.pan_y, self.volume, self.muted)
+                self.zoom, self.pan_x, self.pan_y, self.volume, self.muted, self.speed)
 
     def with_edit(self, edit: tuple) -> _MediaClip:
         (start, end, transition, transition_d, fit, zoom, pan_x, pan_y, volume,
-         muted) = edit
+         muted, *rest) = edit
         return replace(self, start=start, end=end, transition=transition,
                        transition_d=transition_d, fit=fit, zoom=zoom, pan_x=pan_x, pan_y=pan_y,
-                       volume=volume, muted=muted)
+                       volume=volume, muted=muted, speed=rest[0] if rest else 1.0)
 
     def frame_at(self, t: float) -> QImage | None:
         if not self.thumbs:
@@ -441,9 +460,14 @@ class _MediaClip:
         e = self.end if self.end is not None else self.length
         return s, min(e, self.length) if self.length else e
 
-    def kept(self) -> float:
+    def part(self) -> float:
+        """Length of the part of the source that is used (source seconds)."""
         s, e = self.span()
         return max(0.0, e - s)
+
+    def kept(self) -> float:
+        """How long the clip lasts in the montage (its part / speed)."""
+        return self.part() / self.speed
 
 
 def _fmt_precise(seconds: float) -> str:
@@ -508,6 +532,10 @@ class TrackTimeline(QWidget):
     image_timing = Signal(int, float, float)  # picture, start, end
     image_add_requested = Signal(float)
     music_selected = Signal(int)  # song index
+    item_toggled = Signal(str, int)  # Ctrl+click: kind, index
+    box_selected = Signal(list)  # [(kind, index), ...] inside a dragged box
+    group_moved = Signal(float)  # the other picked subtitles / pictures move this much
+    item_clicked = Signal(str, int)  # pressed and released without moving
     music_changed = Signal(int, float, float, float)  # song, its start / end, offset on the timeline
     add_media_requested = Signal()
     music_requested = Signal()
@@ -539,6 +567,7 @@ class TrackTimeline(QWidget):
         self._hover: tuple[str, int, str] | None = None
         self._drag: dict | None = None
         self._icons: dict[str, QImage] = {}
+        self._picked: set[tuple[str, int]] = set()
         self._zoom = 1.0  # 1 = the whole project fits the width
         self._view = 0.0  # time (s) at the left edge of the track area
         self._thumbs: ThumbCache | None = None
@@ -607,6 +636,14 @@ class TrackTimeline(QWidget):
             if not self._view <= t <= self._view + visible:
                 self.set_view(t - visible * 0.1)
         self.update()
+
+    def set_picked(self, picked: set[tuple[str, int]]) -> None:
+        """Items selected together with the main selection (multi-select)."""
+        self._picked = set(picked)
+        self.update()
+
+    def _is_sel(self, kind: str, i: int) -> bool:
+        return self._selection == (kind, i) or (kind, i) in self._picked
 
     def set_selection(self, sel: tuple[str, int] | None) -> None:
         self._selection = sel
@@ -748,15 +785,14 @@ class TrackTimeline(QWidget):
         offs = d.get("offsets") or self.offsets()
         row = self._row_rect("clip", i)
         clip = self._clips[i]
-        s, e = clip.span()
         x0 = self._x(offs[i])
         if d.get("kind") in ("trim_start", "trim_end") and d.get("row") == i:
-            pps = self._pps()
+            pps = self._pps() / clip.speed  # pixels per *source* second
             # the source stays put; the handle slides over it
             src_left = x0 - d["s0"] * pps
             return QRectF(src_left + d["s"] * pps, row.top(), (d["e"] - d["s"]) * pps,
                           row.height())
-        return QRectF(x0, row.top(), max(4.0, (e - s) * self._pps()), row.height())
+        return QRectF(x0, row.top(), max(4.0, clip.kept() * self._pps()), row.height())
 
     def _source_rect(self, i: int) -> QRectF:
         """The whole source of clip *i*, aligned so its kept part sits in place."""
@@ -765,8 +801,9 @@ class TrackTimeline(QWidget):
         row = self._row_rect("clip", i)
         clip = self._clips[i]
         s0 = d["s0"] if d.get("row") == i and "s0" in d else clip.span()[0]
-        left = self._x(offs[i]) - s0 * self._pps()
-        return QRectF(left, row.top(), clip.length * self._pps(), row.height())
+        pps = self._pps() / clip.speed  # pixels per source second
+        left = self._x(offs[i]) - s0 * pps
+        return QRectF(left, row.top(), clip.length * pps, row.height())
 
     @staticmethod
     def _lanes(spans: list[tuple[float, float]]) -> list[int]:
@@ -849,7 +886,7 @@ class TrackTimeline(QWidget):
         for kind, i, _h in self._rows():
             r = self._row_rect(kind, i)
             full = QRectF(8, r.top(), self.width() - 18, r.height())
-            selected_row = self._selection == ("clip", i) and kind == "clip"
+            selected_row = kind == "clip" and self._is_sel("clip", i)
             p.setPen(Qt.NoPen)
             p.setBrush(c["track"])
             p.drawRoundedRect(full, 8, 8)
@@ -873,6 +910,15 @@ class TrackTimeline(QWidget):
         self._paint_cues(p, c, fm)
         self._paint_images(p, c, fm)
         self._paint_music(p, c, fm, total)
+        d = self._drag or {}
+        if d.get("kind") == "box" and d.get("active"):
+            box = QRectF(QPointF(min(d["x0"], d["x"]), min(d["y0"], d["y"])),
+                         QPointF(max(d["x0"], d["x"]), max(d["y0"], d["y"])))
+            fill = QColor(c["accent"])
+            fill.setAlpha(40)
+            p.setPen(QPen(c["accent"], 1.2, Qt.DashLine))
+            p.setBrush(fill)
+            p.drawRect(box)
         snap = (self._drag or {}).get("snap")
         if snap is not None:  # the line an edge snapped to
             p.setPen(QPen(c["accent"], 1.6, Qt.DashLine))
@@ -950,7 +996,7 @@ class TrackTimeline(QWidget):
         clip = self._clips[i]
         base = QColor(c["clip"] if i % 2 == 0 else c["clip2"]) if clip.has_video \
             else QColor(c["audio"])
-        selected = self._selection == ("clip", i)
+        selected = self._is_sel("clip", i)
         hover = self._hover is not None and self._hover[:2] == ("clip", i)
 
         # the rest of the source, faint, so it's clear how far a handle can go
@@ -972,7 +1018,7 @@ class TrackTimeline(QWidget):
             # filmstrip: each tile shows the source frame at its own time
             th = body.height()
             tw = clip.thumb.width() * th / max(1, clip.thumb.height())
-            src_left, pps = self._source_rect(i).left(), self._pps()
+            src_left, pps = self._source_rect(i).left(), self._pps() / clip.speed
             step = next((v for v in THUMB_STEPS if v * pps >= tw + 2), THUMB_STEPS[-1])
             x = body.left()
             while x < body.right():
@@ -1077,7 +1123,7 @@ class TrackTimeline(QWidget):
             p.setPen(c["muted"])
             p.drawText(r, Qt.AlignCenter, self._labels["empty_subs"])
         for i, (rect, (_s, _e, text)) in enumerate(zip(self._cue_rects(), self._cues)):
-            sel = self._selection == ("cue", i)
+            sel = self._is_sel("cue", i)
             fill = QColor(c["cue"])
             fill.setAlpha(235 if sel else 170)
             p.setPen(QPen(QColor(c["sel"]), 2) if sel else Qt.NoPen)
@@ -1097,7 +1143,7 @@ class TrackTimeline(QWidget):
             p.setPen(c["muted"])
             p.drawText(r, Qt.AlignCenter, self._labels["empty_images"])
         for i, (rect, (_s, _e, name, thumb)) in enumerate(zip(self._image_rects(), self._images)):
-            sel = self._selection == ("image", i)
+            sel = self._is_sel("image", i)
             fill = QColor(c["clip2"])
             fill.setAlpha(235 if sel else 160)
             p.setPen(QPen(QColor(c["sel"]), 2) if sel else Qt.NoPen)
@@ -1161,7 +1207,7 @@ class TrackTimeline(QWidget):
         if selected is not None and selected < len(self._music):
             order.append(selected)
         for k in order:
-            self._paint_song(p, c, fm, k, k == selected)
+            self._paint_song(p, c, fm, k, k == selected or ("music", k) in self._picked)
 
     def _paint_song(self, p, c, fm, k: int, sel: bool) -> None:
         block, first = self._music_rects(k)
@@ -1282,7 +1328,16 @@ class TrackTimeline(QWidget):
             return
         pos = event.position()
         hit = self._hit(pos) if pos.y() > self.RULER_H else None
+        if hit is not None and hit[2] not in ("row", "mute") \
+                and event.modifiers() & Qt.ControlModifier:
+            self.item_toggled.emit(hit[0], hit[1])  # add to / remove from the selection
+            return
         if hit is None or hit[2] == "row":
+            if pos.y() > self.RULER_H and pos.x() > self.HEADER_W:
+                # empty track space: a drag draws a selection box, a click seeks
+                self._drag = {"kind": "box", "x0": pos.x(), "y0": pos.y(), "x": pos.x(),
+                              "y": pos.y(), "row": hit[1] if hit else None, "active": False}
+                return
             if hit is not None:
                 self.clip_selected.emit(hit[1])
             self._drag = {"kind": "seek"}
@@ -1309,12 +1364,14 @@ class TrackTimeline(QWidget):
             self._drag = {"kind": f"cue_{part}", "row": i, "x0": pos.x(), "s": s, "e": e,
                           "s0": s, "e0": e, "head": head}
             self._drag["lanes"] = self._cue_lanes()  # lines keep their lane while dragging
+            self._drag["group"] = self._group_of("cue", i, part)
             self.cue_selected.emit(i)
         elif kind == "image":
             s, e, _n, _t = self._images[i]
             self._drag = {"kind": f"img_{part}", "row": i, "x0": pos.x(), "s": s, "e": e,
                           "s0": s, "e0": e, "head": head}
             self._drag["lanes"] = self._image_lanes()
+            self._drag["group"] = self._group_of("image", i, part)
             self.image_selected.emit(i)
         else:
             m = self._music[i]
@@ -1323,6 +1380,30 @@ class TrackTimeline(QWidget):
                           "s": m["start"], "e": m["end"], "o": m["offset"], "head": head}
             self.music_selected.emit(i)
         self.update()
+
+    def _group_of(self, kind: str, i: int, part: str) -> list[tuple[str, int, float, float]]:
+        """Other picked subtitles / pictures that move along with this one."""
+        if part != "body" or (kind, i) not in self._picked and self._selection != (kind, i):
+            return []
+        out = []
+        for k, j in self._picked:
+            if (k, j) == (kind, i):
+                continue
+            if k == "cue" and j < len(self._cues):
+                out.append((k, j, self._cues[j][0], self._cues[j][1]))
+            elif k == "image" and j < len(self._images):
+                out.append((k, j, self._images[j][0], self._images[j][1]))
+        return out
+
+    def _items_in(self, box: QRectF) -> list[tuple[str, int]]:
+        items = [("clip", i) for i in range(len(self._clips)) if self._clip_rect(i).intersects(box)]
+        items += [("cue", i) for i, r in enumerate(self._cue_rects()) if r.intersects(box)]
+        items += [("image", i) for i, r in enumerate(self._image_rects()) if r.intersects(box)]
+        for k in range(len(self._music)):
+            rects = self._music_rects(k)
+            if rects is not None and rects[0].intersects(box):
+                items.append(("music", k))
+        return items
 
     def mouseDoubleClickEvent(self, event) -> None:
         pos = event.position()
@@ -1365,6 +1446,11 @@ class TrackTimeline(QWidget):
         kind = d["kind"]
         if kind == "seek":
             self.seek_requested.emit(self._t(pos.x()))
+            return
+        if kind == "box":
+            d["x"], d["y"] = pos.x(), pos.y()
+            d["active"] = d["active"] or abs(d["x"] - d["x0"]) + abs(d["y"] - d["y0"]) > 6
+            self.update()
             return
         if kind == "reorder":
             if not d["active"] and abs(pos.y() - d["y"]) > 8 and len(self._clips) > 1:
@@ -1411,6 +1497,17 @@ class TrackTimeline(QWidget):
             self._images[row] = (d["s"], d["e"], *self._images[row][2:])
         else:
             self._cues[row] = (d["s"], d["e"], self._cues[row][2])
+        if d.get("group"):  # the rest of the selection moves by as much
+            delta = d["s"] - d["s0"]
+            low = min(g[2] for g in d["group"])
+            delta = max(delta, -low)  # nothing goes before 0:00
+            d["delta"] = delta
+            for k, j, s0, e0 in d["group"]:
+                if k == "cue":
+                    self._cues[j] = (round(s0 + delta, 2), round(e0 + delta, 2), self._cues[j][2])
+                else:
+                    self._images[j] = (round(s0 + delta, 2), round(e0 + delta, 2),
+                                       *self._images[j][2:])
         self.update()
 
     def _tooltip(self, hit: tuple[str, int, str] | None) -> str:
@@ -1421,7 +1518,8 @@ class TrackTimeline(QWidget):
         if hit[2] == "mute":
             return self._labels["unmute" if clip.muted else "mute"]
         if hit[2] in ("header", "body"):
-            return f"{clip.name}\n{fmt_time(clip.kept())} / {fmt_time(clip.length)}"
+            speed = f"  ·  {clip.speed:g}×" if clip.speed != 1.0 else ""
+            return f"{clip.name}\n{fmt_time(clip.kept())} / {fmt_time(clip.length)}{speed}"
         return ""
 
     def _music_move(self, dt: float, free: bool) -> None:
@@ -1451,7 +1549,8 @@ class TrackTimeline(QWidget):
         d["free"] = bool(mods & Qt.AltModifier)
         left, right = self.HEADER_W, self.HEADER_W + self._area_w()
         if left <= x <= right:
-            d["raw"] += (x - d["last_x"]) / self._pps() * (0.1 if d["fine"] else 1.0)
+            speed = self._clips[d["row"]].speed
+            d["raw"] += (x - d["last_x"]) / self._pps() * speed * (0.1 if d["fine"] else 1.0)
             d["overshoot"] = 0.0
             self._edge_timer.stop()
         else:
@@ -1468,28 +1567,31 @@ class TrackTimeline(QWidget):
             return
         over = d["overshoot"]
         px = (abs(over) / 6 + 2) * (1 if over > 0 else -1)  # faster the further out
-        d["raw"] += px / self._pps() * (0.1 if d.get("fine") else 1.0)
+        speed = self._clips[d["row"]].speed
+        d["raw"] += px / self._pps() * speed * (0.1 if d.get("fine") else 1.0)
         self._apply_trim()
 
     def _apply_trim(self) -> None:
         d = self._drag
         clip = self._clips[d["row"]]
-        # while dragging, source time v sits at timeline time off + v
-        off = d["offsets"][d["row"]] - d["s0"]
+        sp = clip.speed
+        # while dragging, source time v sits at timeline time off + v / speed
+        off = d["offsets"][d["row"]] - d["s0"] / sp
         targets = [d["head"], *self._cue_edges()]
         start = d["kind"] == "trim_start"
         lo, hi = (0.0, d["e0"] - MIN_CLIP) if start else (d["s0"] + MIN_CLIP, clip.length)
         d["raw"] = min(max(d["raw"], lo), hi)
-        at, d["snap"] = self._snap(off + d["raw"], targets, free=d.get("free", False))
-        value = round(min(max(at - off, lo), hi), 2)
+        at, d["snap"] = self._snap(off + d["raw"] / sp, targets, free=d.get("free", False))
+        value = round(min(max((at - off) * sp, lo), hi), 2)
         d["s" if start else "e"] = value
         # keep the moving handle on screen: squeeze the scale (end) or slide
         # the view (start) instead of letting it run off the edge
         right = self.HEADER_W + self._area_w() - 8
-        if self._x(off + value) > right and off + value - self._view > 0:
-            d["pps"] = (right - self.HEADER_W) / (off + value - self._view)
-        if self._x(off + value) < self.HEADER_W + 8:
-            self._view = off + value - 8 / self._pps()
+        at_t = off + value / sp
+        if self._x(at_t) > right and at_t - self._view > 0:
+            d["pps"] = (right - self.HEADER_W) / (at_t - self._view)
+        if self._x(at_t) < self.HEADER_W + 8:
+            self._view = at_t - 8 / self._pps()
         self.update()
         self.clip_trimming.emit(d["row"], d["s"], d["e"], d["kind"][5:])
 
@@ -1499,6 +1601,26 @@ class TrackTimeline(QWidget):
         if not d:
             return
         kind = d["kind"]
+        if kind == "box":
+            if d["active"]:
+                box = QRectF(QPointF(min(d["x0"], d["x"]), min(d["y0"], d["y"])),
+                             QPointF(max(d["x0"], d["x"]), max(d["y0"], d["y"])))
+                self.box_selected.emit(self._items_in(box))
+            else:  # just a click: as before, select the row's clip and seek
+                if d["row"] is not None:
+                    self.clip_selected.emit(d["row"])
+                self.seek_requested.emit(self._t(d["x0"]))
+            self.update()
+            return
+        if d.get("group") and d.get("delta"):
+            self.group_moved.emit(d["delta"])
+        moved = d.get("active") if kind == "reorder" else (
+            (d.get("s"), d.get("e"), d.get("o")) != (d.get("s0"), d.get("e0"), d.get("o0")))
+        if not moved and "row" in d:
+            item = ("clip" if kind in ("reorder", "trim_start", "trim_end") else
+                    "cue" if kind.startswith("cue_") else
+                    "image" if kind.startswith("img_") else "music")
+            self.item_clicked.emit(item, d["row"])
         if kind == "reorder" and d["active"]:
             dest = self._reorder_target(d["y"])
             if dest != d["row"]:
@@ -1534,7 +1656,13 @@ class StudioPage(QWidget):
         self._cues: list[SubtitleCue] = []
         self._songs: list[_Song] = []  # background music, in timeline order of adding
         self._images: list[ImageOverlay] = []  # pictures over the video
+        # multi-select: everything picked together with the main selection
+        # (empty when only one thing is selected); Ctrl+C keeps copies here
+        self._picked: set[tuple[str, int]] = set()
+        self._keep_picked = False
+        self._clipboard: dict | None = None
         self._sel: tuple[str, int] | None = None
+        self._export = "auto"  # key of EXPORT_PRESETS
         self._busy = False
         self._i18n: list[tuple[object, str, str]] = []
         # probed media by path, so undo / redo / open never re-probe a file
@@ -1546,6 +1674,11 @@ class StudioPage(QWidget):
         self._restoring = False
         self._project_path = ""
         self._saved_state: dict | None = None
+        # a recovery copy of unsaved work, written now and then (see autosave())
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setInterval(AUTOSAVE_MS)
+        self._autosave_timer.timeout.connect(self.autosave)
+        self._autosave_timer.start()
         self._build()
         self._wire_shortcuts()
         self._on_mode()  # show the controls for the starting mode
@@ -1735,6 +1868,10 @@ class StudioPage(QWidget):
         self.track.image_add_requested.connect(lambda t: self._browse_images(at=t))
         self.track.music_selected.connect(self.select_music)
         self.track.music_changed.connect(self._on_music_dragged)
+        self.track.item_toggled.connect(self._on_item_toggled)
+        self.track.box_selected.connect(self._on_box_selected)
+        self.track.group_moved.connect(self._on_group_moved)
+        self.track.item_clicked.connect(self._on_item_clicked)
         self.track.add_media_requested.connect(self._add_dialog)
         self.track.music_requested.connect(self._browse_music)
         self.track.view_changed.connect(self._sync_hscroll)
@@ -1803,11 +1940,24 @@ class StudioPage(QWidget):
 
     def _build_project_inspector(self) -> QWidget:
         w, lay = self._page()
+        # what to make: each preset sets the frame size and the file type
+        self.export_cap = self._label("EXPORT AS", "field_cap")
+        lay.addWidget(self.export_cap)
+        self.export_btns: dict[str, QPushButton] = {}
+        self.export_box = self._choice_grid(
+            [(k, EXPORT_PRESETS[k][0]) for k in EXPORT_PRESETS], 2, self._set_export,
+            self.export_btns)
+        lay.addWidget(self.export_box)
+        self.export_hint = QLabel()
+        self.export_hint.setObjectName("hint")
+        self.export_hint.setWordWrap(True)
+        lay.addWidget(self.export_hint)
         form = QFormLayout()
         form.setSpacing(8)
         form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.res = QComboBox()
-        self.res.currentIndexChanged.connect(lambda _i: self._refresh_aspect())
+        self.res.currentIndexChanged.connect(lambda _i: (self._refresh_aspect(),
+                                                         self._sync_export()))
         self.res_lbl = self._label("Resolution:")
         form.addRow(self.res_lbl, self.res)
         self.xfade = QDoubleSpinBox()
@@ -1841,13 +1991,43 @@ class StudioPage(QWidget):
         b.setFixedWidth(40)
         row.addWidget(b)
         lay.addLayout(row)
-        lay.addSpacing(6)
-        lay.addWidget(self._label(
-            "Each clip has its own row in the timeline. Drag the left handle to choose "
-            "where it starts and the right handle to choose where it ends; drag a clip "
-            "up or down to reorder.", "hint"))
         lay.addStretch()
         return w
+
+    def _set_export(self, preset: str) -> None:
+        self._export = preset
+        res = EXPORT_PRESETS[preset][1]
+        if res is not None:
+            self.res.blockSignals(True)
+            self.res.setCurrentIndex(max(0, self.res.findData(res)))
+            self.res.blockSignals(False)
+            self._refresh_aspect()
+        self._sync_export()
+        self._record()
+
+    def _sync_export(self) -> None:
+        """Highlight the preset that matches; say what to watch out for."""
+        if not hasattr(self, "export_btns"):
+            return
+        preset = getattr(self, "_export", "youtube")
+        res = self.res.currentData() or "auto"
+        if EXPORT_PRESETS[preset][1] not in (None, res):  # resolution changed by hand
+            preset = next((k for k, v in EXPORT_PRESETS.items()
+                           if v[1] == res and v[2] == ".mp4"), "youtube")
+            self._export = preset
+        self.export_btns[preset].setChecked(True)
+        total = self.track.total()
+        hint = ""
+        if preset == "shorts" and total > 60:
+            hint = self.t("Shorts, Reels and TikTok videos are at most 60 s; this one is {d}.",
+                          d=fmt_time(total))
+        elif preset == "gif":
+            hint = self.t("A GIF has no sound and gets large quickly: best for a few seconds "
+                          "({d} now).", d=fmt_time(total))
+        elif preset == "audio":
+            hint = self.t("Only the sound: clips, music and their levels, as an MP3.")
+        self.export_hint.setText(hint)
+        self.export_hint.setVisible(bool(hint))
 
     def _build_cue_inspector(self) -> QWidget:
         """Two tabs, so nothing needs scrolling: *Line* (the selected line's
@@ -1862,7 +2042,7 @@ class StudioPage(QWidget):
         tl.setSpacing(4)
         self.cue_tabs = QStackedWidget()
         self.cue_tab_btns: list[QPushButton] = []
-        for i, key in enumerate(("Line", "Style")):
+        for i, key in enumerate(("Line", "Effects", "All lines")):
             b = QPushButton()
             b.setObjectName("segment")
             b.setCheckable(True)
@@ -1875,6 +2055,7 @@ class StudioPage(QWidget):
         self.cue_tab_btns[0].setChecked(True)
         outer.addWidget(tabs)
         self.cue_tabs.addWidget(self._build_line_tab())
+        self.cue_tabs.addWidget(self._build_effects_tab())
         self.cue_tabs.addWidget(self._build_style_tab())
         outer.addWidget(self.cue_tabs, stretch=1)
         return page
@@ -1957,10 +2138,119 @@ class StudioPage(QWidget):
         lay.addStretch()
         return self._scroll(inner)
 
+    def _build_effects_tab(self) -> QWidget:
+        """This line only: how it comes on screen, and (optionally) its own
+        colours / size over the shared style."""
+        inner, lay = self._page()
+        lay.setContentsMargins(0, 6, 4, 0)
+        lay.setSpacing(6)
+        lay.addWidget(self._label("ANIMATION", "field_cap"))
+        self.cue_anim_btns: dict[str, QPushButton] = {}
+        lay.addWidget(self._choice_grid(
+            [(k, ANIMATION_LABELS[k]) for k in ANIMATIONS], 3, self._set_cue_animation,
+            self.cue_anim_btns))
+        lay.addWidget(self._btn("Use this animation for every line", self._animation_for_all))
+        lay.addSpacing(4)
+        lay.addWidget(self._label("OWN LOOK", "field_cap"))
+        self.own_look = QCheckBox()
+        self.own_look.setCursor(QCursor(_HAND))
+        self._tr(self.own_look, "Give this line its own look")
+        self.own_look.toggled.connect(self._own_look_toggled)
+        lay.addWidget(self.own_look)
+        self.own_box = QWidget()
+        ob = QVBoxLayout(self.own_box)
+        ob.setContentsMargins(0, 0, 0, 0)
+        ob.setSpacing(5)
+        self.own_color = ColorSwatches(TEXT_COLORS, allow_none=False, t=self.t)
+        self.own_color.changed.connect(lambda c: self._set_own("color", c))
+        ob.addWidget(self._label("Text color:"))
+        ob.addWidget(self.own_color)
+        self.own_bg = ColorSwatches(BG_COLORS, allow_none=True, t=self.t)
+        self.own_bg.changed.connect(lambda c: self._set_own("background", c or None))
+        ob.addWidget(self._label("Background:"))
+        ob.addWidget(self.own_bg)
+        size_row = QHBoxLayout()
+        size_row.addWidget(self._label("Size:"))
+        self.own_size = QSpinBox()
+        self.own_size.setRange(10, 72)
+        self.own_size.valueChanged.connect(lambda v: self._set_own("size", v, "own_size"))
+        self.own_bold = QCheckBox()
+        self.own_bold.setCursor(QCursor(_HAND))
+        self._tr(self.own_bold, "Bold")
+        self.own_bold.toggled.connect(lambda on: self._set_own("bold", on))
+        size_row.addWidget(self.own_size, stretch=1)
+        size_row.addWidget(self.own_bold)
+        ob.addLayout(size_row)
+        lay.addWidget(self.own_box)
+        lay.addWidget(self._label(
+            "Lines without their own look follow All lines.", "hint"))
+        lay.addStretch()
+        return self._scroll(inner)
+
+    def _cur_cue(self) -> SubtitleCue | None:
+        if self._sel and self._sel[0] == "cue" and 0 <= self._sel[1] < len(self._cues):
+            return self._cues[self._sel[1]]
+        return None
+
+    def _cue_look_changed(self, kind: str = "") -> None:
+        self.preview.set_cues(self._preview_cues(), self._sel[1] if self._cur_cue() else None)
+        self._refresh_track()
+        self.track.set_selection(self._sel)
+        self._fill_effects()
+        self._record(kind)
+
+    def _set_cue_animation(self, kind: str) -> None:
+        cue = self._cur_cue()
+        if cue is not None:
+            cue.animation = kind
+            self._cue_look_changed()
+            self.preview.seek(cue.start + 0.01)  # play it from the start of the line
+
+    def _animation_for_all(self) -> None:
+        cue = self._cur_cue()
+        if cue is not None:
+            for other in self._cues:
+                other.animation = cue.animation
+            self._cue_look_changed()
+
+    def _own_look_toggled(self, on: bool) -> None:
+        cue = self._cur_cue()
+        if cue is None or on == bool(cue.look):
+            return
+        st = self._style()
+        cue.look = ({"color": st.color, "background": st.background, "size": st.size,
+                     "bold": st.bold} if on else None)
+        self._cue_look_changed()
+
+    def _set_own(self, key: str, value, kind: str = "") -> None:
+        cue = self._cur_cue()
+        if cue is None or not cue.look:
+            return
+        cue.look = {**cue.look, key: value}
+        self._cue_look_changed(kind)
+
+    def _fill_effects(self) -> None:
+        cue = self._cur_cue()
+        if cue is None:
+            return
+        self.cue_anim_btns.get(cue.animation, self.cue_anim_btns["none"]).setChecked(True)
+        own = bool(cue.look)
+        look = cue_style(cue, self._style())
+        for w in (self.own_look, self.own_size, self.own_bold):
+            w.blockSignals(True)
+        self.own_look.setChecked(own)
+        self.own_size.setValue(int(look.size))
+        self.own_bold.setChecked(bool(look.bold))
+        for w in (self.own_look, self.own_size, self.own_bold):
+            w.blockSignals(False)
+        self.own_color.set_color(look.color)
+        self.own_bg.set_color(look.background)
+        self.own_box.setEnabled(own)
+
     def _build_style_tab(self) -> QWidget:
         inner, lay = self._page()
         lay.setContentsMargins(0, 6, 4, 0)
-        lay.addWidget(self._label("Applies to every line.", "hint"))
+        lay.setSpacing(6)
         preset_row = QHBoxLayout()
         preset_row.setSpacing(6)
         self.preset_combo = QComboBox()
@@ -2072,6 +2362,32 @@ class StudioPage(QWidget):
             p.end()
             b.setIcon(QIcon(pm))
 
+    def _tab_bar(self, keys: tuple[str, ...]) -> tuple[QWidget, QStackedWidget, list[QPushButton]]:
+        """Segmented tabs over a stack of pages (add the pages in the same order)."""
+        bar = QWidget()
+        bar.setObjectName("segmented")
+        bar.setAttribute(Qt.WA_StyledBackground, True)
+        bl = QHBoxLayout(bar)
+        bl.setContentsMargins(4, 4, 4, 4)
+        bl.setSpacing(4)
+        stack = QStackedWidget()
+        buttons = []
+        for i, key in enumerate(keys):
+            b = QPushButton()
+            b.setObjectName("segment")
+            b.setProperty("compact", True)
+            b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            b.setMinimumHeight(32)
+            b.setCheckable(True)
+            b.setAutoExclusive(True)
+            b.setCursor(QCursor(_HAND))
+            b.clicked.connect(lambda _c=False, k=i: stack.setCurrentIndex(k))
+            self._tr(b, key)
+            bl.addWidget(b, stretch=1)
+            buttons.append(b)
+        buttons[0].setChecked(True)
+        return bar, stack, buttons
+
     def _choice_grid(self, items: list[tuple[str, str]], columns: int, slot,
                      store: dict[str, QPushButton]) -> QWidget:
         """Every option visible as a button (no dropdown); one is checked."""
@@ -2115,6 +2431,15 @@ class StudioPage(QWidget):
         top.addWidget(self._btn("Zoom to clip", self.zoom_to_clip,
                                 "Zoom the timeline to this clip for precise trimming (Z)"))
         lay.addLayout(top)
+        outer = lay
+        tabs, self.clip_tabs, self.clip_tab_btns = self._tab_bar(
+            ("Trim", "Transition", "Picture and sound"))
+        outer.addWidget(tabs)
+        outer.addWidget(self.clip_tabs, stretch=1)
+        page, lay = self._page()
+        lay.setContentsMargins(0, 6, 4, 0)
+        lay.setSpacing(6)
+        self.clip_tabs.addWidget(self._scroll(page))
 
         # exact in / out points, nudged by a frame or a second
         cap = QHBoxLayout()
@@ -2144,7 +2469,34 @@ class StudioPage(QWidget):
                 trim.addWidget(b, r, 2 + c)
         trim.setColumnStretch(1, 1)
         lay.addLayout(trim)
+        # speed: the common ones as buttons, any value in the box
+        lay.addWidget(self._label("SPEED", "field_cap"))
+        speeds = QHBoxLayout()
+        speeds.setSpacing(8)
+        self.clip_speed = QDoubleSpinBox()
+        self.clip_speed.setRange(*SPEED_RANGE)
+        self.clip_speed.setSingleStep(0.25)
+        self.clip_speed.setDecimals(2)
+        self.clip_speed.setSuffix("×")
+        self.clip_speed.setFixedWidth(92)
+        self.clip_speed.valueChanged.connect(self._set_clip_speed)
+        self.speed_btns: dict[float, QPushButton] = {}
+        named: dict[str, QPushButton] = {}
+        box = self._choice_grid([(f"{v:g}", f"{v:g}×") for v in (0.5, 1.0, 1.5, 2.0)], 4,
+                                lambda v: self.clip_speed.setValue(float(v)), named)
+        self.speed_btns = {float(k): b for k, b in named.items()}
+        speeds.addWidget(box, stretch=1)
+        speeds.addWidget(self.clip_speed)
+        lay.addLayout(speeds)
+        lay.addWidget(self._label(
+            "Hold Shift while dragging a handle to trim finely; drag it past the edge to "
+            "keep going.", "hint"))
+        lay.addStretch()
 
+        page, lay = self._page()
+        lay.setContentsMargins(0, 6, 4, 0)
+        lay.setSpacing(6)
+        self.clip_tabs.addWidget(self._scroll(page))
         lay.addWidget(self._label("TRANSITION IN", "field_cap"))
         self.trans_btns: dict[str, QPushButton] = {}
         self.trans_box = self._choice_grid(
@@ -2169,6 +2521,14 @@ class StudioPage(QWidget):
         self.trans_first = self._label(
             "The first clip opens the video, so it has no transition in.", "hint")
         lay.addWidget(self.trans_first)
+        lay.addStretch()
+
+        page, lay = self._page()
+        lay.setContentsMargins(0, 6, 4, 0)
+        lay.setSpacing(6)
+        self.clip_tabs.addWidget(self._scroll(page))
+        self.sound_cap = self._label("SOUND", "field_cap")
+        lay.addWidget(self.sound_cap)
 
         self.sound_row = QWidget()
         sr = QHBoxLayout(self.sound_row)
@@ -2215,8 +2575,12 @@ class StudioPage(QWidget):
         lay.addWidget(self.zoom_row)
         self._tr(self.fit_box, "Fill frame crops the picture so there are no black bars. Drag "
                  "the picture in the preview to choose what stays in frame.", "setToolTip")
+        self.framing_hint = self._label(
+            "Fill frame crops the picture so there are no black bars. Drag the picture "
+            "in the preview to choose what stays in frame.", "hint")
+        lay.addWidget(self.framing_hint)
         lay.addStretch()
-        return self._scroll(inner)
+        return inner
 
     def _sel_clip(self) -> _MediaClip | None:
         if self._sel and self._sel[0] == "clip" and 0 <= self._sel[1] < len(self._clips):
@@ -2231,11 +2595,18 @@ class StudioPage(QWidget):
         self.clip_name.setText(QFontMetricsF(self.clip_name.font()).elidedText(
             clip.name, Qt.ElideMiddle, max(80, self.insp.width() - 170)))
         self.clip_name.setToolTip(clip.name)
-        self.clip_info.setText(self.t("{used} of {total} used", used=fmt_time(clip.kept()),
+        self.clip_info.setText(self.t("{used} of {total} used", used=fmt_time(clip.part()),
                                       total=fmt_time(clip.length)))
         for edge, value in zip(("start", "end"), clip.span()):
             if not self.trim_fields[edge].hasFocus():
                 self.trim_fields[edge].setText(_fmt_precise(value))
+        self.clip_speed.blockSignals(True)
+        self.clip_speed.setValue(clip.speed)
+        self.clip_speed.blockSignals(False)
+        for value, b in self.speed_btns.items():  # none lit for other speeds
+            b.setAutoExclusive(False)
+            b.setChecked(abs(clip.speed - value) < 1e-6)
+            b.setAutoExclusive(True)
         first = i == 0
         for w in (self.trans_box, self.trans_len_lbl, self.trans_len, self.trans_all):
             w.setVisible(not first)
@@ -2245,9 +2616,10 @@ class StudioPage(QWidget):
         self.trans_len.setValue(clip.transition_d)
         self.trans_len.blockSignals(False)
         self.trans_len.setEnabled(clip.transition != "none")
-        for w in (self.framing_cap, self.fit_box, self.zoom_row):
+        for w in (self.framing_cap, self.fit_box, self.zoom_row, self.framing_hint):
             w.setVisible(clip.has_video)
-        self.sound_row.setVisible(clip.has_audio)
+        for w in (self.sound_cap, self.sound_row):
+            w.setVisible(clip.has_audio)
         for w in (self.clip_mute, self.clip_vol):
             w.blockSignals(True)
         self.clip_mute.setChecked(clip.muted)
@@ -2269,6 +2641,18 @@ class StudioPage(QWidget):
         self.track.set_selection(self._sel)
         self._fill_clip_inspector()
         self._record(kind)
+
+    def _set_clip_speed(self, value: float) -> None:
+        clip = self._sel_clip()
+        if clip is None or abs(clip.speed - value) < 1e-6:
+            return
+        # keep the same moment under the playhead where possible
+        hit = self._clip_at(self.preview.position())
+        clip.speed = round(min(max(value, SPEED_RANGE[0]), SPEED_RANGE[1]), 2)
+        self._transitions_changed("speed")
+        if hit is not None and hit[0] == self._sel[1]:
+            self.preview.seek(self.track.offsets()[hit[0]]
+                              + (hit[1] - clip.span()[0]) / clip.speed)
 
     def _set_transition(self, kind: str) -> None:
         clip = self._sel_clip()
@@ -2493,6 +2877,9 @@ class StudioPage(QWidget):
             (("M",), self._mute_selected),
             (("Z",), self.zoom_to_clip),
             (("Delete",), self._delete_selected),
+            (("Ctrl+C",), self.copy_selection),
+            (("Ctrl+D",), self.duplicate_selection),
+            (("Ctrl+A",), self.select_all),
             (("Escape",), self.deselect),
             ((QKeySequence.Undo, "Ctrl+Z"), self.undo),
             ((QKeySequence.Redo, "Ctrl+Y", "Ctrl+Shift+Z"), self.redo),
@@ -2542,7 +2929,7 @@ class StudioPage(QWidget):
         })
         self._style_icons()
         self._anchor_icons(palette["TEXT"])
-        for sw in (self.sub_color, self.sub_bg):
+        for sw in (self.sub_color, self.sub_bg, self.own_color, self.own_bg):
             sw.set_accent(palette["ACCENT"])
         self.undo_btn.setIcon(_arrow_icon(palette["TEXT"], redo=False))
         self.redo_btn.setIcon(_arrow_icon(palette["TEXT"], redo=True))
@@ -2566,7 +2953,10 @@ class StudioPage(QWidget):
             empty_music=t("Double-click to add background music"),
             mute=t("Mute this clip"), unmute=t("Unmute this clip"),
         )
-        self.preview.set_texts(empty=t("Add clips to start"), audio="♪")
+        self.preview.set_texts(
+            empty=t("Add clips to start"), audio="♪", guides=t("Guides"),
+            guides_tip=t("Show the safe area and centre lines (dragged text and pictures "
+                         "always snap to them; hold Alt to place freely)"))
         self._fill(self.res, [
             (t("Same as first clip"), "auto"),
             (t("1080p landscape (16:9)"), "1080p"),
@@ -2575,8 +2965,8 @@ class StudioPage(QWidget):
             (t("Vertical 1080×1920 (9:16)"), "vertical"),
             (t("Square 1080×1080 (1:1)"), "square"),
         ])
-        self.sub_color.retranslate()
-        self.sub_bg.retranslate()
+        for sw in (self.sub_color, self.sub_bg, self.own_color, self.own_bg):
+            sw.retranslate()
         self.refresh_presets()
         self._update_project_ui()
         if not self._busy:
@@ -2598,10 +2988,12 @@ class StudioPage(QWidget):
 
     def _on_mode(self) -> None:
         video = self.is_video()
-        for w in (self.add_sub_btn, self.image_btn, self.music_btn, self.res_lbl, self.res):
+        for w in (self.add_sub_btn, self.image_btn, self.music_btn, self.res_lbl, self.res,
+                  self.export_cap, self.export_box):
             w.setVisible(video)
         for w in (self.xfade_lbl, self.xfade, self.afmt_lbl, self.afmt, self.abr_lbl, self.abr):
             w.setVisible(not video)
+        self.export_hint.setVisible(video and bool(self.export_hint.text()))
         self.track.set_tracks(subs=video, music=video)
         if not video and self._sel and self._sel[0] in ("cue", "music", "image"):
             self.deselect()
@@ -2613,6 +3005,11 @@ class StudioPage(QWidget):
     # selection ----------------------------------------------------------------------
 
     def _show_inspector(self, page: int, title: str) -> None:
+        # a plain click elsewhere ends a multi-select; clicking one of the picked
+        # items (to drag the group) keeps it
+        if not self._keep_picked and self._picked and self._sel not in self._picked:
+            self._picked = set()
+            self.track.set_picked(self._picked)
         self.insp.setCurrentIndex(page)
         self.insp_title.setText(self.t(title))
         if hasattr(self, "_images"):
@@ -2677,18 +3074,18 @@ class StudioPage(QWidget):
         spans = [c.span() for c in self._clips]
         if override is not None:
             spans[override[0]] = (override[1], override[2])
-        ov = transition_overlaps([e - s for s, e in spans],
-                                 [(c.transition, c.transition_d) for c in self._clips])
+        outs = [(e - s) / c.speed for c, (s, e) in zip(self._clips, spans)]
+        ov = transition_overlaps(outs, [(c.transition, c.transition_d) for c in self._clips])
         if not self.is_video():
             ov = [0.0] * len(spans)
         ov.append(0.0)
         segs = []
-        for i, (c, (s, e)) in enumerate(zip(self._clips, spans)):
-            start = s + ov[i] / 2
-            dur = max(0.0, (e - s) - ov[i] / 2 - ov[i + 1] / 2)
+        for i, (c, (s, _e)) in enumerate(zip(self._clips, spans)):
+            start = s + ov[i] / 2 * c.speed  # source seconds
+            dur = max(0.0, outs[i] - ov[i] / 2 - ov[i + 1] / 2)  # montage seconds
             segs.append(Segment(c.path, start, dur, c.has_video, fit=c.fit, zoom=c.zoom,
                                 pan_x=c.pan_x, pan_y=c.pan_y,
-                                volume=c.gain() * self._orig_level()))
+                                volume=c.gain() * self._orig_level(), speed=c.speed))
         return segs
 
     def _transition_marks(self) -> list[TransitionMark]:
@@ -2740,6 +3137,7 @@ class StudioPage(QWidget):
         )
         self._fit_timeline()
         total = self.track.total()  # transitions overlap, so not the plain sum
+        self._sync_export()
         self.total_lbl.setText(
             self.t("{n} clips · {dur}", n=len(self._clips), dur=fmt_time(total)))
 
@@ -2785,10 +3183,16 @@ class StudioPage(QWidget):
 
     def _cues_changed(self) -> None:
         sel_cue = self._cues[self._sel[1]] if self._sel and self._sel[0] == "cue" else None
+        picked = [self._cues[i] for k, i in self._picked if k == "cue" and i < len(self._cues)]
         self._cues.sort(key=lambda c: c.start)
         if sel_cue is not None:
             self._sel = ("cue", self._cues.index(sel_cue))
             self.track.set_selection(self._sel)
+        if picked:  # the selection follows the lines, not their old positions
+            ids = {id(c) for c in picked}
+            self._picked = {(k, i) for k, i in self._picked if k != "cue"} | {
+                ("cue", i) for i, c in enumerate(self._cues) if id(c) in ids}
+            self.track.set_picked(self._picked)
         self._refresh_track()
         sel = self._sel[1] if self._sel and self._sel[0] == "cue" else None
         self.preview.set_cues(self._preview_cues(), sel)
@@ -2840,6 +3244,9 @@ class StudioPage(QWidget):
         self._record()
 
     def _delete_selected(self) -> None:
+        if len(self._picked) > 1:
+            self._delete_items(self._picked)
+            return
         if not self._sel:
             return
         kind, i = self._sel
@@ -2857,6 +3264,155 @@ class StudioPage(QWidget):
             self._remove_song()
         elif kind == "image":
             self._remove_image()
+
+    # multi-select, copy / paste -------------------------------------------------
+
+    def selected_items(self) -> list[tuple[str, int]]:
+        if self._picked:
+            return sorted(self._picked)
+        return [self._sel] if self._sel else []
+
+    def _set_picked(self, items: set[tuple[str, int]], primary: tuple[str, int] | None) -> None:
+        self._picked = set(items) if len(items) > 1 else set()
+        self._keep_picked = True
+        try:
+            if primary is None:
+                self.deselect()
+            else:
+                {"clip": self.select_clip, "cue": self.select_cue, "image": self.select_image,
+                 "music": self.select_music}[primary[0]](primary[1])
+        finally:
+            self._keep_picked = False
+        self.track.set_picked(self._picked)
+        n = len(self.selected_items())
+        self.status.setText(self.t("{n} items selected", n=n) if n > 1 else "")
+
+    def _on_item_toggled(self, kind: str, i: int) -> None:
+        items = set(self.selected_items())
+        if (kind, i) in items:
+            items.discard((kind, i))
+            primary = self._sel if self._sel in items else next(iter(sorted(items)), None)
+        else:
+            items.add((kind, i))
+            primary = (kind, i)
+        self._set_picked(items, primary)
+
+    def _on_item_clicked(self, kind: str, i: int) -> None:
+        """A plain click (no drag) on one of several picked items: just that one."""
+        if self._picked and (kind, i) in self._picked:
+            self._set_picked({(kind, i)}, (kind, i))
+
+    def _on_box_selected(self, items: list) -> None:
+        items = [tuple(x) for x in items if self.is_video() or x[0] == "clip"]
+        self._set_picked(set(items), items[0] if items else None)
+
+    def select_all(self) -> None:
+        items = {("clip", i) for i in range(len(self._clips))}
+        if self.is_video():
+            items |= {("cue", i) for i in range(len(self._cues))}
+            items |= {("image", i) for i in range(len(self._images))}
+            items |= {("music", i) for i in range(len(self._songs))}
+        self._set_picked(items, min(items) if items else None)
+
+    def _on_group_moved(self, delta: float) -> None:
+        """The other picked subtitles / pictures follow a dragged one (the
+        dragged one itself arrives through its own signal, which records)."""
+        for kind, i in self._picked:
+            if (kind, i) == self._sel:
+                continue
+            if kind == "cue" and i < len(self._cues):
+                c = self._cues[i]
+                c.start, c.end = round(c.start + delta, 2), round(c.end + delta, 2)
+            elif kind == "image" and i < len(self._images):
+                img = self._images[i]
+                img.start, img.end = round(img.start + delta, 2), round(img.end + delta, 2)
+        self._push_images()
+
+    def _delete_items(self, items) -> None:
+        by_kind: dict[str, list[int]] = {}
+        for kind, i in items:
+            by_kind.setdefault(kind, []).append(i)
+        for kind, store in (("clip", self._clips), ("cue", self._cues),
+                            ("image", self._images), ("music", self._songs)):
+            for i in sorted(by_kind.get(kind, []), reverse=True):
+                if i < len(store):
+                    del store[i]
+        self._picked = set()
+        self.deselect()
+        self._project_changed()
+        self._cues_changed()
+        self._push_music()
+        self._record()
+
+    def copy_selection(self) -> bool:
+        """Ctrl+C: keep copies of the selected items (timed ones relative to
+        the earliest of them)."""
+        items = self.selected_items()
+        if not items:
+            return False
+        get = {"clip": self._clips, "cue": self._cues, "image": self._images, "music": self._songs}
+        picked = {k: [replace(get[k][i]) for kk, i in items if kk == k and i < len(get[k])]
+                  for k in get}
+        starts = [c.start for c in picked["cue"]] + [m.start for m in picked["image"]] + \
+            [s.offset for s in picked["music"]]
+        self._clipboard = {**picked, "base": min(starts, default=0.0)}
+        self.status.setText(self.t("Copied {n} items", n=len(items)) if len(items) > 1
+                            else self.t("Copied"))
+        return True
+
+    def paste(self, at: float | None = None) -> bool:
+        """Ctrl+V: the copied items at the playhead (clips go after the clip
+        under it), keeping their spacing; they become the selection."""
+        cb = self._clipboard
+        if not cb:
+            return False
+        t = self.preview.position() if at is None else at
+        total = self.track.total()
+        new: set[tuple[str, int]] = set()
+        if cb["clip"]:
+            hit = self._clip_at(t)
+            where = hit[0] + 1 if hit else len(self._clips)
+            for n, clip in enumerate(cb["clip"]):
+                self._clips.insert(where + n, replace(clip))
+            new |= {("clip", where + n) for n in range(len(cb["clip"]))}
+            self._project_changed()
+            total = self.track.total()
+        shift = t - cb["base"]
+        for c in cb["cue"]:
+            length = c.end - c.start
+            start = round(min(max(0.0, c.start + shift), max(0.0, total - length)), 2)
+            self._cues.append(replace(c, start=start, end=round(start + length, 2)))
+        for img in cb["image"]:
+            length = img.end - img.start
+            start = round(min(max(0.0, img.start + shift), max(0.0, total - length)), 2)
+            self._images.append(replace(img, start=start, end=round(start + length, 2)))
+            new.add(("image", len(self._images) - 1))
+        for song in cb["music"]:
+            self._songs.append(replace(song, offset=round(max(0.0, song.offset + shift), 2)))
+            new.add(("music", len(self._songs) - 1))
+        pasted_cues = {id(x) for x in self._cues[len(self._cues) - len(cb["cue"]):]}
+        self._cues.sort(key=lambda c: c.start)
+        new |= {("cue", i) for i, c in enumerate(self._cues) if id(c) in pasted_cues}
+        self._refresh_track()
+        self._push_music()
+        self._push_images()
+        self.preview.set_cues(self._preview_cues(), None)
+        self._set_picked(new, min(new) if new else None)
+        self._record()
+        return True
+
+    def duplicate_selection(self) -> None:
+        """Ctrl+D: a copy right after the selected items."""
+        if not self.copy_selection():
+            return
+        cb = self._clipboard
+        ends = [c.end for c in cb["cue"]] + [m.end for m in cb["image"]] + \
+            [s.offset + (s.span()[1] - s.span()[0]) for s in cb["music"]]
+        if ends:
+            self.paste(max(ends))
+        else:  # clips only: right after the (last) selected clip
+            last = max(i for k, i in self.selected_items() if k == "clip")
+            self.paste(self.track.offsets()[last] + self._clips[last].kept() / 2)
 
     def clips(self) -> list[_MediaClip]:
         return list(self._clips)
@@ -2930,6 +3486,7 @@ class StudioPage(QWidget):
         else:
             self.cue_pos.setText(self.t("Custom ({x}%, {y}%)",
                                         x=round(cue.x * 100), y=round(cue.y * 100)))
+        self._fill_effects()
         snapped = cue.anchor if cue.x is not None and cue.x in (0.05, 0.5, 0.95) \
             and cue.y in (0.05, 0.5, 0.95) else None
         for anchor, b in self._anchor_btns.items():
@@ -3622,7 +4179,7 @@ class StudioPage(QWidget):
             begin = off + ov[i] / 2
             end = off + clip.kept() - ov[i + 1] / 2
             if begin <= t < end or (i == len(offs) - 1 and abs(t - end) < 1e-6):
-                return i, clip.span()[0] + (t - off)
+                return i, clip.span()[0] + (t - off) * clip.speed
         return None
 
     def split_clip(self) -> None:
@@ -3816,6 +4373,42 @@ class StudioPage(QWidget):
         self._project_path = ""
         self.name.clear()
         self._reset_history()
+        self.clear_autosave()
+
+    # recovery ------------------------------------------------------------------------
+
+    def _autosave_path(self) -> Path | None:
+        path = getattr(self.host, "autosave_path", None)
+        return Path(path()) if path else None
+
+    def autosave(self) -> bool:
+        """Copy unsaved work for recovery after a crash (not the project file
+        itself). True if a copy was written."""
+        target = self._autosave_path()
+        if target is None or not self.is_dirty() or not self._clips or self._busy:
+            return False
+        data = {**self.project_data(), "autosave_of": self._project_path,
+                "autosaved_at": time.strftime("%Y-%m-%d %H:%M")}
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(target)  # never leave a half-written copy behind
+        except OSError:
+            return False
+        return True
+
+    def clear_autosave(self) -> None:
+        target = self._autosave_path()
+        if target is not None:
+            target.unlink(missing_ok=True)
+
+    def recover(self, path: str) -> bool:
+        """Open a recovery copy; the project stays unsaved until you save it."""
+        ok = self.open_project(path, recovering=True)
+        if ok:
+            self.status.setText(self.t("Recovered unsaved work"))
+        return ok
 
     def project_data(self) -> dict:
         """The project as JSON-ready data (paths absolute, plus relative to the
@@ -3838,6 +4431,7 @@ class StudioPage(QWidget):
             "app": "VidGrab", "version": PROJECT_VERSION,
             "mode": "video" if self.is_video() else "audio",
             "resolution": self.res.currentData() or "auto",
+            "export": self._export,
             "name": self.name.text().strip(),
             "output_dir": self.out_dir.text().strip(),
             "crossfade": self.xfade.value(),
@@ -3846,7 +4440,7 @@ class StudioPage(QWidget):
             "clips": [{**ref(c.path), "start": c.start, "end": c.end,
                        "transition": c.transition, "transition_duration": c.transition_d,
                        "fit": c.fit, "zoom": c.zoom, "pan_x": c.pan_x, "pan_y": c.pan_y,
-                       "volume": c.volume, "muted": c.muted}
+                       "volume": c.volume, "muted": c.muted, "speed": c.speed}
                       for c in self._clips],
             "subtitles": [asdict(c) for c in self._cues],
             "images": [{**ref(img.path), **{k: v for k, v in asdict(img).items() if k != "path"}}
@@ -3883,12 +4477,13 @@ class StudioPage(QWidget):
             return False
         self._saved_state = self._history[self._hist_pos]
         self._remember_project(path)
+        self.clear_autosave()
         self.status.setText(self.t("Project saved"))
         self._update_project_ui()
         return True
 
-    def open_project(self, path: str | None = None) -> bool:
-        if self._busy or not self.maybe_save():
+    def open_project(self, path: str | None = None, *, recovering: bool = False) -> bool:
+        if self._busy or (not recovering and not self.maybe_save()):
             return False
         if path is None:
             path = self.host.pick_file(self.t("Open project"), ("Videos", "Documents"),
@@ -3926,7 +4521,8 @@ class StudioPage(QWidget):
                     max(1.0, float(ref.get("zoom", 1.0))),
                     float(ref.get("pan_x", 0.5)), float(ref.get("pan_y", 0.5)),
                     min(2.0, max(0.0, float(ref.get("volume", 1.0)))),
-                    bool(ref.get("muted", False)))))
+                    bool(ref.get("muted", False)),
+                    min(max(float(ref.get("speed", 1.0)), SPEED_RANGE[0]), SPEED_RANGE[1]))))
         songs: list[tuple] = []
         raw = data.get("music") or []
         if isinstance(raw, dict):  # 3.2 projects: one song, options on the song
@@ -3965,6 +4561,8 @@ class StudioPage(QWidget):
             if idx >= 0:
                 combo.setCurrentIndex(idx)
         self.xfade.setValue(float(data.get("crossfade", self.xfade.value())))
+        if data.get("export") in EXPORT_PRESETS:
+            self._export = data["export"]
         self.name.setText(str(data.get("name", "")))
         if data.get("output_dir"):
             self.out_dir.setText(str(data["output_dir"]))
@@ -3978,9 +4576,15 @@ class StudioPage(QWidget):
         self._load_state({"clips": clips, "cues": cues, "music": songs, "images": images,
                           "music_opts": music_opts,
                           "style": {**self._style_dict(), **(data.get("style") or {})}})
-        self._project_path = path
         self._reset_history()
-        self._remember_project(path)
+        if recovering:  # back under its own name (if it had one), still unsaved
+            self._project_path = str(data.get("autosave_of") or "")
+            self._saved_state = None
+            self._update_project_ui()
+        else:
+            self._project_path = path
+            self._remember_project(path)
+            self.clear_autosave()
         self.preview.seek(0.0)
         if missing:
             QMessageBox.warning(self, self.t("Open project"),
@@ -4073,7 +4677,7 @@ class StudioPage(QWidget):
                       transition=c.transition if video else "none",
                       transition_duration=c.transition_d,
                       fit=c.fit, zoom=c.zoom, pan_x=c.pan_x, pan_y=c.pan_y,
-                      volume=c.volume, muted=c.muted)
+                      volume=c.volume, muted=c.muted, speed=c.speed)
                  for c in self._clips]
         folder = Path(self.out_dir.text().strip() or self.host.default_output_dir())
         name = self.name.text().strip() or self.name.placeholderText()
@@ -4089,7 +4693,7 @@ class StudioPage(QWidget):
             ) for k, song in enumerate(self._songs)] or None
             self.render_requested.emit("compose_video", {
                 "clips": clips,
-                "output_file": folder / f"{name}.mp4",
+                "output_file": folder / f"{name}{EXPORT_PRESETS[self._export][2]}",
                 "resolution": self.res.currentData() or "auto",
                 "subtitles": self.cues() or None,
                 "images": [replace(img) for img in self._images] or None,

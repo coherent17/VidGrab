@@ -1302,3 +1302,105 @@ def test_studio_34_features(qapp, tmp_path, monkeypatch) -> None:
         assert not win.autosave_path().exists() and not st.is_dirty()
     finally:
         win.close()
+
+
+def test_studio_auto_captions(qapp, tmp_path, monkeypatch) -> None:
+    """Auto captions: the dialog -> worker -> lines on the Subtitles row (one
+    undo step), muted clips left out, montage times, and Stop."""
+    import shutil
+    import subprocess
+    import time
+
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QDialog
+
+    from vidgrab import app as appmod
+    from vidgrab.studio import SubtitleCue
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        pytest.skip("ffmpeg / ffprobe not on PATH")
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(appmod.QMessageBox, "question",
+                        staticmethod(lambda *_a, **_k: appmod.QMessageBox.Discard))
+    clip = tmp_path / "c.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc=size=320x180:rate=10", "-f", "lavfi", "-i", "sine", "-t", "10",
+                    str(clip)], check=True)
+    seen: dict = {}
+
+    def fake_transcribe(sources, models_dir, *, language, size, on_progress, **_kw):
+        seen.update(sources=sources, models_dir=models_dir, language=language, size=size)
+        if language == "slow":  # wait to be stopped
+            for _ in range(400):
+                on_progress("Listening for speech…", 1)
+                time.sleep(0.01)
+        return [SubtitleCue(s.offset + 1 / s.speed, s.offset + 2 / s.speed, f"line {k}")
+                for k, s in enumerate(sources)]
+
+    monkeypatch.setattr(appmod, "transcribe", fake_transcribe)
+    answers = []
+
+    def run_dialog(dlg):  # pick the language / model and press Create captions
+        lang, *_ = (w for w in dlg.findChildren(appmod.QComboBox))
+        lang.setCurrentIndex(lang.findData(answers[0]))
+        QTimer.singleShot(0, dlg.accept)
+        return QDialog.Accepted
+
+    monkeypatch.setattr(QDialog, "exec", run_dialog)
+
+    def wait_idle(st) -> None:
+        t0 = time.time()
+        while st._busy and time.time() - t0 < 10:
+            qapp.processEvents()
+            time.sleep(0.01)
+        qapp.processEvents()
+
+    win = appmod.VidGrabWindow()
+    try:
+        st = win._studio
+        st.add_clips([str(clip), str(clip), str(clip)])
+        st.set_trim(1, 2, 8)
+        st._clips[1].speed = 2.0
+        st._clips[2].muted = True
+        st._refresh_track()
+        assert [(s.start, s.end, s.speed, s.offset) for s in st.caption_sources()] == [
+            (0.0, 10.0, 1.0, 0.0), (2.0, 8.0, 2.0, 10.0)]
+        st._cues = [SubtitleCue(0.0, 1.0, "mine")]
+        st._cues_changed()
+        st._record()
+
+        answers[:] = ["zh-Hant"]
+        st.auto_captions()
+        assert st._busy and st.render_btn.text() == win._t("✕  Stop") and not st.captions_btn.isEnabled()
+        wait_idle(st)
+        assert seen["language"] == "zh-Hant" and seen["size"] == "balanced"
+        assert seen["models_dir"] == tmp_path / "models"
+        # added to the existing line, in montage time (clip 2 starts at 10 s, plays at 2x)
+        assert [(c.start, c.text) for c in st._cues] == [(0.0, "mine"), (1.0, "line 0"),
+                                                         (10.5, "line 1")]
+        assert win.setting("caption_language") == "zh-Hant"
+        assert st.render_btn.text() == win._t("✦  Render") and st.render_btn.isEnabled()
+        st.undo()
+        assert [c.text for c in st._cues] == ["mine"]
+        st.captions_ready([], False)
+        assert st.status.text() == win._t("No speech was found in the clips.")
+        assert [c.text for c in st._cues] == ["mine"]
+        st.captions_ready([SubtitleCue(3.0, 4.0, "new")], True)  # "Replace the current lines"
+        assert [c.text for c in st._cues] == ["new"]
+        st.undo()
+
+        # Stop: the Render button cancels; nothing is added
+        answers[:] = ["auto"]
+        win.set_setting("caption_language", "auto")
+        monkeypatch.setattr(appmod, "transcribe", lambda *a, **k: fake_transcribe(
+            *a, **{**k, "language": "slow"}))
+        st.auto_captions()
+        for _ in range(20):
+            qapp.processEvents()
+            time.sleep(0.01)
+        st.render_btn.click()
+        wait_idle(st)
+        assert not st._busy and [c.text for c in st._cues] == ["mine"]
+        assert st.status.text() == win._t("Stopped")
+    finally:
+        win.close()

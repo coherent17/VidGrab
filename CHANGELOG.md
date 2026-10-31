@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Auto captions**: "Auto captions…" in the Studio turns the speech in the clips into subtitle lines with Whisper (faster-whisper), on this computer — nothing is uploaded. Pick the spoken language (or detect it; Chinese can be Traditional or Simplified) and the accuracy: **Fast** (150 MB), **Balanced** (490 MB) or **Best** (1.6 GB); the model downloads once on first use. Lines follow the clips' trims, speed and place in the montage; muted clips are skipped. Lines break at sentences, pauses and commas, never inside a word; Chinese lines use spaces instead of commas, as subtitles usually do. Singing over music is still captioned, and Whisper's stock invented lines ("please subscribe…") are dropped. The Render button stops it while it runs; the result is one undo step. Uses an NVIDIA graphics card when CUDA is installed
+- The Studio toolbar buttons are shorter ("＋ Media…", "♪ Music…") so the row fits in a small window
 - **Never lose an edit: autosave and crash recovery.** The Studio keeps a recovery copy of the project while you work; if VidGrab closes without saving (a crash, a power cut), it offers to restore it at the next start
 - **Per-clip speed (0.25×–4×)**: in the Clip panel's Trim tab (0.5× / 1× / 1.5× / 2× or any value). The sound keeps its pitch, the timeline block shrinks or grows to match, transitions and subtitles line up with the sped-up clip, and the preview plays at that speed
 - **Subtitle effects and per-line looks**: a new **Effects** tab per line with entry animations (**Pop**, **Slide up**, **Typewriter**, **Karaoke**) and **Give this line its own look** (its own text colour, background, size and bold); the shared style moved to an **All lines** tab. The preview draws the animations as they will render

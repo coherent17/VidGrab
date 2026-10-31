@@ -66,6 +66,7 @@ from PySide6.QtWidgets import (
 )
 
 from vidgrab import __version__
+from vidgrab.captions import transcribe
 from vidgrab.downloader import (
     NAME_TEMPLATES,
     DownloadCancelled,
@@ -905,6 +906,8 @@ DEFAULT_SETTINGS: dict = {
     "studio_resolution": "auto",
     "subtitle_presets": {},  # name -> SubtitleStyle fields
     "recent_projects": [],  # Studio .vgproj files, newest first
+    "caption_language": "auto",  # key of captions.LANGUAGES
+    "caption_model": "balanced",  # key of captions.MODELS
 }
 
 
@@ -1399,6 +1402,15 @@ class _Worker(QThread):
                     on_log=self._cb_log,
                     translate=self._kw.get("translate"),
                 )
+            elif self._task == "transcribe":
+                result = transcribe(
+                    self._kw["sources"], _config_dir() / "models",
+                    language=self._kw.get("language", "auto"),
+                    size=self._kw.get("size", "balanced"),
+                    on_progress=self._cb_progress,
+                    on_log=self._cb_log,
+                    translate=self._kw.get("translate"),
+                )
             elif self._task == "compose_audio":
                 result = compose_audio(
                     self._kw["clips"], self._kw["output_file"],
@@ -1625,6 +1637,8 @@ class VidGrabWindow(QMainWindow):
         self._stack.addWidget(self._build_download_form())
         self._studio = StudioPage(self)
         self._studio.render_requested.connect(self._start_studio)
+        self._studio.cancel_requested.connect(
+            lambda: self._worker.cancel() if self._worker is not None else None)
         self._studio.apply_theme(self._theme, _PALETTES[self._theme], _CARD_ACCENTS[self._theme])
         self._stack.addWidget(self._studio)
         self._stack.addWidget(self._build_settings_form())
@@ -2795,6 +2809,10 @@ class VidGrabWindow(QMainWindow):
     def autosave_path(self) -> Path:
         return _config_dir() / "studio-recovery.vgproj"
 
+    def models_dir(self) -> Path:
+        """Where the auto-caption speech models are downloaded to."""
+        return _config_dir() / "models"
+
     def _offer_recovery(self) -> None:
         """VidGrab closed with unsaved Studio work last time: offer it back."""
         path = self.autosave_path()
@@ -3201,6 +3219,7 @@ class VidGrabWindow(QMainWindow):
         self._worker.error.connect(self._on_error)
         self._worker.progress.connect(self._on_progress)
         self._worker.log.connect(self._append_log)
+        self._worker.cancelled.connect(self._on_cancelled)
         self._worker.start()
 
     # ── callbacks ──────────────────────────────────────────────────────
@@ -3209,6 +3228,12 @@ class VidGrabWindow(QMainWindow):
         self._studio.show_progress(msg, pct if isinstance(pct, (int, float)) else None)
 
     def _on_result(self, result: object) -> None:
+        if self._worker is not None and self._worker._task == "transcribe":
+            replace_lines = bool(self._worker._kw.get("replace"))
+            self._set_busy(False)
+            self._studio.finish(True)
+            self._studio.captions_ready(list(result), replace_lines)
+            return
         self._set_busy(False)
         files = list(result) if isinstance(result, (tuple, list)) else [str(result)]
         self._studio.finish(True)
@@ -3216,6 +3241,11 @@ class VidGrabWindow(QMainWindow):
             self, self._t("Success"),
             self._t("Saved to:\n{paths}", paths="\n".join(str(f) for f in files)),
         )
+
+    def _on_cancelled(self) -> None:
+        self._set_busy(False)
+        self._studio.finish(False)
+        self._studio.status.setText(self._t("Stopped"))
 
     def _on_error(self, msg: str) -> None:
         self._set_busy(False)
@@ -3459,10 +3489,13 @@ def main() -> None:
     window = VidGrabWindow()
 
     # Hidden build-verification flag: construct the full UI headlessly and
-    # report whether QtMultimedia (inline preview) is available in a packaged
-    # or source build, then exit. Used by CI to catch exclusion mistakes.
+    # report whether QtMultimedia (inline preview) and the auto-caption speech
+    # engine are available in a packaged or source build, then exit. Used by CI to catch exclusion mistakes.
     if "--selftest" in sys.argv:
-        print(f"VIDGRAB_SELFTEST multimedia={int(_QT_MULTIMEDIA_OK)}", flush=True)
+        from vidgrab.captions import engine_ok
+
+        print(f"VIDGRAB_SELFTEST multimedia={int(_QT_MULTIMEDIA_OK)} "
+              f"captions={int(engine_ok())}", flush=True)
         window.close()
         return
 

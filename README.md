@@ -73,6 +73,28 @@ Python 3.10+ on Windows, Linux or macOS. The package does not contain ffmpeg or 
 your `PATH` if it is there, or downloaded once on first run; the speech models are downloaded when you first make
 captions. Update yt-dlp with `pip install -U yt-dlp`.
 
+**Starting it, and checking the install**
+
+```bash
+vidgrab                  # opens the app  (same as: python -m vidgrab)
+vidgrab --info           # what this install has: ffmpeg, captions, yt-dlp, Python
+vidgrab --version
+vidgrab --help
+```
+
+From your own Python script (for example a launcher or a desktop shortcut):
+
+```python
+# launch_vidgrab.py
+from vidgrab.app import main
+
+main()          # opens the window and returns when you close it
+```
+
+On Windows run it with `pythonw launch_vidgrab.py` (or `pythonw -m vidgrab`) so no console window stays open; the
+`vidgrab` command from pip does this already, but because it has no console, use `python -m vidgrab --info` to see text output there.
+On Linux you need a desktop session (X11 or Wayland) and Qt's system libraries (`sudo apt install libegl1 libxkbcommon0 libxcb-cursor0`).
+
 **Quick start:** copy a YouTube link → **Paste** → **Download** → **Send to Studio** → trim, add **＋ Subtitle** or
 **Auto captions…** → **Render**.
 

@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 4.1.0
+
+Two videos at once, a much more capable Download page, and VidGrab for macOS and pip.
+
+### Starting a pip install
+
+- **`vidgrab --info`** shows what the installation has (ffmpeg, auto captions, yt-dlp, Python) and **`vidgrab --help`** / **`--version`** answer in the terminal without opening a window; the README now shows how to start the app from a short Python script too
 
 ### Install with pip, and a macOS app
 

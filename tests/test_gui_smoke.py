@@ -1991,3 +1991,42 @@ def test_studio_subtitle_files_menu(qapp, tmp_path, monkeypatch) -> None:
     finally:
         win._studio.clear_autosave()
         win.close()
+
+
+def test_font_choice_in_settings(qapp, tmp_path, monkeypatch) -> None:
+    """A font is picked in Settings and put first in the chain; "System default" takes
+    every bundled one out of it; each name is listed in its own typeface."""
+    from PySide6.QtCore import Qt
+
+    from vidgrab import app as appmod
+
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    win = appmod.VidGrabWindow()
+    try:
+        assert win.setting("ui_font") == appmod.DEFAULT_UI_FONT == "jakarta"
+        assert win._font_combo.currentData() == "jakarta"
+        assert win._font_combo.count() == len(appmod.UI_FONTS) + 1
+        assert win._font_combo.itemData(0, Qt.FontRole).family() == "Plus Jakarta Sans"
+        assert appmod._font_families("zh")[0] == "Plus Jakarta Sans"  # Chinese: Latin from it too
+        assert '"Plus Jakarta Sans"' in win.styleSheet()
+        for key, family in appmod.UI_FONTS.items():
+            win._font_combo.setCurrentIndex(win._font_combo.findData(key))
+            win._on_font_change()
+            assert appmod._load_config()["ui_font"] == key
+            assert win.styleSheet().count(f'"{family}"') == 1 and f'"{family}",' in win.styleSheet()
+            others = [f for f in appmod.UI_FONTS.values() if f != family]
+            assert not any(f'"{other}"' in win.styleSheet() for other in others)
+        win._font_combo.setCurrentIndex(win._font_combo.findData("system"))
+        win._on_font_change()
+        assert not any(f'"{f}"' in win.styleSheet() for f in appmod.UI_FONTS.values())
+    finally:
+        win._studio.clear_autosave()
+        win.close()
+
+
+def test_every_bundled_font_file_exists() -> None:
+    from vidgrab import app as appmod
+
+    for name in appmod._BUNDLED_FONTS:
+        if name.endswith(".ttf"):
+            assert appmod._asset(name).is_file(), name

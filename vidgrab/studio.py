@@ -188,6 +188,7 @@ class BackgroundMusic:
     offset: float = 0.0
     length: float = 0.0  # the song's full length (filled in by compose_video)
     fade: float = 0.0  # fade in / out at this song's own edges (s), e.g. for crossfades
+    duck: bool = False  # lower the music while the clips' own sound is loud (speech)
 
     def trimmed(self) -> bool:
         return self.start > 0 or self.end is not None
@@ -978,6 +979,8 @@ _AUDIO_FMT = (f"aformat=sample_fmts=fltp:sample_rates={SAMPLE_RATE}:channel_layo
 DENOISE = "highpass=f=70,afftdn=nr=14:nf=-35"
 # the loudness YouTube, Shorts and most players aim for (integrated LUFS, true peak dB)
 LOUDNESS = "loudnorm=I=-14:TP=-1.5:LRA=11"
+# music ducking: how loud the voice must be to push the music down, how hard, how fast
+DUCK = "sidechaincompress=threshold=0.01:ratio=20:attack=10:release=300:makeup=1"  # about -15 dB
 
 
 def _audio_norm(label: str, gain: float = 1.0, denoise: bool = False) -> str:
@@ -1285,10 +1288,21 @@ def build_video_command(
     if songs:
         for k, (m, idx) in enumerate(zip(songs, song_inputs)):
             graph.append(f"{_music_bed(f'[{idx}:a:0]', m, total)}[bg{k}]")
-        graph.append(f"[ac]volume={max(0.0, songs[0].original_volume):.3f}[orig]")
+        orig = f"volume={max(0.0, songs[0].original_volume):.3f}"
         beds = "".join(f"[bg{k}]" for k in range(len(songs)))
-        graph.append(f"[orig]{beds}amix=inputs={len(songs) + 1}:duration=first"
-                     ":dropout_transition=0:normalize=0[am]")
+        if any(m.duck for m in songs):
+            # the clips' own sound steers a compressor on the music (a "side chain"):
+            # it presses the music down while someone talks and lets it back up after
+            graph.append(f"[ac]asplit=2[acm][acs];[acm]{orig}[orig]")
+            graph.append(f"{beds}amix=inputs={len(songs)}:duration=longest:dropout_transition=0"
+                         ":normalize=0[bgm]")
+            graph.append(f"[bgm][acs]{DUCK}[ducked]")
+            graph.append("[orig][ducked]amix=inputs=2:duration=first:dropout_transition=0"
+                         ":normalize=0[am]")
+        else:
+            graph.append(f"[ac]{orig}[orig]")
+            graph.append(f"[orig]{beds}amix=inputs={len(songs) + 1}:duration=first"
+                         ":dropout_transition=0:normalize=0[am]")
         aout = "[am]"
 
     # hand AAC whole 1024-sample frames (crossfades emit bigger ones, which some

@@ -757,3 +757,52 @@ def test_cleanup_really_changes_the_sound(tmp_path):
     assert hiss(clean) < hiss(plain) - 8  # the hiss is clearly quieter (about 16 dB here)
     assert lufs(plain) < -20  # a quiet clip ...
     assert abs(lufs(loud) - (-14)) < 2.5  # ... brought to about -14 LUFS
+
+
+# ── music ducking ─────────────────────────────────────────────────────────
+
+
+def test_ducking_is_only_in_the_graph_when_asked(tmp_path):
+    clip = _clip_for_graph(tmp_path)
+    song = tmp_path / "s.mp3"
+    song.write_bytes(b"x")
+    out = tmp_path / "o.mp4"
+    plain = studio.BackgroundMusic(str(song), length=30.0)
+    cmd, _ = studio.build_video_command("ffmpeg", [clip], out, music=[plain])
+    assert "sidechaincompress" not in cmd[cmd.index("-filter_complex") + 1]
+    ducked = studio.BackgroundMusic(str(song), length=30.0, duck=True)
+    cmd, _ = studio.build_video_command("ffmpeg", [clip], out, music=[ducked, ducked])
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    assert graph.count("sidechaincompress") == 1  # one compressor for all the songs
+
+
+@pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
+                    reason="ffmpeg not available")
+def test_the_music_really_gets_quieter_under_speech(tmp_path):
+    import re
+
+    talk = tmp_path / "talk.mp4"  # "speech" for 2 s, then a pause, then again
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "color=c=black:s=160x90:r=25:d=8", "-f", "lavfi", "-i",
+                    "sine=f=300:d=8,volume='if(lt(mod(t,4),2),0.5,0.0)':eval=frame", "-c:v",
+                    "libx264", "-c:a", "aac", "-shortest", str(talk)], check=True)
+    music = tmp_path / "music.mp3"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=f=900:d=12",
+                    "-af", "volume=0.3", str(music)], check=True)
+
+    def level(path, start):
+        err = subprocess.run(["ffmpeg", "-hide_banner", "-ss", str(start), "-t", "1.2", "-i",
+                              str(path), "-af", "volumedetect", "-vn", "-f", "null", "-"],
+                             capture_output=True, text=True, check=False).stderr
+        return float(re.search(r"mean_volume: (-?[\d.]+) dB", err).group(1))
+
+    results = {}
+    for duck in (False, True):
+        # the clips' own sound is silent in the mix (original_volume 0): only the music is heard
+        song = studio.BackgroundMusic(str(music), volume=1.0, original_volume=0.0, duck=duck)
+        out = studio.compose_video([studio.Clip(str(talk))], tmp_path / f"d{duck}.mp4",
+                                   resolution="480p", music=[song])
+        results[duck] = (level(out, 0.4), level(out, 2.6))  # (while speaking, in the pause)
+    speaking, pause = results[True]
+    assert pause - speaking > 10  # pressed down by more than 10 dB while there is speech
+    assert abs(results[False][0] - results[False][1]) < 1.5  # without ducking it is steady

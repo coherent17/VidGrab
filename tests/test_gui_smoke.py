@@ -1997,6 +1997,60 @@ def test_studio_audio_cleanup_options(qapp, tmp_path, monkeypatch) -> None:
         win.close()
 
 
+def test_music_ducking_option(qapp, tmp_path, monkeypatch) -> None:
+    """"Lower the music while someone is speaking": undoable, saved in the project,
+    sent to the render with every song."""
+    import json
+    import shutil
+    import subprocess
+
+    from vidgrab import app as appmod
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        pytest.skip("ffmpeg / ffprobe not on PATH")
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(appmod.QMessageBox, "question",
+                        staticmethod(lambda *_a, **_k: appmod.QMessageBox.Discard))
+    clip, song = tmp_path / "c.mp4", tmp_path / "s.mp3"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc=size=160x90:rate=10", "-f", "lavfi", "-i", "sine", "-t", "2",
+                    str(clip)], check=True)
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=f=500:d=4",
+                    str(song)], check=True)
+    win = appmod.VidGrabWindow()
+    try:
+        st = win._studio
+        st.add_clips([str(clip)])
+        st.set_music(str(song))
+        assert not st.music_duck.isChecked()
+        st.music_duck.setChecked(True)
+        st.undo()
+        assert not st.music_duck.isChecked()
+        st.redo()
+        assert st.music_duck.isChecked()
+        saved = st.project_data()
+        assert saved["music_options"]["duck"] is True
+        path = tmp_path / "p.vgproj"
+        path.write_text(json.dumps(saved))
+        st.new_project()
+        assert not st.music_duck.isChecked()
+        assert st.open_project(str(path)) and st.music_duck.isChecked()
+        old = json.loads(path.read_text())  # a project from before this option existed
+        del old["music_options"]["duck"]
+        path.write_text(json.dumps(old))
+        assert st.open_project(str(path)) and not st.music_duck.isChecked()
+        st.music_duck.setChecked(True)
+        sent = {}
+        st.render_requested.disconnect()
+        st.render_requested.connect(lambda task, kw: sent.update(task=task, **kw))
+        st.host.ffmpeg_ok = lambda: True
+        st.render()
+        assert [m.duck for m in sent["music"]] == [True]
+    finally:
+        win._studio.clear_autosave()
+        win.close()
+
+
 def test_font_choice_in_settings(qapp, tmp_path, monkeypatch) -> None:
     """A font is picked in Settings and put first in the chain; "System default" takes
     every bundled one out of it; each name is listed in its own typeface."""

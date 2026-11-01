@@ -1320,6 +1320,7 @@ def test_studio_auto_captions(qapp, tmp_path, monkeypatch) -> None:
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
     monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(appmod, "_models_dir", lambda: tmp_path / "models")
     monkeypatch.setattr(appmod.QMessageBox, "question",
                         staticmethod(lambda *_a, **_k: appmod.QMessageBox.Discard))
     clip = tmp_path / "c.mp4"
@@ -1402,5 +1403,102 @@ def test_studio_auto_captions(qapp, tmp_path, monkeypatch) -> None:
         wait_idle(st)
         assert not st._busy and [c.text for c in st._cues] == ["mine"]
         assert st.status.text() == win._t("Stopped")
+    finally:
+        win.close()
+
+
+def test_hardware_switches(qapp, tmp_path, monkeypatch) -> None:
+    """Settings -> Hardware: two switches that persist, status lines that follow
+    the detected card, and both reach the render / captions requests."""
+    import shutil
+    import subprocess
+
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QDialog
+
+    from vidgrab import app as appmod
+    from vidgrab import captions
+    from vidgrab.gpu import CANDIDATES
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        pytest.skip("ffmpeg / ffprobe not on PATH")
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(captions, "_gpus", [])  # not detected yet
+    clip = tmp_path / "c.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc=size=320x180:rate=10", "-f", "lavfi", "-i", "sine", "-t", "4",
+                    str(clip)], check=True)
+    win = appmod.VidGrabWindow()
+    try:
+        t = win._t
+        assert win.setting("gpu_render") is True and win.setting("gpu_captions") is True
+        assert win._set_gpu_render.isChecked() and win._set_gpu_captions.isChecked()
+        assert win._gpu_render_hint.text() == t("Checking this computer…")
+        assert win._gpu_captions_hint.text() == t("Checking this computer…")
+
+        # a graphics encoder and an Intel GPU were found
+        qsv = next(e for e in CANDIDATES if e.key == "qsv")
+        intel = captions.SpeechGpu("openvino", "GPU", "Intel Arc 140T GPU")
+        captions._gpus.append([intel])
+        win._on_hardware(qsv)
+        assert "Intel Quick Sync" in win._gpu_render_hint.text()
+        assert "Intel Arc 140T GPU" in win._gpu_captions_hint.text()
+        win._on_hardware(None)
+        assert win._gpu_render_hint.text() == t(
+            "No supported graphics encoder found (NVIDIA, Intel or AMD), so videos "
+            "are rendered on the CPU.")
+
+        # what the Studio asks for follows the switches
+        st = win._studio
+        st.add_clips([str(clip)])
+        sent: list[tuple[str, dict]] = []
+        st.render_requested.disconnect()
+        st.render_requested.connect(lambda task, kw: sent.append((task, kw)))
+        monkeypatch.setattr(QDialog, "exec", lambda dlg: (QTimer.singleShot(0, dlg.accept),
+                                                          QDialog.Accepted)[1])
+        st.render()
+        st.auto_captions()
+        assert [(task, kw["hardware"] if task == "compose_video" else kw["gpu"])
+                for task, kw in sent] == [("compose_video", True), ("transcribe", True)]
+
+        win._set_gpu_render.setChecked(False)
+        win._set_gpu_captions.setChecked(False)
+        assert win.setting("gpu_render") is False and win.setting("gpu_captions") is False
+        assert "run on the CPU" in win._gpu_captions_hint.text()
+        sent.clear()
+        st.render()
+        st.auto_captions()
+        assert [(task, kw["hardware"] if task == "compose_video" else kw["gpu"])
+                for task, kw in sent] == [("compose_video", False), ("transcribe", False)]
+        # saved: a new window starts with the switches off
+        assert appmod._load_config()["gpu_render"] is False
+    finally:
+        win.close()
+
+
+def test_speech_models_storage_row(qapp, tmp_path, monkeypatch) -> None:
+    """Settings -> Storage shows the downloaded speech models and deletes them."""
+    from vidgrab import app as appmod
+
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path / "cfg")
+    models = tmp_path / "models"
+    monkeypatch.setattr(appmod, "_models_dir", lambda: models)
+    win = appmod.VidGrabWindow()
+    try:
+        win._refresh_storage()
+        assert win._models_lbl.text() == win._t("Speech models: {size}", size="0 B")
+        assert not win._models_btn.isEnabled()  # nothing to delete
+        (models / "openvino" / "fast").mkdir(parents=True)
+        (models / "openvino" / "fast" / "model.bin").write_bytes(b"x" * 3000)
+        win._refresh_storage()
+        assert "KB" in win._models_lbl.text() and win._models_btn.isEnabled()
+        monkeypatch.setattr(appmod.QMessageBox, "question",
+                            staticmethod(lambda *_a, **_k: appmod.QMessageBox.No))
+        win._clear_models()
+        assert models.exists()  # declined
+        monkeypatch.setattr(appmod.QMessageBox, "question",
+                            staticmethod(lambda *_a, **_k: appmod.QMessageBox.Yes))
+        win._clear_models()
+        assert not models.exists() and not win._models_btn.isEnabled()
     finally:
         win.close()

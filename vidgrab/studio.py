@@ -36,6 +36,7 @@ from vidgrab.downloader import (
     get_app_dir,
     get_bundle_dir,
 )
+from vidgrab.gpu import HwEncoder, detect_encoder, video_args
 
 SAMPLE_RATE = 48000
 SUBTITLE_FONT_FILE = "NotoSansTC-Regular.otf"
@@ -1080,6 +1081,7 @@ def build_video_command(
     music_has_audio: bool = True,
     quality: str = "balanced",
     images: list[ImageOverlay] | None = None,
+    encoder: HwEncoder | None = None,
 ) -> tuple[list[str], float]:
     """ffmpeg argv + output length for a video montage.
 
@@ -1198,7 +1200,7 @@ def build_video_command(
     cmd += [
         "-filter_complex", ";".join(graph),
         "-map", vout, "-map", aout,
-        "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+        *video_args(encoder, preset, crf),
         "-c:a", "aac", "-b:a", abr,
         "-movflags", "+faststart",
         str(output),
@@ -1236,13 +1238,16 @@ def compose_video(
     images: list[ImageOverlay] | None = None,
     gif_width: int = 480,
     gif_fps: int = 15,
+    hardware: bool = False,
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
     translate: TranslateFn | None = None,
 ) -> Path:
     """Join video clips, then optionally burn in subtitles and add music.
     The output's suffix picks the format: .mp4, or .gif / .mp3 / .m4a / .wav
-    (rendered as MP4 first, then converted)."""
+    (rendered as MP4 first, then converted). With *hardware*, the video is
+    encoded on the graphics card when one works (see `gpu.detect_encoder`),
+    and again on the CPU if that render fails."""
     tr = translate or _noop_tr
     ffmpeg = _require_ffmpeg(translate)
     if on_progress:
@@ -1287,19 +1292,32 @@ def compose_video(
         # GIF / audio-only exports: render the video first, then convert it
         kind = out.suffix.lower()
         render_to = out if kind == ".mp4" else work / "render.mp4"
-        cmd, total = build_video_command(
-            ffmpeg, resolved, render_to,
-            resolution=resolution,
-            subtitles_file=subs_name,
-            fonts_dir=fonts_name,
-            music=songs,
-            images=[img for img in images or [] if img.end > img.start],
-            quality=quality,
-        )
-        _run_with_progress(
-            cmd, total, cwd=work, label=tr("Rendering…"),
-            on_progress=on_progress, on_log=on_log, translate=translate,
-        )
+        encoder = detect_encoder(ffmpeg) if hardware else None
+        for attempt in (encoder, None) if encoder else (None,):
+            cmd, total = build_video_command(
+                ffmpeg, resolved, render_to,
+                resolution=resolution,
+                subtitles_file=subs_name,
+                fonts_dir=fonts_name,
+                music=songs,
+                images=[img for img in images or [] if img.end > img.start],
+                quality=quality,
+                encoder=attempt,
+            )
+            if attempt and on_log:
+                on_log(tr("Encoding on the graphics card ({name})", name=attempt.label))
+            try:
+                _run_with_progress(
+                    cmd, total, cwd=work, label=tr("Rendering…"),
+                    on_progress=on_progress, on_log=on_log, translate=translate,
+                )
+                break
+            except RuntimeError as exc:
+                if attempt is None:
+                    raise
+                if on_log:  # a driver problem in the middle of the render: do it on the CPU
+                    on_log(tr("The graphics card could not encode this ({err}); "
+                              "rendering on the CPU instead", err=str(exc).splitlines()[-1]))
         if render_to != out:
             if on_progress:
                 on_progress(tr("Converting…"), None)

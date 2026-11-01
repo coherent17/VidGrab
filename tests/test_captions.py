@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import itertools
 import shutil
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import numpy as np
@@ -19,6 +21,7 @@ from vidgrab.captions import (
     split_lines,
     tidy_punctuation,
 )
+from vidgrab.downloader import DownloadCancelled
 
 
 def words(*items: tuple[float, float, str]) -> list[Word]:
@@ -61,19 +64,14 @@ def test_is_hallucination() -> None:
 
 class _FakeModel:
     """Says one sentence 1-3 s into whatever it hears, except with the voice
-    filter on (like singing over music)."""
+    filter on and `vad_hears` off (like singing over music)."""
 
-    def __init__(self, device: str = "cpu", fail_cuda: bool = False, vad_hears: bool = True):
-        self.device, self.fail_cuda, self.vad_hears = device, fail_cuda, vad_hears
+    def __init__(self, vad_hears: bool = True):
+        self.vad_hears = vad_hears
         self.calls: list[dict] = []
 
     def transcribe(self, audio, **opts):
         self.calls.append(opts)
-        if self.device == "cuda" and self.fail_cuda:
-            def boom():
-                raise RuntimeError("Library libcublas.so.12 is not found")
-                yield  # pragma: no cover
-            return boom(), SimpleNamespace(language="en")
         seg = SimpleNamespace(start=1.0, end=3.0, text=" Hello there.", no_speech_prob=0.1,
                               avg_logprob=-0.3,
                               words=[SimpleNamespace(start=1.0, end=1.5, word=" Hello"),
@@ -82,26 +80,40 @@ class _FakeModel:
         return iter(segs), SimpleNamespace(language="en")
 
 
-def _patch(monkeypatch, tmp_path, model: _FakeModel, length_s: float = 10.0) -> list:
-    loaded = []
+class _Recogniser:
+    """Stands in for a loaded engine: one sentence per clip, 1-3 s in."""
 
-    def load_model(path, on_log, *, gpu=True):
-        loaded.append(gpu)
-        if gpu and model.device == "cuda":
-            return model, "cuda"
-        model.device = "cpu"
-        return model, "cpu"
+    def __init__(self, engine: str, fail: Exception | None = None):
+        self.engine, self.fail = engine, fail
 
-    monkeypatch.setattr(captions, "ensure_model", lambda *a, **k: tmp_path)
-    monkeypatch.setattr(captions, "_load_model", load_model)
+    def words(self, audio, on_segment):
+        on_segment(5.0)
+        if self.fail:
+            raise self.fail
+        return [Word(1.0, 1.5, " Hello"), Word(1.6, 3.0, " there.")], "en"
+
+
+def _patch(monkeypatch, recognisers: dict[str, _Recogniser], gpus=(), length_s: float = 10.0):
+    loaded: list[str] = []
+
+    def recogniser(engine, *_a, **_k):
+        loaded.append(engine)
+        return recognisers[engine]
+
+    monkeypatch.setattr(captions, "_recogniser", recogniser)
+    monkeypatch.setattr(captions, "detect_gpus", lambda: list(gpus))
     monkeypatch.setattr(captions, "_require_ffmpeg", lambda tr=None: "ffmpeg")
     monkeypatch.setattr(captions, "load_audio",
                         lambda src, ff: np.full(int(length_s * captions.SAMPLE_RATE), 0.1, np.float32))
     return loaded
 
 
+CUDA = captions.SpeechGpu("cuda", "cuda", "NVIDIA GPU")
+INTEL = captions.SpeechGpu("openvino", "GPU", "Intel Arc 140T GPU")
+
+
 def test_transcribe_maps_source_time_to_montage_time(monkeypatch, tmp_path) -> None:
-    _patch(monkeypatch, tmp_path, _FakeModel())
+    _patch(monkeypatch, {"cpu": _Recogniser("cpu")})
     progress = []
     cues = captions.transcribe(
         [CaptionSource("a.mp4", 20.0, 30.0, 2.0, 5.0)], tmp_path, language="zh-Hant",
@@ -112,13 +124,130 @@ def test_transcribe_maps_source_time_to_montage_time(monkeypatch, tmp_path) -> N
     assert progress and all(p is None or 0 <= p <= 100 for p in progress)
 
 
-def test_transcribe_falls_back_from_gpu_and_voice_filter(monkeypatch, tmp_path) -> None:
-    model = _FakeModel(device="cuda", fail_cuda=True, vad_hears=False)
-    loaded = _patch(monkeypatch, tmp_path, model)
-    cues = captions.transcribe([CaptionSource("a.mp4", 0.0, 10.0)], tmp_path)
-    assert loaded == [True, False]  # CUDA failed while decoding -> reloaded on the CPU
-    assert [c.text for c in cues] == ["Hello there."]  # found without the voice filter
-    assert model.calls[-1]["vad_filter"] is False
+def test_engine_order_and_the_switch(monkeypatch) -> None:
+    monkeypatch.setattr(captions, "detect_gpus", lambda: [CUDA, INTEL])
+    assert captions.speech_engines(True) == ["cuda", "openvino", "cpu"]
+    assert captions.speech_engines(False) == ["cpu"]  # the switch is off
+    monkeypatch.setattr(captions, "detect_gpus", list)
+    assert captions.speech_engines(True) == ["cpu"]
+
+
+def test_transcribe_falls_back_engine_by_engine(monkeypatch, tmp_path) -> None:
+    recognisers = {"cuda": _Recogniser("cuda", RuntimeError("Library libcublas.so.12 is not found")),
+                   "openvino": _Recogniser("openvino", RuntimeError("GPU plugin failed")),
+                   "cpu": _Recogniser("cpu")}
+    loaded = _patch(monkeypatch, recognisers, gpus=[CUDA, INTEL])
+    monkeypatch.setattr(captions.cuda_runtime, "runtime_ready", lambda models_dir: True)
+    log: list[str] = []
+    cues = captions.transcribe([CaptionSource("a.mp4", 0.0, 10.0)], tmp_path, on_log=log.append)
+    assert loaded == ["cuda", "openvino", "cpu"]
+    assert [c.text for c in cues] == ["Hello there."]
+    assert any("cuda failed" in line and "openvino" in line for line in log)
+
+    loaded[:] = []  # the switch off: straight to the CPU
+    captions.transcribe([CaptionSource("a.mp4", 0.0, 10.0)], tmp_path, gpu=False)
+    assert loaded == ["cpu"]
+
+    # the CPU engine's own failure is not swallowed; neither is a cancel
+    recognisers["cpu"] = _Recogniser("cpu", RuntimeError("out of memory"))
+    with pytest.raises(RuntimeError, match="out of memory"):
+        captions.transcribe([CaptionSource("a.mp4", 0.0, 10.0)], tmp_path, gpu=False)
+    loaded[:] = []
+    recognisers["cuda"] = _Recogniser("cuda", DownloadCancelled())
+    with pytest.raises(DownloadCancelled):
+        captions.transcribe([CaptionSource("a.mp4", 0.0, 10.0)], tmp_path)
+    assert loaded == ["cuda"]  # stopped, not retried on the next engine
+
+
+def test_faster_whisper_retries_without_the_voice_filter() -> None:
+    model = _FakeModel(vad_hears=False)
+    engine = captions._FasterWhisper.__new__(captions._FasterWhisper)
+    engine.model, engine.opts = model, {"vad_filter": True}
+    loud = np.full(captions.SAMPLE_RATE, 0.3, np.float32)  # music, not silence
+    words, lang = engine.words(loud, lambda t: None)
+    assert [w.text for w in words] == [" Hello", " there."] and lang == "en"
+    assert [c["vad_filter"] for c in model.calls] == [True, False]
+    model.calls.clear()
+    assert engine.words(np.zeros(captions.SAMPLE_RATE, np.float32), lambda t: None)[0] == []
+    assert len(model.calls) == 1  # silence stays silence
+
+
+def test_speech_device_messages(monkeypatch) -> None:
+    monkeypatch.setattr(captions, "speech_threads", lambda: 6)
+    monkeypatch.setattr(captions, "gpus_checked", lambda: False)
+    assert captions.speech_device(True)[0] == "Checking this computer…"
+    assert captions.speech_device(False) == ("Auto captions run on the CPU ({n} threads).", {"n": 6})
+    monkeypatch.setattr(captions, "gpus_checked", lambda: True)
+    monkeypatch.setattr(captions, "detect_gpus", lambda: [INTEL])
+    key, fill = captions.speech_device(True)
+    assert key.startswith("Ready: {name}") and fill == {"name": "Intel Arc 140T GPU"}
+    assert captions.speech_device(False)[1] == {"n": 6}  # switched off: CPU even with a GPU
+    monkeypatch.setattr(captions, "detect_gpus", list)
+    assert captions.speech_device(True)[0].startswith("No supported graphics card") \
+        and captions.speech_device(True)[1] == {"n": 6}
+
+
+def test_chunk_words_spreads_a_segment_over_its_text() -> None:
+    words = captions.chunk_words("這是Alumni，對", 10.0, 14.0)
+    assert [w.text for w in words] == ["這", "是", "Alumni", "，", "對"]
+    assert words[0].start == 10.0 and words[-1].end == 14.0
+    assert all(a.end == b.start for a, b in itertools.pairwise(words))  # no gaps
+    assert words[3].start == words[3].end  # punctuation takes no time
+    assert words[2].end - words[2].start > words[0].end - words[0].start  # a long word, longer
+    lines = split_lines(captions.chunk_words("Hello there. How are you", 0.0, 3.0))
+    assert [c.text for c in lines] == ["Hello there.", "How are you"]
+    assert captions.chunk_words("  ", 0, 1) == [] and captions.chunk_words("，", 0, 1)[0].text == "，"
+
+
+def test_audio_slices_cut_in_quiet_places_and_lose_nothing() -> None:
+    sr = captions.SAMPLE_RATE
+    rng = np.random.default_rng(1)
+    audio = (rng.standard_normal(150 * sr) * 0.1).astype(np.float32)
+    audio[int(62.0 * sr):int(62.5 * sr)] = 0  # a pause just after the 60 s mark
+    pieces = list(captions.audio_slices(audio))
+    assert 62.0 <= pieces[0][1].size / sr <= 62.5  # cut inside the pause, not at 60.0
+    assert sum(p.size for _, p in pieces) == audio.size and pieces[0][0] == 0.0
+    assert all(abs(off * sr - sum(q.size for _, q in pieces[:k])) < 1 for k, (off, _) in enumerate(pieces))
+    assert [round(o) for o, _ in captions.audio_slices(audio[:30 * sr])] == [0]  # short: one piece
+
+
+def test_openvino_engine_reads_segments_and_skips_silence_and_stock_lines() -> None:
+    chunk = lambda a, b, text: SimpleNamespace(start_ts=a, end_ts=b, text=text)
+
+    class Pipe:
+        def __init__(self):
+            self.sent = []
+
+        def get_generation_config(self):
+            return SimpleNamespace(language=None, task=None, return_timestamps=False, initial_prompt=None)
+
+        def generate(self, samples, cfg):
+            self.sent.append((len(samples), cfg.language, cfg.initial_prompt))
+            return SimpleNamespace(language="zh", chunks=[chunk(0.0, 2.0, "你好嗎"),
+                                                          chunk(2.0, 3.0, "請不吝點贊訂閱")])
+
+    engine = captions._OpenVino.__new__(captions._OpenVino)
+    engine.pipe, engine.language, engine.prompt = Pipe(), None, "繁體"
+    sr = captions.SAMPLE_RATE
+    audio = np.concatenate([np.full(60 * sr, 0.2, np.float32), np.zeros(60 * sr, np.float32),
+                            np.full(5 * sr, 0.2, np.float32)])
+    words, lang = engine.words(audio, lambda t: None)
+    assert "".join(w.text for w in words).count("你好嗎") == 2  # loud pieces only
+    assert "訂閱" not in "".join(w.text for w in words) and lang == "zh"
+    assert engine.language == "zh" and engine.pipe.sent[1][1] == "<|zh|>"  # kept for the next piece
+    assert len(engine.pipe.sent) == 2 and engine.pipe.sent[0][2] == "繁體"
+
+
+def test_model_layout_and_sizes(tmp_path) -> None:
+    assert captions.model_dir(tmp_path, "best") == tmp_path / "best"
+    assert captions.model_dir(tmp_path, "best", "cuda") == tmp_path / "best"
+    assert captions.model_dir(tmp_path, "best", "openvino") == tmp_path / "openvino" / "best"
+    assert captions.model_info("best", "openvino")[0].startswith("OpenVINO/")
+    assert captions.model_info("best")[1] == "1.6 GB"
+    assert not captions.model_ready(tmp_path, "fast", "openvino")
+    (tmp_path / "openvino" / "fast").mkdir(parents=True)
+    (tmp_path / "openvino" / "fast" / "COMPLETE").write_text("x")
+    assert captions.model_ready(tmp_path, "fast", "openvino") and not captions.model_ready(tmp_path, "fast")
 
 
 def test_transcribe_options_per_language() -> None:
@@ -140,3 +269,55 @@ def test_load_audio_decodes_the_kept_part(tmp_path) -> None:
     subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=64x64:d=1",
                     str(silent)], check=True)
     assert captions.load_audio(CaptionSource(str(silent)), "ffmpeg").size == 0
+
+
+def test_openvino_never_loads_its_telemetry() -> None:
+    """`import openvino` alone posts to Google Analytics through
+    openvino_telemetry; VidGrab must keep it unimportable so nothing is sent."""
+    pytest.importorskip("openvino")
+    code = (
+        "import sys, socket\n"
+        "def no_network(*a, **k): raise AssertionError('network used: %r' % (a,))\n"
+        "socket.socket.connect = no_network\n"
+        "from vidgrab import captions\n"
+        "import openvino as ov\n"
+        "ov.Core().available_devices\n"
+        "import openvino_genai, openvino_tokenizers\n"
+        "assert sys.modules['openvino_telemetry'] is None\n"
+        "assert not any(k.startswith('openvino_telemetry.') for k in sys.modules)\n"
+        "print('quiet')\n"
+    )
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                          timeout=120, check=False)
+    assert done.returncode == 0 and "quiet" in done.stdout, done.stderr[-600:]
+
+
+def test_nvidia_waits_for_its_download_when_an_intel_gpu_can_start_now(monkeypatch, tmp_path) -> None:
+    from vidgrab import cuda_runtime
+
+    monkeypatch.setattr(captions, "detect_gpus", lambda: [CUDA, INTEL])
+    monkeypatch.setattr(cuda_runtime, "runtime_ready", lambda models_dir: False)
+    assert captions.speech_engines(True, tmp_path) == ["openvino", "cuda", "cpu"]
+    monkeypatch.setattr(cuda_runtime, "runtime_ready", lambda models_dir: True)
+    assert captions.speech_engines(True, tmp_path) == ["cuda", "openvino", "cpu"]
+    # with only NVIDIA there is nothing to wait for: it downloads, then runs
+    monkeypatch.setattr(captions, "detect_gpus", lambda: [CUDA])
+    monkeypatch.setattr(cuda_runtime, "runtime_ready", lambda models_dir: False)
+    assert captions.speech_engines(True, tmp_path) == ["cuda", "cpu"]
+    monkeypatch.setattr(captions, "gpus_checked", lambda: True)
+    key, fill = captions.speech_device(True, tmp_path)
+    assert "download the NVIDIA CUDA libraries" in key and fill["name"] == "NVIDIA GPU" and fill["size"]
+
+
+def test_cuda_engine_gets_its_libraries_before_the_model(monkeypatch, tmp_path) -> None:
+    from vidgrab import cuda_runtime
+
+    order: list[str] = []
+    monkeypatch.setattr(cuda_runtime, "ensure_runtime", lambda *a, **k: order.append("libs"))
+    monkeypatch.setattr(captions, "ensure_model", lambda *a, **k: order.append("model") or tmp_path)
+    monkeypatch.setattr(captions, "_FasterWhisper", lambda path, device, lang, log: order.append(device))
+    captions._recogniser("cuda", tmp_path, "fast", "auto", None, None, None)
+    assert order == ["libs", "model", "cuda"]
+    order.clear()
+    captions._recogniser("cpu", tmp_path, "fast", "auto", None, None, None)
+    assert order == ["model", "cpu"]  # the CPU needs no CUDA

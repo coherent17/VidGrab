@@ -1,20 +1,30 @@
 """Auto captions: speech in the Studio's clips -> timed subtitle lines.
 
-Qt-free, like studio.py. Speech recognition is faster-whisper (Whisper on
-CTranslate2), run locally; only the model is downloaded, once, on first use
-(``<config>/models/<size>``). Audio is decoded by our own ffmpeg straight to
-16 kHz mono samples, so PyAV (which faster-whisper would otherwise use) isn't
-needed and isn't bundled.
+Qt-free, like studio.py. Speech recognition is Whisper, run locally; only the
+model is downloaded, once, on first use (``<config>/models``). Audio is
+decoded by our own ffmpeg straight to 16 kHz mono samples, so PyAV (which
+faster-whisper would otherwise use) isn't needed and isn't bundled.
+
+Three engines, tried in this order when the graphics-card switch is on, each
+falling back to the next if it can't load or fails while decoding:
+
+* ``cuda``     faster-whisper (CTranslate2) on an NVIDIA GPU;
+* ``openvino`` OpenVINO GenAI on an Intel GPU (integrated or Arc): the large
+               "Best" model runs there as fast as the small one does on the CPU;
+* ``cpu``      faster-whisper int8 on the CPU, on its fast cores only
+               (``gpu.speech_threads``).
 
 ``transcribe()`` takes each clip's kept part of its source (start / end /
 speed / where it sits in the montage) and returns ``SubtitleCue``s in
-montage time, split into readable lines by the word timings.
+montage time, split into readable lines by the word timings (or, for
+OpenVINO, which gives segment times, by timings spread over each segment).
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import types
@@ -23,16 +33,36 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from vidgrab.downloader import LogCallback, ProgressCallback, TranslateFn, _noop_tr
+from vidgrab import cuda_runtime
+from vidgrab.downloader import (
+    DownloadCancelled,
+    LogCallback,
+    ProgressCallback,
+    TranslateFn,
+    _noop_tr,
+)
+from vidgrab.gpu import speech_threads
 from vidgrab.studio import SubtitleCue, _no_window, _require_ffmpeg
+
+# OpenVINO sends usage analytics to Google Analytics as soon as it is imported
+# (through its `openvino_telemetry` package). VidGrab keeps everything on this
+# computer, so make that package unimportable: OpenVINO then uses its own no-op
+# stand-in. This must run before anything imports openvino.
+sys.modules.setdefault("openvino_telemetry", None)  # type: ignore[arg-type]
 
 SAMPLE_RATE = 16000  # what Whisper expects
 
-# accuracy key -> (Hugging Face repo with the CTranslate2 model, download size label)
+# accuracy key -> (Hugging Face repo, download size label), per model format:
+# CTranslate2 for faster-whisper (cuda / cpu), OpenVINO int8 for the Intel GPU
 MODELS: dict[str, tuple[str, str]] = {
     "fast": ("Systran/faster-whisper-base", "150 MB"),
     "balanced": ("Systran/faster-whisper-small", "490 MB"),
     "best": ("deepdml/faster-whisper-large-v3-turbo-ct2", "1.6 GB"),
+}
+OV_MODELS: dict[str, tuple[str, str]] = {
+    "fast": ("OpenVINO/whisper-base-int8-ov", "85 MB"),
+    "balanced": ("OpenVINO/whisper-small-int8-ov", "260 MB"),
+    "best": ("OpenVINO/whisper-large-v3-turbo-int8-ov", "830 MB"),
 }
 DEFAULT_MODEL = "balanced"
 _MODEL_FILES = ("config.json", "preprocessor_config.json", "model.bin", "tokenizer.json",
@@ -93,31 +123,43 @@ class Word:
 # ── model download ─────────────────────────────────────────────────────
 
 
-def model_dir(models_dir: str | Path, size: str) -> Path:
-    return Path(models_dir) / size
+def model_info(size: str, engine: str = "cpu") -> tuple[str, str]:
+    """(Hugging Face repo, download size label) of the *size* model *engine* uses."""
+    return (OV_MODELS if engine == "openvino" else MODELS)[size]
 
 
-def model_ready(models_dir: str | Path, size: str) -> bool:
-    return (model_dir(models_dir, size) / "COMPLETE").is_file()
+def model_dir(models_dir: str | Path, size: str, engine: str = "cpu") -> Path:
+    base = Path(models_dir)
+    return base / "openvino" / size if engine == "openvino" else base / size
+
+
+def model_ready(models_dir: str | Path, size: str, engine: str = "cpu") -> bool:
+    return (model_dir(models_dir, size, engine) / "COMPLETE").is_file()
 
 
 def ensure_model(
     models_dir: str | Path,
     size: str = DEFAULT_MODEL,
     *,
+    engine: str = "cpu",
     on_progress: ProgressCallback | None = None,
     translate: TranslateFn | None = None,
 ) -> Path:
-    """The model folder for *size*, downloading it first if needed."""
+    """The model folder for *size* (in *engine*'s format), downloading it first
+    if needed."""
     tr = translate or _noop_tr
-    dest = model_dir(models_dir, size)
-    if model_ready(models_dir, size):
+    dest = model_dir(models_dir, size, engine)
+    if model_ready(models_dir, size, engine):
         return dest
-    repo = MODELS[size][0]
+    ov = engine == "openvino"
+    repo = model_info(size, engine)[0]
     with urllib.request.urlopen(f"{_HF}/api/models/{repo}/tree/main", timeout=30) as resp:
         tree = json.load(resp)
-    files = [(f["path"], int(f.get("size") or 0)) for f in tree if f.get("path") in _MODEL_FILES]
-    if not any(name == "model.bin" for name, _ in files):
+    files = [(f["path"], int(f.get("size") or 0)) for f in tree
+             if f.get("type", "file") == "file" and (
+                 (not f["path"].startswith(".") and f["path"] != "README.md") if ov
+                 else f["path"] in _MODEL_FILES)]
+    if not any(name == ("openvino_encoder_model.xml" if ov else "model.bin") for name, _ in files):
         raise RuntimeError(tr("The speech model could not be found online."))
     dest.mkdir(parents=True, exist_ok=True)
     total = sum(size for _, size in files) or 1
@@ -274,7 +316,14 @@ def split_lines(words: list[Word], max_width: int = MAX_WIDTH) -> list[SubtitleC
     return cues
 
 
-# ── recognition ────────────────────────────────────────────────────────
+# ── engines ────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class SpeechGpu:
+    engine: str  # "cuda" | "openvino"
+    device: str  # the OpenVINO device name ("GPU", "GPU.1"); "cuda" for CUDA
+    name: str  # shown to the user
 
 
 def _whisper_model_class():
@@ -288,9 +337,9 @@ def _whisper_model_class():
 
 
 def engine_ok() -> bool:
-    """Whether speech recognition can run here (a packaged build checks this
-    in --selftest): faster-whisper and the tokenizer import, CTranslate2's
-    native library runs and the voice filter's model loads in onnxruntime."""
+    """Whether the CPU engine can run here (a packaged build checks this in
+    --selftest): faster-whisper and the tokenizer import, CTranslate2's native
+    library runs and the voice filter's model loads in onnxruntime."""
     try:
         _whisper_model_class()
         import ctranslate2
@@ -303,24 +352,285 @@ def engine_ok() -> bool:
         return False
 
 
-def _load_model(path: Path, on_log: LogCallback | None, *, gpu: bool = True):
-    """The model on an NVIDIA GPU when CUDA works, else on the CPU."""
-    WhisperModel = _whisper_model_class()
-    if gpu:
-        try:
-            import ctranslate2
+def openvino_error() -> str:
+    """"" when the OpenVINO engine really runs here, else why not (a packaged build checks
+    this in --selftest): its libraries load, and a tiny model survives the
+    path the Whisper models take: written and read back as OpenVINO IR, then
+    compiled and run on the CPU plugin. (The GPU plugin only exists on Intel
+    hardware, so a build machine can't be asked for it.)"""
+    try:
+        import tempfile
 
-            if ctranslate2.get_cuda_device_count() > 0:
-                model = WhisperModel(str(path), device="cuda", compute_type="float16")
-                if on_log:
-                    on_log("Speech recognition on the GPU (CUDA)")
-                return model, "cuda"
-        except Exception as exc:  # noqa: BLE001 - no CUDA runtime / cuDNN: use the CPU
+        import numpy as np
+        import openvino as ov
+        import openvino_genai  # noqa: F401
+        import openvino_tokenizers
+        from openvino import opset13 as ops
+
+        core = ov.Core()
+        if "CPU" not in core.available_devices:
+            return f"no CPU device (found {core.available_devices})"
+        # the Whisper models' tokenizer is an extension library loaded by path
+        extension = Path(openvino_tokenizers._ext_path)
+        if not extension.is_file():
+            return f"tokenizer extension missing: {extension}"
+        core.add_extension(str(extension))
+        x = ops.parameter([1, 3], ov.Type.f32, name="x")
+        model = ov.Model([ops.add(x, ops.constant(np.ones((1, 3), np.float32)))], [x], "probe")
+        with tempfile.TemporaryDirectory() as tmp:
+            ov.save_model(model, str(Path(tmp) / "probe.xml"))
+            compiled = core.compile_model(core.read_model(str(Path(tmp) / "probe.xml")), "CPU")
+            total = float(compiled(np.zeros((1, 3), np.float32))[0].sum())
+            return "" if total == 3.0 else f"wrong result {total}"
+    except Exception as exc:  # noqa: BLE001
+        return f"{type(exc).__name__}: {exc}"
+
+
+def openvino_ok() -> bool:
+    return not openvino_error()
+
+
+def cuda_available() -> bool:
+    """An NVIDIA GPU that CTranslate2 can use (needs the driver and the CUDA 12
+    libraries; without them speech recognition runs on the CPU)."""
+    try:
+        import ctranslate2
+
+        return ctranslate2.get_cuda_device_count() > 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _nvidia_name() -> str:
+    """The NVIDIA card's name from the driver's own tool, if it is around."""
+    try:
+        done = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                              capture_output=True, text=True, timeout=10, check=False,
+                              **_no_window())
+        name = done.stdout.strip().splitlines()[0].strip() if done.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError, IndexError):
+        name = ""
+    return name or "NVIDIA GPU"
+
+
+def _openvino_gpu() -> SpeechGpu | None:
+    """The Intel GPU OpenVINO sees (a discrete Arc card before an integrated one)."""
+    try:
+        import openvino as ov
+
+        core = ov.Core()
+        gpus = [d for d in core.available_devices if d == "GPU" or d.startswith("GPU.")]
+        if not gpus:
+            return None
+
+        def discrete(dev: str) -> bool:
+            try:
+                return "DISCRETE" in str(core.get_property(dev, "DEVICE_TYPE")).upper()
+            except Exception:  # noqa: BLE001
+                return False
+
+        dev = min(gpus, key=lambda d: not discrete(d))
+        name = str(core.get_property(dev, "FULL_DEVICE_NAME"))
+        return SpeechGpu("openvino", dev, re.sub(r"\((?:R|TM)\)", "", name).strip())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_gpus: list[list[SpeechGpu]] = []  # one entry once detected (a list, to cache without a global)
+
+
+def detect_gpus() -> list[SpeechGpu]:
+    """The graphics cards speech recognition can use here, best first. The
+    first call takes a second or two (it starts OpenVINO's GPU plugin), so the
+    window asks from a background thread."""
+    if not _gpus:
+        found = [SpeechGpu("cuda", "cuda", _nvidia_name())] if cuda_available() else []
+        gpu = _openvino_gpu()
+        _gpus.append(found + ([gpu] if gpu else []))
+    return _gpus[0]
+
+
+def gpus_checked() -> bool:
+    return bool(_gpus)
+
+
+def speech_engines(gpu: bool = True, models_dir: str | Path | None = None) -> list[str]:
+    """The engines to try, in order; the CPU is always the last. NVIDIA comes
+    first, unless it still has to download its 1.3 GB of CUDA libraries and an
+    Intel GPU, which needs nothing extra, is there to use meanwhile."""
+    engines = [g.engine for g in detect_gpus()] if gpu else []
+    if (len(engines) > 1 and engines[0] == "cuda" and models_dir is not None
+            and not cuda_runtime.runtime_ready(models_dir)):
+        engines.reverse()
+    return [*engines, "cpu"]
+
+
+def speech_device(gpu: bool, models_dir: str | Path | None = None) -> tuple[str, dict]:
+    """The Settings status line for auto captions, as (message key, values)."""
+    threads = speech_threads()
+    if gpu and not gpus_checked():
+        return "Checking this computer…", {}
+    found = detect_gpus() if gpu else []
+    if found:
+        first = speech_engines(gpu, models_dir)[0]
+        found = sorted(found, key=lambda g: g.engine != first)
+        if first == "cuda" and models_dir is not None and not cuda_runtime.runtime_ready(models_dir):
+            fetch = ("{name} found. The first time, auto captions download the NVIDIA CUDA "
+                     "libraries ({size}); if that fails, they run on the CPU instead.")
+            return fetch, {"name": found[0].name, "size": cuda_runtime.download_size_label()}
+        ready = ("Ready: {name}. Auto captions run on it; if it ever fails, they run on "
+                 "the CPU instead.")
+        return ready, {"name": found[0].name}
+    if gpu:
+        none = ("No supported graphics card found for speech recognition (Intel graphics, or "
+                "NVIDIA with CUDA 12), so auto captions run on the CPU ({n} threads).")
+        return none, {"n": threads}
+    return "Auto captions run on the CPU ({n} threads).", {"n": threads}
+
+
+# ── recognition ────────────────────────────────────────────────────────
+
+# lines Whisper is known to invent over music / silence (from the subtitle
+# credits and outros in its training data), matched case-insensitively
+_HALLUCINATIONS = ("subscribe", "thank you for watching", "thanks for watching", "amara.org",
+                   "訂閱", "订阅", "點贊", "点赞", "字幕由", "字幕提供", "感謝觀看", "感谢观看",
+                   "請不吝", "请不吝", "구독", "시청해 주셔서", "ご視聴", "チャンネル登録")
+SILENCE_RMS = 0.002  # quieter than this is silence: Whisper would only invent text
+
+
+def is_hallucination(text: str, no_speech_prob: float = 0.0, avg_logprob: float = 0.0) -> bool:
+    """Whisper's own "probably not speech" rule, plus its well-known stock lines."""
+    if no_speech_prob > 0.6 and avg_logprob < -1.0:
+        return True
+    low = text.lower()
+    return any(h in low for h in _HALLUCINATIONS)
+
+
+def _rms(audio) -> float:
+    return float((audio ** 2).mean() ** 0.5) if audio.size else 0.0
+
+
+def audio_slices(audio, target_s: float = 60.0, search_s: float = 5.0):
+    """(offset in seconds, samples) pieces of about *target_s*, each cut at the
+    quietest moment within *search_s* of where it would end, so a word isn't
+    split. Gives the OpenVINO engine progress to report on long recordings."""
+    import numpy as np
+
+    n, step, reach = audio.size, int(target_s * SAMPLE_RATE), int(search_s * SAMPLE_RATE)
+    frame = SAMPLE_RATE // 10
+    start = 0
+    while start < n:
+        end = start + step
+        if end + reach >= n:
+            end = n
+        else:
+            lo, hi = end - reach, end + reach
+            cut = audio[lo:hi][:(hi - lo) // frame * frame].reshape(-1, frame)
+            end = lo + int(np.argmin((cut ** 2).mean(axis=1))) * frame + frame // 2
+        yield start / SAMPLE_RATE, audio[start:end]
+        start = end
+
+
+_UNIT = re.compile(r"[⺀-鿿豈-﫿　-〿＀-￯]|\s*[^\s⺀-鿿豈-﫿　-〿＀-￯]+")
+
+
+def chunk_words(text: str, start: float, end: float) -> list[Word]:
+    """Word timings for a segment that only has start and end times: its text
+    split into characters (Chinese / Japanese) and words (the rest), the time
+    spread over them by width. Punctuation takes none."""
+    units = _UNIT.findall(text.strip())
+    if not units:
+        return []
+    weights = [0.0 if all(unicodedata.category(ch).startswith(("P", "S")) or ch.isspace()
+                          for ch in u) else float(text_width(u.strip()) or 1) for u in units]
+    total = sum(weights)
+    if total <= 0:
+        return [Word(start, end, text)]
+    span, t, words = max(0.0, end - start), start, []
+    for unit, w in zip(units, weights):
+        nxt = t + span * w / total
+        words.append(Word(round(t, 3), round(nxt, 3), unit))
+        t = nxt
+    return words
+
+
+class _FasterWhisper:
+    """CTranslate2: ``cuda`` (float16) or ``cpu`` (int8, on the fast cores)."""
+
+    def __init__(self, path: Path, device: str, language: str, on_log: LogCallback | None):
+        WhisperModel = _whisper_model_class()
+        if device == "cuda":
+            self.model = WhisperModel(str(path), device="cuda", compute_type="float16")
             if on_log:
-                on_log(f"GPU not usable for speech recognition ({exc}); using the CPU")
-    model = WhisperModel(str(path), device="cpu", compute_type="int8",
-                         cpu_threads=max(1, (os.cpu_count() or 2) - 1))
-    return model, "cpu"
+                on_log("Speech recognition on the NVIDIA GPU (CUDA)")
+        else:
+            threads = speech_threads()
+            self.model = WhisperModel(str(path), device="cpu", compute_type="int8",
+                                      cpu_threads=threads)
+            if on_log:
+                on_log(f"Speech recognition on the CPU ({threads} threads)")
+        self.opts = _options(language)
+
+    def _words(self, audio, opts: dict, on_segment) -> tuple[list[Word], str]:
+        segments, info = self.model.transcribe(audio, **opts)
+        words: list[Word] = []
+        for seg in segments:
+            on_segment(seg.end)
+            if is_hallucination(seg.text, seg.no_speech_prob, seg.avg_logprob):
+                continue
+            if seg.words:
+                words += [Word(w.start, w.end, w.word) for w in seg.words]
+            else:
+                words.append(Word(seg.start, seg.end, seg.text))
+        return words, info.language
+
+    def words(self, audio, on_segment) -> tuple[list[Word], str]:
+        words, lang = self._words(audio, self.opts, on_segment)
+        if not words and self.opts.get("vad_filter") and _rms(audio) > 0.01:
+            # the voice filter hears singing over loud music as no speech at all:
+            # for a song, listen to everything
+            words, lang = self._words(audio, {**self.opts, "vad_filter": False}, on_segment)
+        return words, lang
+
+
+class _OpenVino:
+    """OpenVINO GenAI on an Intel GPU (or ``CPU`` in tests). The compiled GPU
+    kernels are cached next to the models, so only the first run waits for them."""
+
+    def __init__(self, path: Path, device: str, cache: Path, language: str,
+                 on_log: LogCallback | None):
+        import openvino_genai as ovg
+
+        cache.mkdir(parents=True, exist_ok=True)
+        self.pipe = ovg.WhisperPipeline(str(path), device, CACHE_DIR=str(cache))
+        self.language = None if language == "auto" else language.split("-")[0]
+        self.prompt = _PROMPTS.get(language)
+        if on_log:
+            on_log(f"Speech recognition on OpenVINO ({device})")
+
+    def words(self, audio, on_segment) -> tuple[list[Word], str]:
+        words: list[Word] = []
+        for offset, piece in audio_slices(audio):
+            on_segment(offset)
+            if _rms(piece) < SILENCE_RMS:
+                continue
+            cfg = self.pipe.get_generation_config()
+            cfg.task = "transcribe"
+            cfg.return_timestamps = True
+            if self.language:
+                cfg.language = f"<|{self.language}|>"
+            if self.prompt:
+                cfg.initial_prompt = self.prompt
+            result = self.pipe.generate(piece.tolist(), cfg)
+            for chunk in result.chunks or []:
+                if not is_hallucination(chunk.text):
+                    words += chunk_words(chunk.text, offset + chunk.start_ts,
+                                         offset + chunk.end_ts)
+            detected = str(getattr(result, "language", "") or "").strip("<|>")
+            if not self.language and detected and words:
+                self.language = detected  # keep one language for the rest of the clip
+            on_segment(offset + piece.size / SAMPLE_RATE)
+        return words, self.language or ""
 
 
 def _options(language: str) -> dict:
@@ -342,63 +652,26 @@ def _options(language: str) -> dict:
     return opts
 
 
-# lines Whisper is known to invent over music / silence (from the subtitle
-# credits and outros in its training data), matched case-insensitively
-_HALLUCINATIONS = ("subscribe", "thank you for watching", "thanks for watching", "amara.org",
-                   "訂閱", "订阅", "點贊", "点赞", "字幕由", "字幕提供", "感謝觀看", "感谢观看",
-                   "請不吝", "请不吝", "구독", "시청해 주셔서", "ご視聴", "チャンネル登録")
-
-
-def is_hallucination(text: str, no_speech_prob: float = 0.0, avg_logprob: float = 0.0) -> bool:
-    """Whisper's own "probably not speech" rule, plus its well-known stock lines."""
-    if no_speech_prob > 0.6 and avg_logprob < -1.0:
-        return True
-    low = text.lower()
-    return any(h in low for h in _HALLUCINATIONS)
-
-
-def _words(model, audio, opts: dict, on_segment) -> tuple[list[Word], str]:
-    segments, info = model.transcribe(audio, **opts)
-    words: list[Word] = []
-    for seg in segments:
-        on_segment(seg.end)
-        if is_hallucination(seg.text, seg.no_speech_prob, seg.avg_logprob):
-            continue
-        if seg.words:
-            words += [Word(w.start, w.end, w.word) for w in seg.words]
-        else:
-            words.append(Word(seg.start, seg.end, seg.text))
-    return words, info.language
-
-
-def _recognise(model, audio, opts: dict, on_segment) -> tuple[list[Word], str]:
-    words, lang = _words(model, audio, opts, on_segment)
-    if not words and opts.get("vad_filter") and float((audio ** 2).mean()) > 1e-4:
-        # the voice filter hears singing over loud music as no speech at all:
-        # for a song, listen to everything
-        words, lang = _words(model, audio, {**opts, "vad_filter": False}, on_segment)
-    return words, lang
-
-
-def transcribe(
-    sources: list[CaptionSource],
-    models_dir: str | Path,
-    *,
-    language: str = "auto",
-    size: str = DEFAULT_MODEL,
-    on_progress: ProgressCallback | None = None,
-    on_log: LogCallback | None = None,
-    translate: TranslateFn | None = None,
-) -> list[SubtitleCue]:
-    """Subtitle lines (in montage time) for the speech in *sources*."""
+def _recogniser(engine: str, models_dir: Path, size: str, language: str,
+                on_progress, on_log, translate):
+    """Download the model for *engine* if needed and load it."""
     tr = translate or _noop_tr
-    ffmpeg = _require_ffmpeg(translate)
-    path = ensure_model(models_dir, size, on_progress=on_progress, translate=translate)
+    if engine == "cuda":  # cuBLAS / cuDNN, fetched once if the computer doesn't have them
+        cuda_runtime.ensure_runtime(models_dir, on_progress=on_progress, translate=translate)
+    path = ensure_model(models_dir, size, engine=engine, on_progress=on_progress,
+                        translate=translate)
     if on_progress:
         on_progress(tr("Loading the speech model…"), None)
-    model, device = _load_model(path, on_log)
-    opts = _options(language)
+    if engine == "openvino":
+        gpu = next(g for g in detect_gpus() if g.engine == "openvino")
+        return _OpenVino(path, gpu.device, models_dir / "openvino-cache", language, on_log)
+    return _FasterWhisper(path, engine, language, on_log)
 
+
+def _transcribe(engine: str, sources: list[CaptionSource], models_dir: Path, language: str,
+                size: str, ffmpeg: str, on_progress, on_log, translate) -> list[SubtitleCue]:
+    tr = translate or _noop_tr
+    recogniser = _recogniser(engine, models_dir, size, language, on_progress, on_log, translate)
     spans = [(s.end - s.start) if s.end is not None else None for s in sources]
     total = sum(x for x in spans if x) or 1.0
     done = 0.0
@@ -415,17 +688,8 @@ def transcribe(
                 pct = (base + min(t, length)) * 100 / max(total, base + length)
                 on_progress(tr("Listening for speech…"), min(99, int(pct)))
 
-        if on_progress:
-            on_segment(0.0)
-        try:
-            words, lang = _recognise(model, audio, opts, on_segment)
-        except RuntimeError as exc:
-            if device != "cuda":
-                raise
-            if on_log:  # e.g. cuBLAS / cuDNN missing: they only fail once decoding starts
-                on_log(f"GPU speech recognition failed ({exc}); using the CPU")
-            model, device = _load_model(path, on_log, gpu=False)
-            words, lang = _recognise(model, audio, opts, on_segment)
+        on_segment(0.0)
+        words, lang = recogniser.words(audio, on_segment)
         if on_log:
             on_log(f"Captions: {Path(src.path).name}: language {lang}, {len(words)} words")
         speed = src.speed if src.speed > 0 else 1.0
@@ -439,3 +703,34 @@ def transcribe(
         done += span if span is not None else length
     cues.sort(key=lambda c: c.start)
     return cues
+
+
+def transcribe(
+    sources: list[CaptionSource],
+    models_dir: str | Path,
+    *,
+    language: str = "auto",
+    size: str = DEFAULT_MODEL,
+    gpu: bool = True,
+    on_progress: ProgressCallback | None = None,
+    on_log: LogCallback | None = None,
+    translate: TranslateFn | None = None,
+) -> list[SubtitleCue]:
+    """Subtitle lines (in montage time) for the speech in *sources*. With *gpu*
+    the graphics-card engines are tried first (see the module docstring); an
+    engine that can't load or fails while decoding hands over to the next."""
+    ffmpeg = _require_ffmpeg(translate)
+    models_dir = Path(models_dir)
+    engines = speech_engines(gpu, models_dir)
+    for n, engine in enumerate(engines):
+        try:
+            return _transcribe(engine, sources, models_dir, language, size, ffmpeg,
+                               on_progress, on_log, translate)
+        except DownloadCancelled:
+            raise
+        except Exception as exc:
+            if n == len(engines) - 1:
+                raise
+            if on_log:
+                on_log(f"Speech recognition on {engine} failed ({exc}); trying {engines[n + 1]}")
+    raise AssertionError("unreachable")  # the CPU engine is always last

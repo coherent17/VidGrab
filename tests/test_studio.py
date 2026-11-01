@@ -528,3 +528,37 @@ def test_compose_video_speed_and_export_formats(tmp_path: Path) -> None:
     mp3 = compose_video([Clip(str(a), "0", "2")], tmp_path / "o.mp3")
     m = probe_media(mp3)
     assert m["has_audio"] and not m["has_video"] and abs(m["duration"] - 2.0) < 0.2
+
+
+def test_video_command_uses_the_chosen_encoder() -> None:
+    from vidgrab.gpu import CANDIDATES
+
+    qsv = next(e for e in CANDIDATES if e.key == "qsv")
+    cmd, _ = build_video_command("ffmpeg", [_clip("a.mp4", 4)], Path("o.mp4"), encoder=qsv,
+                                 quality="high")
+    assert cmd[cmd.index("-c:v") + 1] == "h264_qsv" and "libx264" not in cmd
+    assert cmd[cmd.index("-global_quality") + 1] == "17"
+    cpu, _ = build_video_command("ffmpeg", [_clip("a.mp4", 4)], Path("o.mp4"))
+    assert cpu[cpu.index("-c:v") + 1] == "libx264" and "-crf" in cpu
+
+
+@requires_ffmpeg
+def test_compose_video_hardware_encoder_falls_back_to_the_cpu(tmp_path: Path, monkeypatch) -> None:
+    from vidgrab import studio
+    from vidgrab.gpu import HwEncoder
+
+    a = _make(tmp_path / "a.mp4", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25",
+              "-f", "lavfi", "-i", "sine=frequency=440", "-t", "2", "-shortest")
+    asked: list[str] = []
+    # a card whose driver doesn't answer: ffmpeg refuses the (unknown) encoder mid-render
+    monkeypatch.setattr(studio, "detect_encoder",
+                        lambda ffmpeg: asked.append(ffmpeg) or HwEncoder("fake", "h264_nope", "Fake GPU"))
+    log: list[str] = []
+    out = compose_video([Clip(str(a))], tmp_path / "gpu.mp4", hardware=True, on_log=log.append)
+    assert probe_media(out)["has_video"] and abs(probe_media(out)["duration"] - 2.0) < 0.3
+    assert any("Encoding on the graphics card (Fake GPU)" in line for line in log)
+    assert any("rendering on the CPU instead" in line for line in log)
+    # the switch off: the card is not even asked about
+    asked.clear()
+    cpu = compose_video([Clip(str(a))], tmp_path / "cpu.mp4", hardware=False)
+    assert probe_media(cpu)["has_video"] and asked == []

@@ -53,6 +53,7 @@ jobs:
           QT_QPA_PLATFORM=offscreen dist/VidGrab --selftest | tee /tmp/vidgrab-selftest.log
           grep -q "multimedia=1" /tmp/vidgrab-selftest.log
           grep -q "captions=1" /tmp/vidgrab-selftest.log
+          grep -q "openvino=1" /tmp/vidgrab-selftest.log
 
       - name: Create compressed archive
         run: tar -cJf dist/VidGrab-linux.tar.xz -C dist VidGrab

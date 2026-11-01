@@ -90,10 +90,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vidgrab import cuda_runtime
 from vidgrab.captions import DEFAULT_MODEL as DEFAULT_CAPTION_MODEL
 from vidgrab.captions import LANGUAGES as CAPTION_LANGUAGES
 from vidgrab.captions import MODELS as CAPTION_MODELS
-from vidgrab.captions import CaptionSource, model_ready
+from vidgrab.captions import CaptionSource, model_info, model_ready, speech_engines
 from vidgrab.preview import MusicBed, Segment, StudioPreview, TransitionMark, fmt_time
 from vidgrab.studio import (
     ANIMATIONS,
@@ -4715,6 +4716,7 @@ class StudioPage(QWidget):
             "sources": self.caption_sources(),
             "language": language,
             "size": size,
+            "gpu": bool(self.host.setting("gpu_captions")) if hasattr(self.host, "setting") else True,
             "replace": replace_lines,
         })
 
@@ -4760,11 +4762,19 @@ class StudioPage(QWidget):
                  "balanced": t("Good for most videos."),
                  "best": t("Most accurate, and slow without a graphics card.")}
 
+        # the model's format and size depend on the engine that will run it
+        engine = speech_engines(bool(setting("gpu_captions")), models_dir)[0]
+        needs_cuda = (engine == "cuda" and models_dir is not None
+                      and not cuda_runtime.runtime_ready(models_dir))
+
         def pick(key: str) -> None:
-            ready = models_dir is not None and model_ready(models_dir, key)
+            ready = models_dir is not None and model_ready(models_dir, key, engine)
             note = notes[key] + " " + (t("Already downloaded.") if ready else
                                        t("Downloads {size} the first time.",
-                                         size=CAPTION_MODELS[key][1]))
+                                         size=model_info(key, engine)[1]))
+            if needs_cuda:
+                note += " " + t("Also downloads the NVIDIA CUDA libraries ({size}), once.",
+                                size=cuda_runtime.download_size_label())
             hint.setText(note)
 
         for key, label in (("fast", t("Fast")), ("balanced", t("Balanced")), ("best", t("Best"))):
@@ -4859,6 +4869,8 @@ class StudioPage(QWidget):
                 "music": music,
                 "render_quality": (self.host.setting("render_quality")
                                    if hasattr(self.host, "setting") else "balanced"),
+                "hardware": bool(self.host.setting("gpu_render"))
+                if hasattr(self.host, "setting") else False,
             })
         else:
             ext = self.afmt.currentData() or ".mp3"

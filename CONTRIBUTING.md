@@ -30,7 +30,7 @@ See `CLAUDE.md` for how the code is organised.
 
 ### CI and releases
 
-Every push and pull request is linted and tested on Linux and Windows, and both standalone binaries are built. Each
+Every push and pull request is linted and tested on Linux, Windows and macOS, and the Windows and Linux binaries are built beside the tests (changes to `*.md` / `docs/` only skip CI). The release workflow builds only after the tests pass, builds the macOS apps too, and makes the Linux `.tar.xz`. Each
 build also renders real Studio projects with the exact ffmpeg it bundles, and checks that the speech engines load and
 run inside the packaged binary.
 

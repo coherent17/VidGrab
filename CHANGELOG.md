@@ -30,6 +30,7 @@ Offline AI captions that use your graphics card, plus a much bigger Studio: per-
 ### Downloads and releases
 
 - **Downloads retry over IPv4 when the network is unreachable**: on networks (and CI runners) with IPv6 but no route for it, YouTube downloads and link previews failed with "Network is unreachable"; they now retry the same way over IPv4
+- **New demo video and user guide** (繁體中文) for 3.4: auto captions on the graphics card, speed, subtitle effects, guides, export presets and the Hardware settings; recorded on a real Intel Arc GPU
 - **Releases run the tests first**: the release workflow runs the same lint and test suite as CI (Linux and Windows) before building, so a tag can't publish untested code. The checks live in one shared workflow (`checks.yml`) used by both
 - Fixed the trim integration test, which asked for 50 s–110 s of an 8 s video (a four-part time) and so never trimmed; it was hidden because YouTube's bot-check made CI skip it
 

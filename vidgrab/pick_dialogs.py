@@ -146,11 +146,11 @@ class SearchPanel(QWidget):
         self.head = QLabel()
         self.head.setObjectName("info_name")
         head.addWidget(self.head, 1)
-        back = QPushButton(t("Close results"))
-        back.setObjectName("secondary")
-        back.setCursor(QCursor(Qt.PointingHandCursor))
-        back.clicked.connect(self.closed)
-        head.addWidget(back)
+        self._back = QPushButton()
+        self._back.setObjectName("secondary")
+        self._back.setCursor(QCursor(Qt.PointingHandCursor))
+        self._back.clicked.connect(self.closed)
+        head.addWidget(self._back)
         lay.addLayout(head)
         self.list = QListWidget()
         self.list.setObjectName("dl_list")
@@ -173,6 +173,21 @@ class SearchPanel(QWidget):
         self.add.clicked.connect(lambda: self.chosen.emit(self.urls()))
         foot.addWidget(self.add)
         lay.addLayout(foot)
+        self._query = ""
+        self._state = "idle"  # idle | searching | ready | empty | error:<message>
+        self.retranslate()
+
+    def retranslate(self) -> None:
+        """Re-apply every text (the window's language can change while this is open)."""
+        t = self.t
+        self._back.setText(t("Close results"))
+        if self._query:
+            self.head.setText(t("Results for “{q}”", q=self._query))
+        self.note.setText({
+            "searching": t("Searching…"),
+            "ready": t("Tick the videos you want, then add them to your downloads."),
+            "empty": t("Nothing found."),
+        }.get(self._state, self._state.removeprefix("error:") if self._state.startswith("error:") else ""))
         self._update()
 
     def start(self, query: str, search: Callable[[str], list[dict]]) -> None:
@@ -180,12 +195,12 @@ class SearchPanel(QWidget):
         self.stop()
         self.list.clear()
         self._rows = []
-        self.head.setText(self.t("Results for “{q}”", q=query))
-        self.note.setText(self.t("Searching…"))
-        self._update()
+        self._query, self._state = query, "searching"
+        self.retranslate()
         self._search = _SearchThread(lambda: search(query))
         self._search.done.connect(self._show)
-        self._search.failed.connect(lambda m: self.note.setText(m))
+        self._search.failed.connect(lambda m: (setattr(self, "_state", f"error:{m}"),
+                                               self.retranslate()))
         self._search.start()
 
     def stop(self) -> None:
@@ -196,9 +211,11 @@ class SearchPanel(QWidget):
 
     def _show(self, results: list[dict]) -> None:
         if not results:
-            self.note.setText(self.t("Nothing found."))
+            self._state = "empty"
+            self.retranslate()
             return
-        self.note.setText(self.t("Tick the videos you want, then add them to your downloads."))
+        self._state = "ready"
+        self.retranslate()
         for r in results:
             row = ResultRow(r, self.t)
             row.toggled.connect(self._update)

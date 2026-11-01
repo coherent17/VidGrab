@@ -31,8 +31,14 @@ Two videos at once, a much more capable Download page, and VidGrab for macOS and
 - **Pop-up windows are easier to see**: dialogs, message boxes, menus, drop-down lists and tooltips now have a lifted background and a clear outline in both the dark and the light theme
 - Settings is now three tabs — **General**, **Downloads**, **Studio** — so nothing needs scrolling
 
+### Docs
+
+- The README is much shorter and written for people who just want to use the app; build and release notes moved to `CONTRIBUTING.md`, the speed measurements to `docs/performance.md`
+- **Demo video and user guide re-recorded for 4.1.0** (5 min 23 s, 33 pages): search, exact format and audio formats, two videos at once, the three Settings tabs, the macOS and pip notes. The guide's screenshots are stored as high-quality JPEG, so it is 5.5 MB instead of 11 MB. The README's main picture shows the current Studio
+
 ### Fixed
 
+- **The search results panel stayed in the old language** when the app language was changed while it was open
 - **The app could not start on Python 3.10 / 3.11** from source (two f-strings with a backslash inside the braces, valid only from 3.12); the packaged builds were unaffected
 - **MP3s made for "MP4 + MP3" downloads, and trimmed or sped-up MP3s, came out at 64 kbps** whatever you chose (the bitrate was passed to ffmpeg without its "k"); they now use the chosen bitrate
 - **Links to a plain video file** (and other sites whose formats don't report a height) failed with "Requested format is not available" whenever a resolution was chosen; the resolution cap now lets formats of unknown height through

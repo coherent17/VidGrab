@@ -7,8 +7,6 @@ name: Build macOS app
 on:
   workflow_call:
   workflow_dispatch:
-  push:
-    branches: [feature/pip-and-macos]  # TEMPORARY: lets the branch try the build; remove before merging
 
 jobs:
   build:

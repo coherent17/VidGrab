@@ -4,8 +4,6 @@ name: Checks
 # and Windows. Shared by CI and the release, so nothing is published untested.
 on:
   workflow_call:
-  push:
-    branches: [feature/pip-and-macos]  # TEMPORARY: lets the branch try the new jobs; remove before merging
 
 jobs:
   lint:

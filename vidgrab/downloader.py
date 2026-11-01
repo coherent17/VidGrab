@@ -517,7 +517,8 @@ def _ytdl_options(
     if height:
         fmt_sel = (
             f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/"
-            f"best[height<={height}][ext=mp4]/best[height<={height}]"
+            # `<=?` also takes formats of unknown height (a plain file link)
+            f"best[height<=?{height}][ext=mp4]/best[height<=?{height}]"
         )
     else:
         fmt_sel = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"

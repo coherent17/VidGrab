@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Links to a plain video file** (and other sites whose formats don't report a height) failed with "Requested format is not available" whenever a resolution was chosen; the resolution cap now lets formats of unknown height through
+
 ### Two videos at once
 
 - **Two videos…** in the Studio plays two videos at the same time in one frame and adds the result to the timeline as a normal clip (trim, subtitles and music work on it as usual). Layouts: **Left | Right**, **Top / Bottom**, **Big + small** and **Picture in picture**, with a live preview of both videos in their places. Choose the frame size (16:9, vertical 9:16 for Shorts / Reels, square; stacked videos start on vertical), the gap between them, whether each video is cropped to fill its space, which sound to keep (both, one, none) and whether it ends with the longer or the shorter video (the shorter one holds its last picture). It starts from the first two clips of the project, with their trims. It encodes on the graphics card when that switch is on, with the usual CPU fallback

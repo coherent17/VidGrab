@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.1.1
+
+A crash fix for the new search.
+
+### Fixed
+
+- **VidGrab could crash (segmentation fault / abort) after searching several times in a row.** Pressing Enter again while the previous search, or the loading of its thumbnails, was still waiting on the network threw that thread away after a 5-second wait, and Qt aborts the whole program when a running thread is destroyed. The window also froze for those 5 seconds. A new search now starts at once, the older answer is ignored, and every search thread is kept alive until it has finished (also when the window is closed)
+- The same rule now covers the one-time ffmpeg download if its window is dismissed while it is still running
+
 ## 4.1.0
 
 Two videos at once, a much more capable Download page, and VidGrab for macOS and pip.

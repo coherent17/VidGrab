@@ -43,6 +43,30 @@ def _count(n: int | None) -> str:
     return str(n)
 
 
+# Threads that were told to stop but are still running (a search waiting on the
+# network). Qt aborts the whole program if a running QThread is destroyed, so
+# every thread started here is held until it has finished, whoever lost interest.
+_LIVE: set[QThread] = set()
+
+
+def _keep(thread: QThread) -> QThread:
+    _LIVE.add(thread)
+    thread.finished.connect(lambda t=thread: _LIVE.discard(t))
+    return thread
+
+
+def shutdown_threads(wait_ms: int = 3000) -> list[QThread]:
+    """Ask every search / thumbnail thread to stop and give them *wait_ms* in
+    all; returns the ones still running (the caller must not let them be destroyed)."""
+    import time
+    for thread in list(_LIVE):
+        thread.requestInterruption()
+    deadline = time.monotonic() + wait_ms / 1000
+    for thread in list(_LIVE):
+        thread.wait(max(1, int((deadline - time.monotonic()) * 1000)))
+    return [t for t in _LIVE if t.isRunning()]
+
+
 class _SearchThread(QThread):
     done = Signal(object)
     failed = Signal(str)
@@ -139,6 +163,7 @@ class SearchPanel(QWidget):
         self._rows: list[ResultRow] = []
         self._thumbs: _ThumbThread | None = None
         self._search: _SearchThread | None = None
+        self._gen = 0  # which search the panel is showing: older answers are ignored
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(8)
@@ -192,22 +217,29 @@ class SearchPanel(QWidget):
 
     def start(self, query: str, search: Callable[[str], list[dict]]) -> None:
         """Show "searching…" and run *search* in the background."""
-        self.stop()
+        self.stop()  # does not wait: a search still on the network finishes by itself
         self.list.clear()
         self._rows = []
         self._query, self._state = query, "searching"
         self.retranslate()
-        self._search = _SearchThread(lambda: search(query))
-        self._search.done.connect(self._show)
-        self._search.failed.connect(lambda m: (setattr(self, "_state", f"error:{m}"),
-                                               self.retranslate()))
-        self._search.start()
+        gen = self._gen
+        thread = self._search = _keep(_SearchThread(lambda: search(query)))
+        thread.done.connect(lambda results, g=gen: self._show(results) if g == self._gen else None)
+        thread.failed.connect(lambda m, g=gen: self._failed(m) if g == self._gen else None)
+        thread.start()
 
     def stop(self) -> None:
+        """Forget the search in progress. Its thread is told to stop and keeps
+        running until it can (held in `_LIVE`); whatever it brings back is ignored."""
+        self._gen += 1
         for thread in (self._search, self._thumbs):
             if thread is not None and thread.isRunning():
                 thread.requestInterruption()
-                thread.wait(5000)
+        self._search = self._thumbs = None
+
+    def _failed(self, message: str) -> None:
+        self._state = f"error:{message}"
+        self.retranslate()
 
     def _show(self, results: list[dict]) -> None:
         if not results:
@@ -224,9 +256,10 @@ class SearchPanel(QWidget):
             self.list.addItem(item)
             self.list.setItemWidget(item, row)
             self._rows.append(row)
-        self._thumbs = _ThumbThread([r["thumbnail"] for r in results], self._thumb_dir)
-        self._thumbs.got.connect(lambda i, path: self._rows[i].set_thumb(path)
-                                 if i < len(self._rows) else None)
+        gen = self._gen
+        self._thumbs = _keep(_ThumbThread([r["thumbnail"] for r in results], self._thumb_dir))
+        self._thumbs.got.connect(lambda i, path, g=gen: self._rows[i].set_thumb(path)
+                                 if g == self._gen and i < len(self._rows) else None)
         self._thumbs.start()
 
     def _update(self) -> None:

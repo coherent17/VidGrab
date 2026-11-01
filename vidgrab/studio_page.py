@@ -438,6 +438,8 @@ class _MediaClip:
     volume: float = 1.0  # the clip's own sound, 0..2
     muted: bool = False
     speed: float = 1.0  # 0.25 .. 4
+    denoise: bool = False  # reduce steady background noise when rendering
+
     @property
     def has_audio(self) -> bool:
         return bool(self.info.get("has_audio"))
@@ -448,14 +450,16 @@ class _MediaClip:
     def edit(self) -> tuple:
         """The user-editable part, as plain comparable data (undo / projects)."""
         return (self.start, self.end, self.transition, self.transition_d, self.fit,
-                self.zoom, self.pan_x, self.pan_y, self.volume, self.muted, self.speed)
+                self.zoom, self.pan_x, self.pan_y, self.volume, self.muted, self.speed,
+                self.denoise)
 
     def with_edit(self, edit: tuple) -> _MediaClip:
         (start, end, transition, transition_d, fit, zoom, pan_x, pan_y, volume,
          muted, *rest) = edit
         return replace(self, start=start, end=end, transition=transition,
                        transition_d=transition_d, fit=fit, zoom=zoom, pan_x=pan_x, pan_y=pan_y,
-                       volume=volume, muted=muted, speed=rest[0] if rest else 1.0)
+                       volume=volume, muted=muted, speed=rest[0] if rest else 1.0,
+                       denoise=bool(rest[1]) if len(rest) > 1 else False)
 
     def frame_at(self, t: float) -> QImage | None:
         if not self.thumbs:
@@ -2009,6 +2013,14 @@ class StudioPage(QWidget):
         self.name = QLineEdit()
         form.addRow(self._label("File name:"), self.name)
         lay.addLayout(form)
+        self.loud_cb = QCheckBox()
+        self.loud_cb.setCursor(QCursor(_HAND))
+        self._tr(self.loud_cb, "Even out the loudness")
+        self._tr(self.loud_cb, "Brings the whole video to the loudness YouTube and Shorts aim for "
+                 "(-14 LUFS), so it is neither too quiet nor too loud. Applied when you render.",
+                 "setToolTip")
+        self.loud_cb.toggled.connect(lambda _on: self._record())
+        lay.addWidget(self.loud_cb)
         lay.addWidget(self._label("Save to:"))
         row = QHBoxLayout()
         self.out_dir = QLineEdit(str(self.host.default_output_dir()))
@@ -2575,6 +2587,14 @@ class StudioPage(QWidget):
         sr.addWidget(self.clip_vol, stretch=1)
         sr.addWidget(self.clip_vol_lbl)
         lay.addWidget(self.sound_row)
+        self.clip_denoise = QCheckBox()
+        self.clip_denoise.setCursor(QCursor(_HAND))
+        self._tr(self.clip_denoise, "Reduce background noise")
+        self._tr(self.clip_denoise, "Takes steady hiss, hum and fan noise out of this clip's sound "
+                 "when you render. Speech and music are left alone. The preview does not play it.",
+                 "setToolTip")
+        self.clip_denoise.toggled.connect(self._set_denoise)
+        lay.addWidget(self.clip_denoise)
 
         self.framing_cap = self._label("FRAMING", "field_cap")
         lay.addWidget(self.framing_cap)
@@ -2644,15 +2664,17 @@ class StudioPage(QWidget):
         self.trans_len.setEnabled(clip.transition != "none")
         for w in (self.framing_cap, self.fit_box, self.zoom_row, self.framing_hint):
             w.setVisible(clip.has_video)
-        for w in (self.sound_cap, self.sound_row):
+        for w in (self.sound_cap, self.sound_row, self.clip_denoise):
             w.setVisible(clip.has_audio)
-        for w in (self.clip_mute, self.clip_vol):
+        for w in (self.clip_mute, self.clip_vol, self.clip_denoise):
             w.blockSignals(True)
+        self.clip_denoise.setChecked(clip.denoise)
         self.clip_mute.setChecked(clip.muted)
         self.clip_vol.setValue(round(clip.volume * 100))
-        for w in (self.clip_mute, self.clip_vol):
+        for w in (self.clip_mute, self.clip_vol, self.clip_denoise):
             w.blockSignals(False)
         self.clip_vol.setEnabled(not clip.muted)
+        self.clip_denoise.setEnabled(not clip.muted)
         self.clip_vol_lbl.setText(f"{round(clip.volume * 100)}%")
         self.fit_btns[clip.fit].setChecked(True)
         self.clip_zoom.blockSignals(True)
@@ -2761,6 +2783,12 @@ class StudioPage(QWidget):
             clip.muted = on
             self._sound_changed(self._sel[1])
 
+    def _set_denoise(self, on: bool) -> None:
+        clip = self._sel_clip()
+        if clip is not None:
+            clip.denoise = on
+            self._sound_changed(self._sel[1])
+
     def _set_clip_volume(self, value: int) -> None:
         clip = self._sel_clip()
         if clip is not None:
@@ -2863,8 +2891,15 @@ class StudioPage(QWidget):
         self.music_fade.setChecked(True)
         self.music_fade.toggled.connect(lambda _c: (self._push_music(), self._record()))
         self._tr(self.music_fade, "Fade out at the end")
+        self.music_duck = QCheckBox()
+        self.music_duck.toggled.connect(lambda _c: self._record())
+        self._tr(self.music_duck, "Lower the music while someone is speaking")
+        self._tr(self.music_duck, "The clips' own sound steers the music: it is pressed down while "
+                 "there is speech and comes back up in the pauses. Applied when you render; the "
+                 "preview does not play it.", "setToolTip")
         lay.addWidget(self.music_loop)
         lay.addWidget(self.music_fade)
+        lay.addWidget(self.music_duck)
         lay.addWidget(self._label(
             "Drag a song's handles to cut it and the block to move it. Overlap two songs "
             "and give them a fade to crossfade.", "hint"))
@@ -3015,7 +3050,7 @@ class StudioPage(QWidget):
     def _on_mode(self) -> None:
         video = self.is_video()
         for w in (self.add_sub_btn, self.captions_btn, self.image_btn, self.music_btn,
-                  self.combine_btn, self.res_lbl, self.res,
+                  self.combine_btn, self.res_lbl, self.res, self.loud_cb,
                   self.export_cap, self.export_box):
             w.setVisible(video)
         for w in (self.xfade_lbl, self.xfade, self.afmt_lbl, self.afmt, self.abr_lbl, self.abr):
@@ -4302,7 +4337,8 @@ class StudioPage(QWidget):
             "images": [astuple(img) for img in self._images],
             "music": [song.edit() for song in self._songs],
             "music_opts": (self.orig_vol.value(), self.music_loop.isChecked(),
-                           self.music_fade.isChecked()),
+                           self.music_fade.isChecked(), self.music_duck.isChecked()),
+            "audio_opts": (self.loud_cb.isChecked(),),
             "style": self._style_dict(),
         }
 
@@ -4367,10 +4403,13 @@ class StudioPage(QWidget):
                     or (kind == "music" and i >= len(self._songs)) \
                     or (kind == "image" and i >= len(self._images)):
                 self._sel = None
-            orig, loop, fade = state["music_opts"]
+            orig, loop, fade, *more = state["music_opts"]
             self.orig_vol.setValue(orig)
             self.music_loop.setChecked(loop)
             self.music_fade.setChecked(fade)
+            self.music_duck.setChecked(bool(more[0]) if more else False)
+            (loud,) = state.get("audio_opts", (False,))
+            self.loud_cb.setChecked(loud)
             self._apply_style_dict(state["style"])
             self._refresh_all()
             if self._sel and self._sel[0] == "cue":
@@ -4521,7 +4560,8 @@ class StudioPage(QWidget):
             "clips": [{**ref(c.path), "start": c.start, "end": c.end,
                        "transition": c.transition, "transition_duration": c.transition_d,
                        "fit": c.fit, "zoom": c.zoom, "pan_x": c.pan_x, "pan_y": c.pan_y,
-                       "volume": c.volume, "muted": c.muted, "speed": c.speed}
+                       "volume": c.volume, "muted": c.muted, "speed": c.speed,
+                       "denoise": c.denoise}
                       for c in self._clips],
             "subtitles": [asdict(c) for c in self._cues],
             "images": [{**ref(img.path), **{k: v for k, v in asdict(img).items() if k != "path"}}
@@ -4529,7 +4569,9 @@ class StudioPage(QWidget):
             "music": music,
             "music_options": {"original_volume": self.orig_vol.value(),
                               "loop_last": self.music_loop.isChecked(),
-                              "fade_out": self.music_fade.isChecked()},
+                              "fade_out": self.music_fade.isChecked(),
+                              "duck": self.music_duck.isChecked()},
+            "normalize_loudness": self.loud_cb.isChecked(),
             "style": self._style_dict(),
         }
 
@@ -4603,7 +4645,8 @@ class StudioPage(QWidget):
                     float(ref.get("pan_x", 0.5)), float(ref.get("pan_y", 0.5)),
                     min(2.0, max(0.0, float(ref.get("volume", 1.0)))),
                     bool(ref.get("muted", False)),
-                    min(max(float(ref.get("speed", 1.0)), SPEED_RANGE[0]), SPEED_RANGE[1]))))
+                    min(max(float(ref.get("speed", 1.0)), SPEED_RANGE[0]), SPEED_RANGE[1]),
+                    bool(ref.get("denoise", False)))))
         songs: list[tuple] = []
         raw = data.get("music") or []
         if isinstance(raw, dict):  # 3.2 projects: one song, options on the song
@@ -4630,7 +4673,7 @@ class StudioPage(QWidget):
                           max(0.0, float(m.get("offset") or 0.0)),
                           int(m.get("volume", 35)), max(0.0, float(m.get("fade") or 0.0))))
         music_opts = (int(opts.get("original_volume", 100)), bool(opts.get("loop_last", True)),
-                      bool(opts.get("fade_out", True)))
+                      bool(opts.get("fade_out", True)), bool(opts.get("duck", False)))
         fields = {f for f in SubtitleCue.__dataclass_fields__}
         cues = [astuple(SubtitleCue(**{k: v for k, v in c.items() if k in fields}))
                 for c in data.get("subtitles", []) if isinstance(c, dict)]
@@ -4656,6 +4699,7 @@ class StudioPage(QWidget):
                                                              if k in img_fields})))
         self._load_state({"clips": clips, "cues": cues, "music": songs, "images": images,
                           "music_opts": music_opts,
+                          "audio_opts": (bool(data.get("normalize_loudness", False)),),
                           "style": {**self._style_dict(), **(data.get("style") or {})}})
         self._reset_history()
         if recovering:  # back under its own name (if it had one), still unsaved
@@ -4972,7 +5016,7 @@ class StudioPage(QWidget):
                       transition=c.transition if video else "none",
                       transition_duration=c.transition_d,
                       fit=c.fit, zoom=c.zoom, pan_x=c.pan_x, pan_y=c.pan_y,
-                      volume=c.volume, muted=c.muted, speed=c.speed)
+                      volume=c.volume, muted=c.muted, speed=c.speed, denoise=c.denoise)
                  for c in self._clips]
         folder = Path(self.out_dir.text().strip() or self.host.default_output_dir())
         name = self.name.text().strip() or self.name.placeholderText()
@@ -4985,6 +5029,7 @@ class StudioPage(QWidget):
                 loop=k == last and self.music_loop.isChecked(),
                 fade_out=self.music_fade.isChecked(),
                 start=song.start, end=song.end, offset=song.offset, fade=song.fade,
+                duck=self.music_duck.isChecked(),
             ) for k, song in enumerate(self._songs)] or None
             self.render_requested.emit("compose_video", {
                 "clips": clips,
@@ -4998,6 +5043,7 @@ class StudioPage(QWidget):
                                    if hasattr(self.host, "setting") else "balanced"),
                 "hardware": bool(self.host.setting("gpu_render"))
                 if hasattr(self.host, "setting") else False,
+                "normalize_loudness": self.loud_cb.isChecked(),
             })
         else:
             ext = self.afmt.currentData() or ".mp3"

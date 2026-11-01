@@ -2456,7 +2456,7 @@ class StudioPage(QWidget):
         lay.addLayout(top)
         outer = lay
         tabs, self.clip_tabs, self.clip_tab_btns = self._tab_bar(
-            ("Trim", "Transition", "Picture and sound"))
+            ("Trim", "Transition", "Sound + frame"))
         outer.addWidget(tabs)
         outer.addWidget(self.clip_tabs, stretch=1)
         page, lay = self._page()

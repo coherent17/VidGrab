@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.4.0
+## 4.0.0
 
 Offline AI captions that use your graphics card, plus a much bigger Studio: per-clip speed, animated and individually styled subtitles, multi-select, export presets and crash recovery.
 

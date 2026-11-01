@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from vidgrab import gpu
 from vidgrab.gpu import HwEncoder
 
-NVENC, QSV, AMF = gpu.CANDIDATES
+NVENC, QSV, AMF, VTB = gpu.CANDIDATES
 
 
 def test_video_args_per_encoder_and_tier() -> None:
@@ -91,3 +91,33 @@ def test_speech_threads_is_capped_and_has_a_fallback(monkeypatch) -> None:
 def test_cpu_list() -> None:
     assert gpu._cpu_list("0-3,8,10-11\n") == {0, 1, 2, 3, 8, 10, 11}
     assert HwEncoder("x", "h264_x", "X").key == "x"
+
+
+def test_videotoolbox_arguments_follow_the_quality_preset():
+    assert VTB.codec == "h264_videotoolbox"
+    qualities = {crf: int(gpu.video_args(VTB, "medium", crf)[3]) for crf in (17, 20, 23)}
+    assert qualities == {17: 91, 20: 78, 23: 64}  # lower CRF -> higher -q:v
+    assert gpu.video_args(VTB, "medium", 20)[:2] == ["-c:v", "h264_videotoolbox"]
+    assert gpu.video_args(VTB, "medium", 200)[3] == "1"  # never below 1
+
+
+def test_mac_performance_cores_come_from_sysctl(monkeypatch):
+    answers = {"hw.perflevel0.physicalcpu": "8", "hw.physicalcpu": "12"}
+
+    def run(cmd, **_kw):
+        return SimpleNamespace(stdout=answers.get(cmd[-1], "") + "\n")
+
+    monkeypatch.setattr(gpu.subprocess, "run", run)
+    assert gpu._mac_cores() == 8
+    answers["hw.perflevel0.physicalcpu"] = ""  # an Intel Mac has no performance levels
+    assert gpu._mac_cores() == 12
+    monkeypatch.setattr(gpu.sys, "platform", "darwin")
+    assert gpu.fast_cores() == 12
+
+
+def test_mac_cores_are_zero_when_sysctl_is_missing(monkeypatch):
+    def run(*_a, **_k):
+        raise FileNotFoundError
+
+    monkeypatch.setattr(gpu.subprocess, "run", run)
+    assert gpu._mac_cores() == 0

@@ -1,0 +1,75 @@
+name: Build macOS app
+
+# A VidGrab.app per CPU (Apple silicon and Intel), zipped. ffmpeg is not inside it:
+# the only static build with libass is not redistributable, so the app downloads
+# the pinned one on first run (vidgrab/ffmpeg_fetch.py). It is not signed or
+# notarized: the first launch needs right-click -> Open.
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches: [feature/pip-and-macos]  # TEMPORARY: lets the branch try the build; remove before merging
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # the version pinned in ffmpeg/pin.json (SHA-256 checked); used here for the
+      # tests, so they run against what the app downloads for its users
+      - name: Download pinned ffmpeg
+        run: |
+          python scripts/fetch_ffmpeg.py
+          ffmpeg/mac/ffmpeg -hide_banner -version | head -1
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Studio relies on libass (subtitles), amix and acrossfade
+      - name: Test Studio against the pinned ffmpeg
+        run: PATH="$PWD/ffmpeg/mac:$PATH" python -m pytest tests/test_studio.py -v
+
+      - name: Make the app icon
+        run: |
+          mkdir icon.iconset
+          for s in 16 32 128; do
+            sips -z $s $s assets/icon.png --out icon.iconset/icon_${s}x${s}.png
+            sips -z $((s*2)) $((s*2)) assets/icon.png --out icon.iconset/icon_${s}x${s}@2x.png
+          done
+          cp assets/icon.png icon.iconset/icon_256x256.png
+          iconutil -c icns icon.iconset -o assets/icon.icns
+
+      - name: Build the app
+        run: pyinstaller VidGrab.spec --noconfirm
+
+      - name: Selftest (multimedia, speech engines in the packaged app)
+        run: |
+          QT_QPA_PLATFORM=offscreen dist/VidGrab.app/Contents/MacOS/VidGrab --selftest | tee /tmp/vidgrab-selftest.log
+          grep -q "multimedia=1" /tmp/vidgrab-selftest.log
+          grep -q "captions=1" /tmp/vidgrab-selftest.log
+          grep -q "openvino=1" /tmp/vidgrab-selftest.log
+
+      - name: Zip the app
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent dist/VidGrab.app "dist/VidGrab-macos-${{ matrix.arch }}.zip"
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VidGrab-macos-${{ matrix.arch }}
+          path: dist/VidGrab-macos-${{ matrix.arch }}.zip

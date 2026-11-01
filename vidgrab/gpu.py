@@ -22,7 +22,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class HwEncoder:
-    key: str  # "nvenc" | "qsv" | "amf"
+    key: str  # "nvenc" | "qsv" | "amf" | "videotoolbox"
     codec: str  # ffmpeg's encoder name
     label: str  # shown to the user
 
@@ -32,6 +32,7 @@ CANDIDATES = (
     HwEncoder("nvenc", "h264_nvenc", "NVIDIA NVENC"),
     HwEncoder("qsv", "h264_qsv", "Intel Quick Sync"),
     HwEncoder("amf", "h264_amf", "AMD AMF"),
+    HwEncoder("videotoolbox", "h264_videotoolbox", "Apple VideoToolbox"),
 )
 
 # libx264 preset -> speed tier of the hardware encoders
@@ -50,6 +51,9 @@ def video_args(encoder: HwEncoder | None, preset: str, crf: int) -> list[str]:
     if encoder.key == "qsv":
         return ["-c:v", encoder.codec, "-preset", ("veryfast", "medium", "veryslow")[tier],
                 "-global_quality", str(crf)]
+    if encoder.key == "videotoolbox":  # -q:v is 1-100, higher is better: CRF 17 / 20 / 23 -> 91 / 78 / 64
+        return ["-c:v", encoder.codec, "-q:v", str(max(1, min(100, round(100 - (crf - 15) * 4.5)))),
+                "-allow_sw", "0"]
     return ["-c:v", encoder.codec, "-quality", ("speed", "balanced", "quality")[tier],
             "-rc", "cqp", "-qp_i", str(crf), "-qp_p", str(crf)]  # amf
 
@@ -155,6 +159,19 @@ def _linux_cores() -> tuple[int, int]:
         return 0, 0
 
 
+def _mac_cores() -> int:
+    """Performance cores of an Apple-silicon Mac (all cores on an Intel one)."""
+    for name in ("hw.perflevel0.physicalcpu", "hw.physicalcpu"):
+        try:
+            out = subprocess.run(["sysctl", "-n", name], capture_output=True, text=True,
+                                 timeout=5, check=False).stdout.strip()
+            if out.isdigit() and int(out) > 0:
+                return int(out)
+        except (OSError, subprocess.SubprocessError):
+            continue
+    return 0
+
+
 def fast_cores() -> int:
     """Physical performance cores (all cores on a CPU without slow ones)."""
     count = 0
@@ -164,6 +181,8 @@ def fast_cores() -> int:
             count = classes.count(max(classes)) if classes else 0
         elif sys.platform.startswith("linux"):
             count = _linux_cores()[1]
+        elif sys.platform == "darwin":
+            count = _mac_cores()
     except Exception:  # noqa: BLE001 - topology is a hint, never a reason to fail
         count = 0
     return count or max(1, (os.cpu_count() or 2) // 2)

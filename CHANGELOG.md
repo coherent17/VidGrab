@@ -2,7 +2,11 @@
 
 ## Unreleased
 
-## Unreleased
+### Install with pip, and a macOS app
+
+- **`pip install vidgrab-studio`** (then `vidgrab`): the same app as a Python package for Windows, Linux and macOS, Python 3.10+. The package carries no ffmpeg and no AI model: ffmpeg is used from `PATH` or downloaded once on first run (with a prompt), speech models come on first use as always. Auto captions are an extra: `pip install "vidgrab-studio[captions]"`; without it the button explains how to add it. A pip install leaves updating yt-dlp to pip, so the in-app updater is hidden there. Publishing to PyPI is wired into the release workflow but off until the repository variable `PYPI_PUBLISH` is `true` and PyPI trusts the repository
+- **macOS app** (`VidGrab-macos-arm64.zip` for Apple silicon, `VidGrab-macos-x64.zip` for Intel): a `VidGrab.app` built by CI. It is not signed, so the first launch needs right-click → Open. ffmpeg is not inside it (the only static build with libass is not redistributable): the app downloads the pinned build once on first use, after asking, and checks its SHA-256. On a Mac, videos can be encoded with Apple VideoToolbox, and speech recognition uses the performance cores. **Built on GitHub's runners only: not yet run on a real Mac.**
+- The pinned ffmpeg now also lists the two macOS builds (`ffmpeg/pin.json`, fetched by `vidgrab/ffmpeg_fetch.py`, which `scripts/fetch_ffmpeg.py` uses too)
 
 ### Downloads: more formats, sites and control
 
@@ -23,6 +27,7 @@
 
 ### Fixed
 
+- **The app could not start on Python 3.10 / 3.11** from source (two f-strings with a backslash inside the braces, valid only from 3.12); the packaged builds were unaffected
 - **MP3s made for "MP4 + MP3" downloads, and trimmed or sped-up MP3s, came out at 64 kbps** whatever you chose (the bitrate was passed to ffmpeg without its "k"); they now use the chosen bitrate
 - **Links to a plain video file** (and other sites whose formats don't report a height) failed with "Requested format is not available" whenever a resolution was chosen; the resolution cap now lets formats of unknown height through
 

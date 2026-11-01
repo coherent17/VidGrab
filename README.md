@@ -51,9 +51,27 @@ nothing uploaded.
 |----------|------|------------|
 | Windows 10 / 11 (x64) | `VidGrab-windows-x64.exe` | Double-click |
 | Linux x64 (glibc ≥ 2.35) | `VidGrab-linux-x64` (or `.tar.xz`) | `chmod +x VidGrab-linux-x64 && ./VidGrab-linux-x64` |
+| macOS 12+ (Apple silicon) | `VidGrab-macos-arm64.zip` | Unzip, then right-click `VidGrab.app` → **Open** (first time only) |
+| macOS 12+ (Intel) | `VidGrab-macos-x64.zip` | Same |
 
 Grab them from the [latest release](https://github.com/coherent17/VidGrab/releases/latest), which also includes
 the demo video, the user guide and `SHA256SUMS.txt` for verifying downloads.
+
+The Windows and Linux files carry ffmpeg inside. The **macOS app is not signed**, so macOS asks you to confirm the first
+launch (or run `xattr -dr com.apple.quarantine VidGrab.app`), and it **downloads ffmpeg once, with your OK**, the first
+time it needs it (about 40 MB, checked against a known checksum).
+
+### Or install with pip
+
+```bash
+pipx install vidgrab-studio            # or: pip install vidgrab-studio
+pipx install "vidgrab-studio[captions]"  # with auto captions (Whisper + OpenVINO, about 200 MB more)
+vidgrab                                # start it
+```
+
+Python 3.10+ on Windows, Linux or macOS. The package does not contain ffmpeg or any AI model: ffmpeg is taken from
+your `PATH` if it is there, or downloaded once on first run; the speech models are downloaded when you first make
+captions. Update yt-dlp with `pip install -U yt-dlp`.
 
 **Quick start:** copy a YouTube link → **Paste** → **Download** → **Send to Studio** → trim, add **＋ Subtitle** or
 **Auto captions…** → **Render**.
@@ -217,6 +235,9 @@ make lint     # ruff
 make test     # pytest, including a headless GUI smoke test
 make build    # standalone binary for the current OS -> dist/
 ```
+
+On macOS, `make ffmpeg` is not needed: the app downloads ffmpeg itself (or use `brew install ffmpeg`).
+To build the package: `python -m build`; the macOS app: `pyinstaller VidGrab.spec` (see `.github/workflows/build-macos.yml`).
 
 On Windows, use `python -m venv .venv`, `.venv\Scripts\activate`, `pip install -r requirements.txt` and
 `python -m vidgrab`, or build with `scripts\build.ps1` (which fetches the pinned ffmpeg itself).

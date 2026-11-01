@@ -1,3 +1,16 @@
+Fonts bundled with VidGrab (assets/*.ttf), all under the SIL Open Font License 1.1:
+
+  Inter              Copyright (c) The Inter Project Authors (https://github.com/rsms/inter)
+  Poppins            Copyright (c) Indian Type Foundry (https://github.com/itfoundry/Poppins)
+  Plus Jakarta Sans  Copyright (c) The Plus Jakarta Sans Project Authors (Tokotype)
+  Manrope            Copyright (c) The Manrope Project Authors (Mikhail Sharanda)
+  DM Sans            Copyright (c) The DM Sans Project Authors (Colophon Foundry)
+  Nunito Sans        Copyright (c) The Nunito Sans Project Authors (Vernon Adams, Jacques Le Bailly)
+
+The static files were cut from the fonts' variable versions (Regular, Medium, SemiBold, Bold);
+the designs are unchanged. The licence text follows (from the Inter distribution; the
+OFL 1.1 text is the same for every font above).
+
 Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter)
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.

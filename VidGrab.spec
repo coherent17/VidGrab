@@ -31,8 +31,8 @@ if not os.environ.get("VIDGRAB_SERIAL_PKG"):
 # --- icon / assets -------------------------------------------------------
 _datas: list[tuple[str, str]] = []
 # NotoSansTC renders the zh UI and burned-in Chinese subtitles (Studio).
-for _name in ("icon.ico", "icon.png", "NotoSansTC-Regular.otf", "Inter-Regular.ttf",
-              "Inter-Medium.ttf", "Inter-SemiBold.ttf", "Inter-Bold.ttf", "Inter-LICENSE.txt"):
+for _name in ("icon.ico", "icon.png", "NotoSansTC-Regular.otf", "Fonts-LICENSE.txt",
+              *(p.name for p in sorted((ROOT / "assets").glob("*.ttf")))):  # the UI fonts
     _src = str(ROOT / "assets" / _name)
     if os.path.isfile(_src):
         _datas.append((_src, "assets"))

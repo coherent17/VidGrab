@@ -511,6 +511,26 @@ def format_srt(cues: list[SubtitleCue]) -> str:
     return "\n".join(out)
 
 
+def format_vtt(cues: list[SubtitleCue]) -> str:
+    """Render cues as WebVTT (what web video players and many editors read)."""
+    body = "\n".join(
+        f"{_srt_ts(c.start).replace(',', '.')} --> {_srt_ts(c.end).replace(',', '.')}\n"
+        f"{c.text.strip()}\n"
+        for c in sorted(cues, key=lambda c: c.start))
+    return "WEBVTT\n\n" + body
+
+
+def format_transcript(cues: list[SubtitleCue], timestamps: bool = False) -> str:
+    """The words only, one line per subtitle (optionally with the time each begins),
+    for notes, articles or pasting into another tool."""
+    lines = []
+    for c in sorted(cues, key=lambda c: c.start):
+        text = " ".join(c.text.split())
+        if text:
+            lines.append(f"[{_srt_ts(c.start)[:-4]}] {text}" if timestamps else text)
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
 def parse_timecode(value: str) -> float | None:
     """'90', '1:30', '1:02:03.5' -> seconds (None if invalid)."""
     value = value.strip()

@@ -25,6 +25,7 @@ Offline AI captions that use your graphics card, plus a much bigger Studio: per-
 - **Export presets**: the Project panel picks what to make — **YouTube (1080p)**, **Shorts / Reels / TikTok** (vertical, with a reminder when the video is over 60 s), **Square (1:1)**, **Same as the clips**, **GIF** or **Audio only (MP3)** — with the matching resolution and file type
 - The Clip panel is split into **Trim**, **Transition** and **Picture and sound** tabs, so it fits without scrolling
 - The Studio toolbar buttons are shorter ("＋ Media…", "♪ Music…") so the row fits in a small window
+- **Subtitles fit vertical and square videos**: their size now follows the *shorter* side of the frame (it followed the height, so text in a 9:16 video came out about twice too big), and long lines are wrapped to the frame width, in the preview and in the render alike. Chinese lines have no spaces for the renderer to break at, so a long caption used to run off both sides of a vertical video. Landscape videos are unchanged
 
 ### Downloads and releases
 

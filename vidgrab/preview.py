@@ -47,6 +47,7 @@ from vidgrab.studio import (
     cue_style,
     subtitle_scale,
     typewriter_time,
+    wrap_cue_text,
 )
 
 try:
@@ -502,7 +503,7 @@ class VideoCanvas(QWidget):
         # descent), Qt's pixel size as its em height. CJK fonts are ~1.45 em
         # tall, so convert or the preview draws text far larger than the render.
         style = style or self._style
-        target = style.size * subtitle_scale(int(rect.height()))
+        target = style.size * subtitle_scale(int(rect.width()), int(rect.height()))
         f = QFont(style.font or SUBTITLE_FONT_NAME)
         f.setBold(style.bold)
         f.setPixelSize(100)
@@ -521,7 +522,7 @@ class VideoCanvas(QWidget):
             py = rect.y() + cue.y * rect.height()
         else:
             anchor = 8 if self._style.position == "top" else 2
-            margin = SUBTITLE_MARGIN * subtitle_scale(int(rect.height()))
+            margin = SUBTITLE_MARGIN * subtitle_scale(int(rect.width()), int(rect.height()))
             px = rect.center().x()
             py = rect.top() + margin if anchor == 8 else rect.bottom() - margin
         col = (anchor - 1) % 3  # 0 left, 1 centre, 2 right
@@ -589,7 +590,7 @@ class VideoCanvas(QWidget):
     def _paint_cues(self, p: QPainter, rect: QRectF) -> None:
         """Each line in its own look, with its entrance animation — the same
         rules the ASS file gives libass (studio.format_ass)."""
-        k = subtitle_scale(int(rect.height()))
+        k = subtitle_scale(int(rect.width()), int(rect.height()))
         p.save()
         p.setClipRect(rect)
         fade = max(0.0, self._style.fade)
@@ -610,7 +611,7 @@ class VideoCanvas(QWidget):
             else:
                 outline = max(1.0, 2 * k) if style.outline else 0.0
             pad = box_padding(style.size * k)
-            lines = cue.text.split("\n")
+            lines = wrap_cue_text(cue.text, style.size * k, rect.width() - 2 * SUBTITLE_MARGIN * k)
             line_h = fm.height()
             text_h = line_h * len(lines)
             text_w = max(fm.horizontalAdvance(line) for line in lines)

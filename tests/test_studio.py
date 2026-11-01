@@ -601,3 +601,58 @@ def test_only_the_graphics_card_attempt_has_a_stall_limit(tmp_path: Path, monkey
     compose_video([Clip(str(a))], tmp_path / "o.mp4", hardware=True, on_log=log.append)
     assert seen == [("h264_nope", studio.HW_STALL_S), ("libx264", None)]
     assert any("rendering on the CPU instead" in line and "stopped responding" in line for line in log)
+
+
+def test_subtitle_size_follows_the_shorter_side_of_the_frame() -> None:
+    from vidgrab.studio import subtitle_scale
+
+    assert subtitle_scale(1920, 1080) == subtitle_scale(1080, 1920) == subtitle_scale(1080, 1080)
+    assert subtitle_scale(1280, 720) == 720 / 288  # landscape is unchanged
+    # a Shorts frame gets the text size a 1080p landscape video gets, not twice that
+    style = SubtitleStyle(size=24)
+    wide = format_ass([SubtitleCue(0, 2, "字幕")], 1920, 1080, style)
+    tall = format_ass([SubtitleCue(0, 2, "字幕")], 1080, 1920, style)
+    size = lambda text: next(ln for ln in text.splitlines() if ln.startswith("Style: Default")).split(",")[2]
+    assert size(wide) == size(tall) == "90"
+    assert "WrapStyle: 2" in tall
+
+
+@requires_ffmpeg
+def test_a_long_caption_wraps_inside_a_vertical_frame(tmp_path: Path) -> None:
+    import numpy as np
+
+    a = _make(tmp_path / "a.mp4", "-f", "lavfi", "-i", "color=c=black:s=640x360:r=25",
+              "-f", "lavfi", "-i", "sine=frequency=440", "-t", "2", "-shortest")
+    text = "這是一段很長的字幕，用來確認在直式影片裡會自動換行而不是超出畫面"
+    out = compose_video([Clip(str(a), fit="fill")], tmp_path / "v.mp4", resolution="vertical",
+                        subtitles=[SubtitleCue(0, 2, text)])
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", "1", "-i", str(out), "-frames:v", "1",
+                          "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                         capture_output=True, check=True).stdout
+    frame = np.frombuffer(raw, np.uint8).reshape(1920, 1080)
+    bright = frame > 200
+    cols = np.flatnonzero(bright.any(axis=0))
+    rows = np.flatnonzero(bright.any(axis=1))
+    assert cols.size and cols.min() > 20 and cols.max() < 1080 - 20  # nothing runs off the sides
+    bands = np.flatnonzero(np.diff(rows) > 12).size + 1  # separate text lines
+    assert bands >= 2  # it wrapped
+
+
+def test_wrap_breaks_cjk_and_words_the_same_for_preview_and_render() -> None:
+    from vidgrab.studio import text_advance, wrap_cue_text, wrap_line
+
+    width = lambda part: len(part) * 10.0
+    assert wrap_line("short", width, 100) == ["short"]
+    # Chinese has no spaces: break between characters, but never before a closing mark
+    lines = wrap_line("一二三四五六七八九十，一二三", width, 100)
+    assert lines == ["一二三四五六七八九十，", "一二三"] or all(not ln.startswith("，") for ln in lines)
+    assert all(not ln.startswith(("，", "。")) for ln in wrap_line("一二三四五六七八九，。一二三四", width, 100))
+    assert wrap_line("hello big wide world", width, 100) == ["hello big", "wide world"]
+    assert wrap_line("supercalifragilistic", width, 100) == ["supercalifragilistic"]  # a word is not cut
+    # a cue's own line breaks stay; each line is wrapped on its own
+    out = wrap_cue_text("甲乙丙丁戊己庚辛\n短", 30, 100)
+    assert out[-1] == "短" and len(out) >= 2 and "\n" not in "".join(out)
+    assert text_advance("一", 29) > text_advance("a", 29) > text_advance(" ", 29)
+    # the ASS script carries those breaks, so libass never has to wrap
+    ass = format_ass([SubtitleCue(0, 2, "一二三四五六七八九十" * 4)], 1080, 1920)
+    assert "\\N" in next(ln for ln in ass.splitlines() if ln.startswith("Dialogue"))

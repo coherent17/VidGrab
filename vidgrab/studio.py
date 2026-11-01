@@ -536,8 +536,11 @@ def box_padding(font_px: float) -> int:
     return max(2, round(font_px * 0.18))
 
 
-def subtitle_scale(height: int) -> float:
-    return height / REFERENCE_HEIGHT
+def subtitle_scale(width: int, height: int) -> float:
+    """Size factor of a *width* x *height* frame. The shorter side counts: a
+    9:16 video is as wide as a 16:9 one is tall, and text sized from its height
+    would be twice too big for its width."""
+    return min(width, height) / REFERENCE_HEIGHT
 
 
 def _ass_ts(seconds: float) -> str:
@@ -546,6 +549,52 @@ def _ass_ts(seconds: float) -> str:
     m, cs = divmod(cs, 6000)
     s, cs = divmod(cs, 100)
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+
+# ── wrapping ─────────────────────────────────────────────────────────────
+# libass only breaks lines at spaces, so a long Chinese line (no spaces) runs off
+# the frame, and its "smart" wrapping differs from any simple rule. We break the
+# lines ourselves, with one function used by both the ASS file and the preview,
+# so they agree on where. Widths are estimated (not measured) for the same reason.
+
+_CJK = "\u2e80-\u9fff\uf900-\ufaff\u3000-\u303f\uff00-\uffef"
+_WRAP_TOKEN = re.compile(rf"[{_CJK}]|[^\s{_CJK}]+\s*|\s+")
+_NO_BREAK_BEFORE = tuple("，。！？、；：）」』》〉】,.!?;:)]}%")
+_LINE_RATIO = 1.45  # libass font size is the line height; a CJK em is that / 1.45
+
+
+def text_advance(text: str, size: float) -> float:
+    """Estimated width of *text* at ASS font size *size* (the line height)."""
+    em = size / _LINE_RATIO
+    return sum(em if "\u2e80" <= ch <= "\uffef" and ch not in " " else em * (0.3 if ch.isspace() else 0.58)
+               for ch in text)
+
+
+def wrap_line(text: str, width, max_w: float) -> list[str]:
+    """*text* broken into lines no wider than *max_w* (*width* measures a
+    string): between CJK characters, or after the spaces between other words,
+    never before a closing mark."""
+    if max_w <= 0 or width(text) <= max_w:
+        return [text]
+    lines: list[str] = []
+    cur = ""
+    for token in _WRAP_TOKEN.findall(text):
+        trial = cur + token
+        if cur and width(trial.rstrip()) > max_w and not token.startswith(_NO_BREAK_BEFORE):
+            lines.append(cur.rstrip())
+            cur = token.lstrip()
+        else:
+            cur = trial
+    if cur.strip():
+        lines.append(cur.rstrip())
+    return lines or [text]
+
+
+def wrap_cue_text(text: str, size: float, max_w: float) -> list[str]:
+    """The lines a subtitle is shown on: its own line breaks, each wrapped to
+    *max_w* at font size *size*."""
+    return [seg for line in text.split("\n")
+            for seg in wrap_line(line, lambda part: text_advance(part, size), max_w)]
 
 
 def _ass_text(text: str) -> str:
@@ -605,7 +654,7 @@ def format_ass(
     look (a line's own colours / size over the shared style) is one ASS
     style; animations are override tags."""
     style = style or SubtitleStyle()
-    k = subtitle_scale(height)
+    k = subtitle_scale(width, height)
     align = 8 if style.position == "top" else 2
     margin = round(SUBTITLE_MARGIN * k)
     looks: dict[tuple, str] = {}
@@ -624,7 +673,7 @@ def format_ass(
         "ScriptType: v4.00+",
         f"PlayResX: {width}",
         f"PlayResY: {height}",
-        "WrapStyle: 0",
+        "WrapStyle: 2",  # no automatic wrapping: wrap_cue_text already broke the lines
         "ScaledBorderAndShadow: yes",
         "",
         "[V4+ Styles]",
@@ -669,7 +718,8 @@ def format_ass(
             tags += f"\\fscx40\\fscy40\\t(0,{ms},\\fscx100\\fscy100)"
         elif anim == "slide" and not fade_ms:
             tags += f"\\fad({round(ANIM_IN['slide'] * 700)},0)"
-        text = _ass_text(cue.text)
+        size = round(cue_style(cue, style).size * k)
+        text = _ass_text("\n".join(wrap_cue_text(cue.text, size, width - 2 * margin)))
         if anim == "typewriter":
             chars = _ass_chars(text)
             visible = [c for c in chars if c != "\\N"]

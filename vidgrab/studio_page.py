@@ -65,6 +65,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
@@ -89,6 +90,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vidgrab.captions import DEFAULT_MODEL as DEFAULT_CAPTION_MODEL
+from vidgrab.captions import LANGUAGES as CAPTION_LANGUAGES
+from vidgrab.captions import MODELS as CAPTION_MODELS
+from vidgrab.captions import CaptionSource, model_ready
 from vidgrab.preview import MusicBed, Segment, StudioPreview, TransitionMark, fmt_time
 from vidgrab.studio import (
     ANIMATIONS,
@@ -1646,6 +1651,7 @@ class StudioPage(QWidget):
     ``host.default_output_dir``."""
 
     render_requested = Signal(str, dict)  # worker task name, kwargs
+    cancel_requested = Signal()  # stop the running job (auto captions)
 
     INSP_PROJECT, INSP_CUE, INSP_MUSIC, INSP_CLIP, INSP_IMAGE = range(5)
 
@@ -1664,6 +1670,7 @@ class StudioPage(QWidget):
         self._sel: tuple[str, int] | None = None
         self._export = "auto"  # key of EXPORT_PRESETS
         self._busy = False
+        self._busy_job = "render"  # or "captions"
         self._i18n: list[tuple[object, str, str]] = []
         # probed media by path, so undo / redo / open never re-probe a file
         self._media: dict[str, _MediaClip] = {}
@@ -1818,16 +1825,18 @@ class StudioPage(QWidget):
         lay.setContentsMargins(8, 8, 8, 6)
         bar = QHBoxLayout()
         bar.setSpacing(6)
-        bar.addWidget(self._btn("＋ Add media…", self._add_dialog))
+        bar.addWidget(self._btn("＋ Media…", self._add_dialog, "Add video or music files"))
         self.split_btn = self._btn("✂ Split", self.split_clip,
                                    "Split the clip under the playhead in two (S)")
         bar.addWidget(self.split_btn)
         self.add_sub_btn = self._btn("＋ Subtitle", self._add_cue,
                                      "Add a subtitle line at the playhead")
+        self.captions_btn = self._btn("Auto captions…", self.auto_captions,
+                                      "Turn the speech in the clips into subtitle lines")
         self.image_btn = self._btn("＋ Image…", self._browse_images,
                                    "Show a picture over the video from the playhead")
-        self.music_btn = self._btn("♪ Background music…", self._browse_music)
-        for b in (self.add_sub_btn, self.image_btn, self.music_btn):
+        self.music_btn = self._btn("♪ Music…", self._browse_music, "Add background music")
+        for b in (self.add_sub_btn, self.captions_btn, self.image_btn, self.music_btn):
             bar.addWidget(b)
         bar.addStretch()
         self.total_lbl = QLabel()
@@ -2988,7 +2997,8 @@ class StudioPage(QWidget):
 
     def _on_mode(self) -> None:
         video = self.is_video()
-        for w in (self.add_sub_btn, self.image_btn, self.music_btn, self.res_lbl, self.res,
+        for w in (self.add_sub_btn, self.captions_btn, self.image_btn, self.music_btn,
+                  self.res_lbl, self.res,
                   self.export_cap, self.export_box):
             w.setVisible(video)
         for w in (self.xfade_lbl, self.xfade, self.afmt_lbl, self.afmt, self.abr_lbl, self.abr):
@@ -4635,12 +4645,16 @@ class StudioPage(QWidget):
 
     def set_busy(self, busy: bool) -> None:
         self._busy = busy
-        self.render_btn.setEnabled(not busy)
+        captions = busy and self._busy_job == "captions"
+        # while captions are made the Render button stops them
+        self.render_btn.setEnabled(not busy or captions)
+        self.captions_btn.setEnabled(not busy)
         if busy:
             self.preview.stop()
             self.progress.setMaximum(0)
-            self.render_btn.setText(self.t("✦  Rendering…"))
+            self.render_btn.setText(self.t("✕  Stop") if captions else self.t("✦  Rendering…"))
         else:
+            self._busy_job = "render"
             self.progress.setMaximum(100)
             self.render_btn.setText(self.t("✦  Render"))
             self._reload_preview()
@@ -4663,8 +4677,152 @@ class StudioPage(QWidget):
         self.progress.setValue(100 if ok else 0)
         self.status.setText(self.t("Done") if ok else self.t("Failed"))
 
+    # auto captions ---------------------------------------------------------------------
+
+    def caption_sources(self) -> list[CaptionSource]:
+        """The sound of every clip as it plays in the montage (muted clips and
+        clips without sound are left out)."""
+        out = []
+        for c, offset in zip(self._clips, self.track.offsets()):
+            if not c.has_audio or c.gain() <= 0:
+                continue
+            start, end = c.span()
+            out.append(CaptionSource(c.path, start, end if c.length else c.end, c.speed, offset))
+        return out
+
+    def auto_captions(self) -> None:
+        """Ask how to listen, then turn the speech in the clips into lines."""
+        if self._busy:
+            return
+        if not self._clips:
+            QMessageBox.warning(self, self.t("No clips"), self.t("Add at least one clip first."))
+            return
+        if not self.caption_sources():
+            QMessageBox.information(self, self.t("Auto captions"),
+                                    self.t("None of the clips has sound to listen to."))
+            return
+        if not self.host.ffmpeg_ok():
+            return
+        choice = self._captions_dialog()
+        if choice is None:
+            return
+        language, size, replace_lines = choice
+        if hasattr(self.host, "set_setting"):
+            self.host.set_setting("caption_language", language)
+            self.host.set_setting("caption_model", size)
+        self._busy_job = "captions"
+        self.render_requested.emit("transcribe", {
+            "sources": self.caption_sources(),
+            "language": language,
+            "size": size,
+            "replace": replace_lines,
+        })
+
+    def _captions_dialog(self) -> tuple[str, str, bool] | None:
+        t = self.t
+        setting = self.host.setting if hasattr(self.host, "setting") else (lambda _k: None)
+        dlg = QDialog(self)
+        dlg.setWindowTitle(t("Auto captions"))
+        dlg.setMinimumWidth(480)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(20, 18, 20, 16)
+        lay.setSpacing(8)
+        intro = QLabel(t("Turns the speech in your clips into subtitle lines. It runs on "
+                         "this computer; the speech model is downloaded once."))
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
+        lay.addSpacing(4)
+        cap = QLabel(t("SPOKEN LANGUAGE"))
+        cap.setObjectName("field_cap")
+        lay.addWidget(cap)
+        lang = QComboBox()
+        for code, name in CAPTION_LANGUAGES.items():
+            lang.addItem(name or t("Detect automatically"), code)
+        idx = lang.findData(setting("caption_language") or "auto")
+        lang.setCurrentIndex(max(0, idx))
+        lay.addWidget(lang)
+        lay.addSpacing(4)
+        cap = QLabel(t("ACCURACY"))
+        cap.setObjectName("field_cap")
+        lay.addWidget(cap)
+        sizes: dict[str, QPushButton] = {}
+        box = QWidget()
+        box.setObjectName("segmented")
+        box.setAttribute(Qt.WA_StyledBackground, True)
+        row = QHBoxLayout(box)
+        row.setContentsMargins(4, 4, 4, 4)
+        row.setSpacing(4)
+        models_dir = self.host.models_dir() if hasattr(self.host, "models_dir") else None
+        hint = QLabel()
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        notes = {"fast": t("Quickest; fine for clear speech."),
+                 "balanced": t("Good for most videos."),
+                 "best": t("Most accurate, and slow without a graphics card.")}
+
+        def pick(key: str) -> None:
+            ready = models_dir is not None and model_ready(models_dir, key)
+            note = notes[key] + " " + (t("Already downloaded.") if ready else
+                                       t("Downloads {size} the first time.",
+                                         size=CAPTION_MODELS[key][1]))
+            hint.setText(note)
+
+        for key, label in (("fast", t("Fast")), ("balanced", t("Balanced")), ("best", t("Best"))):
+            b = QPushButton(label)
+            b.setObjectName("segment")
+            b.setProperty("compact", True)
+            b.setCheckable(True)
+            b.setAutoExclusive(True)
+            b.setMinimumHeight(30)
+            b.setCursor(QCursor(_HAND))
+            b.clicked.connect(lambda _c=False, k=key: pick(k))
+            row.addWidget(b)
+            sizes[key] = b
+        current = setting("caption_model")
+        current = current if current in CAPTION_MODELS else DEFAULT_CAPTION_MODEL
+        sizes[current].setChecked(True)
+        pick(current)
+        lay.addWidget(box)
+        lay.addWidget(hint)
+        replace_box = QCheckBox(t("Replace the current subtitle lines"))
+        replace_box.setVisible(bool(self._cues))
+        lay.addWidget(replace_box)
+        lay.addSpacing(6)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel = QPushButton(t("Cancel"))
+        cancel.clicked.connect(dlg.reject)
+        go = QPushButton(t("Create captions"))
+        go.setDefault(True)
+        go.clicked.connect(dlg.accept)
+        buttons.addWidget(cancel)
+        buttons.addWidget(go)
+        lay.addLayout(buttons)
+        self._captions_dlg = dlg  # for tests
+        if dlg.exec() != QDialog.Accepted:
+            return None
+        size = next(k for k, b in sizes.items() if b.isChecked())
+        return lang.currentData(), size, replace_box.isChecked()
+
+    def captions_ready(self, cues: list[SubtitleCue], replace_lines: bool) -> None:
+        """Put the recognised lines on the Subtitles row (one undo step)."""
+        if not cues:
+            self.status.setText(self.t("No speech was found in the clips."))
+            return
+        self._cues = list(cues) if replace_lines else sorted(
+            [*self._cues, *cues], key=lambda c: c.start)
+        self.deselect()
+        self._cues_changed()
+        self._record()
+        self.status.setText(self.t("Added {n} subtitle lines", n=len(cues)))
+
+    def cancel_job(self) -> None:
+        self.cancel_requested.emit()
+
     def render(self) -> None:
         if self._busy:
+            if self._busy_job == "captions":
+                self.cancel_job()
             return
         if not self._clips:
             QMessageBox.warning(self, self.t("No clips"), self.t("Add at least one clip first."))

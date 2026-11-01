@@ -45,10 +45,16 @@ for _name in _ffmpeg_names:
             _datas.append((_src, "ffmpeg"))
             break
 
+# --- auto captions: faster-whisper's voice-filter model + native libraries ---
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
+
+_datas += collect_data_files("faster_whisper")  # assets/silero_vad*.onnx
+_binaries = collect_dynamic_libs("ctranslate2")
+
 a = Analysis(
     [str(ROOT / "vidgrab" / "__main__.py")],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=_binaries,
     datas=_datas,
     hiddenimports=[
         "yt_dlp",
@@ -57,6 +63,7 @@ a = Analysis(
         "packaging",
         "vidgrab",
         "vidgrab.app",
+        "vidgrab.captions",
         "vidgrab.downloader",
         "vidgrab.downloads_panel",
         "vidgrab.i18n",
@@ -69,11 +76,17 @@ a = Analysis(
         "PySide6.QtGui",
         "PySide6.QtMultimedia",
         "PySide6.QtWidgets",
+        "faster_whisper",
+        "ctranslate2",
+        "onnxruntime",
+        "tokenizers",
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
+        # PyAV bundles a second ffmpeg (~130 MB); captions decode with ours
+        "av",
         # PySide6 modules we don't use — keeps the bundle smaller
         "PySide6.Qt3DAnimation",
         "PySide6.Qt3DCore",

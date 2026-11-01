@@ -1490,7 +1490,8 @@ def test_speech_models_storage_row(qapp, tmp_path, monkeypatch) -> None:
         assert not win._models_btn.isEnabled()  # nothing to delete
         (models / "openvino" / "fast").mkdir(parents=True)
         (models / "openvino" / "fast" / "model.bin").write_bytes(b"x" * 3000)
-        win._refresh_storage()
+        assert win._models_lbl.text() == win._t("Speech models: {size}", size="0 B")  # not looked at yet
+        win._switch_page(appmod.PAGE_SETTINGS)  # opening Settings shows the current sizes
         assert "KB" in win._models_lbl.text() and win._models_btn.isEnabled()
         monkeypatch.setattr(appmod.QMessageBox, "question",
                             staticmethod(lambda *_a, **_k: appmod.QMessageBox.No))

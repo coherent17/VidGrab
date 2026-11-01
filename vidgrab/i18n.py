@@ -888,7 +888,7 @@ TRANS: dict[str, dict[str, str]] = {
      "Same as the clips": "與片段相同",
      "Select everything": "全選",
      "Select several items": "選取多個項目",
-     "Shorts / Reels / TikTok": "Shorts／Reels／TikTok",
+     "Shorts / Reels / TikTok": "Shorts/Reels/TikTok",
      "Shorts, Reels and TikTok videos are at most 60 s; this one is {d}.": "Shorts、Reels 和 TikTok 影片最長 60 秒，這支影片是 {d}。",
      "Square (1:1)": "正方形（1:1）",
      "VidGrab closed before your Studio project was saved. Restore the copy from {time}?": "VidGrab 在剪輯專案儲存前就關閉了。要復原 {time} 自動保存的內容嗎？",

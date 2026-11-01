@@ -2527,6 +2527,9 @@ class VidGrabWindow(QMainWindow):
         self._bottom.setVisible(idx == PAGE_DOWNLOAD)
         if idx == PAGE_DOWNLOAD:
             self._action.setText(self._t("\u2b07  Download"))
+        if idx == PAGE_SETTINGS:  # sizes change while you work (a model was downloaded, a cache grew)
+            self._refresh_storage()
+            self._refresh_hardware()
         self._refresh_btn()
         self._sidebar.retranslate(self._t, self._theme)
 

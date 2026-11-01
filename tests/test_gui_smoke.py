@@ -1861,6 +1861,19 @@ def test_missing_ffmpeg_is_offered_once_and_fetched(qapp, tmp_path, monkeypatch)
         win.close()
 
 
+def _discard(qapp, widget) -> None:
+    """Destroy a top-level widget now. One that is merely dropped lives on (Qt
+    connections keep it referenced) until the interpreter exits, and PySide6 6.12
+    crashes when it is destroyed after the QApplication."""
+    from PySide6.QtCore import QEvent
+    from PySide6.QtWidgets import QApplication
+
+    widget.deleteLater()
+    qapp.processEvents()
+    QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    qapp.processEvents()
+
+
 def test_pressing_enter_again_never_destroys_a_running_search(qapp, tmp_path) -> None:
     """A search still waiting on the network when the next one starts used to be
     thrown away after a 5 s wait: Qt aborts the whole app when a running QThread
@@ -1904,6 +1917,7 @@ def test_pressing_enter_again_never_destroys_a_running_search(qapp, tmp_path) ->
         release.set()
         panel.stop()
         _wait(qapp, lambda: not pick_dialogs._LIVE, 10)
+        _discard(qapp, panel)
 
 
 def test_shutdown_reports_a_search_that_will_not_stop(qapp, tmp_path) -> None:
@@ -1922,4 +1936,5 @@ def test_shutdown_reports_a_search_that_will_not_stop(qapp, tmp_path) -> None:
         release.set()
         _wait(qapp, lambda: not pick_dialogs._LIVE, 10)
         panel.stop()
+        _discard(qapp, panel)
     assert pick_dialogs.shutdown_threads(200) == []

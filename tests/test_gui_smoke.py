@@ -1940,6 +1940,59 @@ def test_shutdown_reports_a_search_that_will_not_stop(qapp, tmp_path) -> None:
     assert pick_dialogs.shutdown_threads(200) == []
 
 
+def test_studio_subtitle_files_menu(qapp, tmp_path, monkeypatch) -> None:
+    """Project -> Subtitles: export as srt / vtt / txt, copy the transcript, import again."""
+    from PySide6.QtWidgets import QApplication
+
+    from vidgrab import app as appmod
+    from vidgrab.studio import SubtitleCue
+
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(appmod.QMessageBox, "question",
+                        staticmethod(lambda *_a, **_k: appmod.QMessageBox.Yes))
+    win = appmod.VidGrabWindow()
+    try:
+        st = win._studio
+        menu = st.project_menu
+        menu.aboutToShow.emit()
+        subs = next(a for a in menu.actions() if a.menu() and a.text() == "Subtitles").menu()
+        actions = {a.text(): a for a in subs.actions()}
+        assert not actions["Export subtitles…"].isEnabled()  # nothing to export yet
+        assert not actions["Copy the transcript"].isEnabled()
+        st._cues = [SubtitleCue(1.0, 2.0, "Hello"), SubtitleCue(3.0, 4.0, "World")]
+        st._cues_changed()
+        menu.aboutToShow.emit()
+        subs = next(a for a in menu.actions() if a.menu() and a.text() == "Subtitles").menu()
+        actions = {a.text(): a for a in subs.actions()}
+        assert actions["Export subtitles…"].isEnabled()
+        for ext, marker in ((".srt", "00:00:01,000 --> 00:00:02,000"), (".vtt", "WEBVTT"),
+                            (".txt", "Hello\nWorld\n")):
+            target = tmp_path / f"out{ext}"
+            st.host.pick_save = lambda *_a, target=target: str(target)
+            st.export_subtitles()
+            assert marker in target.read_text(encoding="utf-8")
+        st.host.pick_save = lambda *_a: str(tmp_path / "noext")  # no ending: .srt
+        st.export_subtitles()
+        assert (tmp_path / "noext.srt").is_file()
+        st.copy_transcript()
+        assert QApplication.clipboard().text() == "Hello\nWorld\n"
+        # import: .vtt and .srt both come back; an empty file is reported
+        for ext in (".vtt", ".srt"):
+            st._cues = []
+            st.host.pick_file = lambda *_a, ext=ext: str(tmp_path / f"out{ext}")
+            st.import_subtitles()
+            assert [c.text for c in st._cues] == ["Hello", "World"]
+        warned = []
+        monkeypatch.setattr(appmod.QMessageBox, "warning", staticmethod(lambda *a: warned.append(a)))
+        (tmp_path / "empty.srt").write_text("nothing here")
+        st.host.pick_file = lambda *_a: str(tmp_path / "empty.srt")
+        st.import_subtitles()
+        assert warned and len(st._cues) == 2  # the lines stay when the file has none
+    finally:
+        win._studio.clear_autosave()
+        win.close()
+
+
 def test_studio_audio_cleanup_options(qapp, tmp_path, monkeypatch) -> None:
     """Reduce background noise (per clip) and Even out the loudness (per project):
     undoable, saved in the project, and sent to the render."""

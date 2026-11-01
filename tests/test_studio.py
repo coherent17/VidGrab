@@ -702,6 +702,34 @@ def test_split_renders_both_lengths(tmp_path, layout):
         assert info["has_audio"] and abs(info["duration"] - expect) < 0.15
 
 
+# ── subtitle files: SRT, WebVTT and plain transcript ─────────────────────
+
+
+def _cues():
+    return [studio.SubtitleCue(5.25, 7.0, "Second line\nwraps"), studio.SubtitleCue(1.0, 3.5, "Hello"),
+            studio.SubtitleCue(8.0, 9.0, "  ")]
+
+
+def test_webvtt_has_a_header_dots_and_sorted_lines():
+    text = studio.format_vtt(_cues()[:2])
+    assert text.startswith("WEBVTT\n\n")
+    assert "00:00:01.000 --> 00:00:03.500\nHello\n" in text and "," not in text.split("\n\n", 1)[1].split("\n")[0]
+    assert text.index("Hello") < text.index("Second line")  # in time order
+
+
+def test_transcript_is_the_words_only():
+    assert studio.format_transcript(_cues()) == "Hello\nSecond line wraps\n"  # blank lines left out
+    stamped = studio.format_transcript(_cues(), timestamps=True)
+    assert stamped.splitlines()[0] == "[00:00:01] Hello"
+    assert studio.format_transcript([]) == ""
+
+
+def test_webvtt_reads_back_with_the_srt_reader():
+    back = studio.parse_srt(studio.format_vtt(_cues()[:2]))
+    assert [(c.text, round(c.start, 2), round(c.end, 2)) for c in back] == [
+        ("Hello", 1.0, 3.5), ("Second line\nwraps", 5.25, 7.0)]
+
+
 # ── audio cleanup: reduce noise per clip, even out the loudness ─────────
 
 

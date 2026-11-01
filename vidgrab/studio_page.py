@@ -119,6 +119,9 @@ from vidgrab.studio import (
     SubtitleStyle,
     canvas_size,
     cue_style,
+    format_srt,
+    format_transcript,
+    format_vtt,
     parse_srt,
     parse_timecode,
     probe_media,
@@ -3746,6 +3749,53 @@ class StudioPage(QWidget):
     def cues(self) -> list[SubtitleCue]:
         return [replace(c) for c in self._cues if c.text.strip()]
 
+    # subtitle files ------------------------------------------------------------------
+
+    def import_subtitles(self) -> None:
+        """Read the lines of an .srt / .vtt file onto the Subtitles row (one undo step)."""
+        path = self.host.pick_file(self.t("Import subtitles"), ("Videos", "Downloads"),
+                                   "Subtitles (*.srt *.vtt);;All files (*)")
+        if not path:
+            return
+        if self._cues and QMessageBox.question(
+                self, self.t("Import subtitles"),
+                self.t("Replace the current subtitle lines with the ones in this file?")
+        ) != QMessageBox.Yes:
+            return
+        if self.load_srt(path):
+            self.status.setText(self.t("Added {n} subtitle lines", n=len(self._cues)))
+        else:
+            QMessageBox.warning(self, self.t("Import subtitles"),
+                                self.t("No subtitle lines were found in that file."))
+
+    def export_subtitles(self) -> None:
+        """Save the lines as .srt, .vtt or plain text (the file's ending chooses)."""
+        cues = self.cues()
+        if not cues:
+            return
+        default = (self.name.text().strip() or "subtitles") + ".srt"
+        path = self.host.pick_save(self.t("Export subtitles"), default,
+                                   "SubRip (*.srt);;WebVTT (*.vtt);;Text (*.txt)")
+        if not path:
+            return
+        suffix = Path(path).suffix.lower()
+        if suffix not in (".srt", ".vtt", ".txt"):
+            path, suffix = path + ".srt", ".srt"
+        text = (format_vtt(cues) if suffix == ".vtt"
+                else format_transcript(cues) if suffix == ".txt" else format_srt(cues))
+        try:
+            Path(path).write_text(text, encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.warning(self, self.t("Export subtitles"), str(exc))
+            return
+        self.status.setText(self.t("Saved: {name}", name=Path(path).name))
+
+    def copy_transcript(self) -> None:
+        text = format_transcript(self.cues())
+        if text:
+            QApplication.clipboard().setText(text)
+            self.status.setText(self.t("Transcript copied"))
+
     # music ---------------------------------------------------------------------------
 
     def music_path(self) -> str:
@@ -4404,6 +4454,13 @@ class StudioPage(QWidget):
         m.addAction(self.t("Save project"), QKeySequence("Ctrl+S"), self.save_project)
         m.addAction(self.t("Save project as…"), QKeySequence("Ctrl+Shift+S"),
                     self.save_project_as)
+        m.addSeparator()
+        subs = m.addMenu(self.t("Subtitles"))
+        subs.addAction(self.t("Import subtitles…"), self.import_subtitles)
+        subs.addAction(self.t("Export subtitles…"), self.export_subtitles).setEnabled(
+            bool(self.cues()))
+        subs.addAction(self.t("Copy the transcript"), self.copy_transcript).setEnabled(
+            bool(self.cues()))
 
     def _recent(self) -> list[str]:
         if not hasattr(self.host, "setting"):

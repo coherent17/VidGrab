@@ -62,12 +62,17 @@ the demo video, the user guide and `SHA256SUMS.txt` for verifying downloads.
 
 ### ⬇ Download
 
-- **MP4, MP3 or both** in one pass. Pick the quality from 4K down to 360p (MP3 at 128–320 kbps); at any resolution H.264 is preferred so files play everywhere
+- **MP4, audio or both** in one pass. Pick the quality from 4K down to 360p, or **Exact format…** to choose one resolution / codec from the list the video offers; at any resolution H.264 is preferred so files play everywhere
+- **Audio as MP3, M4A, Opus, FLAC or WAV** (MP3 / M4A / Opus at 128–320 kbps; FLAC and WAV are lossless)
+- **Search YouTube** by typing words in the link box, and download from **many other sites** (Vimeo, X, Twitch, SoundCloud, Bilibili, direct video links… anything yt-dlp supports that doesn't need a login)
 - **Several links at once** with a per-link preview (thumbnail, title, length, playlist size); remove any link before you start
 - **Download queue** that runs one item at a time, with progress, speed, ETA, **Cancel** and **Retry**
 - **Recent downloads** that stay between sessions; **Send to Studio** puts a file (and its subtitles) straight onto the timeline
 - **Playlists and channels**: every video, numbered in order
-- **YouTube subtitles** in 繁體中文, 简体中文, English or 日本語 (uploaded or auto-generated), saved as `.srt` or burned in. Timings follow any trim or speed change
+- **Subtitles** in 15 languages (uploaded, auto-generated or YouTube's automatic translation), saved as `.srt` or burned in. Timings follow any trim or speed change
+- **Live streams and premieres**: record from the start, or wait for a scheduled one
+- **Skip what you already have** when you re-run a playlist or channel; **speed limit**, **proxy** and **retries** in Settings
+- **Keeps working**: update the download engine (yt-dlp) from Settings when a site changes, without waiting for a new VidGrab
 - **Trim, flip and speed (0.25×–4×)** applied while downloading
 
 ### 🎬 Studio

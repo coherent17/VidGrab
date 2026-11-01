@@ -2,8 +2,27 @@
 
 ## Unreleased
 
+## Unreleased
+
+### Downloads: more formats, sites and control
+
+- **Search YouTube from the link box**: type words instead of a link and the button becomes **Search**; tick the results to add them to the downloads
+- **Other sites**: the same link box works for the sites yt-dlp supports (Vimeo, X, Twitch, SoundCloud, Bilibili, Instagram, direct video files and many more); sites that need a login are not supported yet
+- **Audio formats**: besides MP3, **M4A (AAC)**, **Opus**, **FLAC** and **WAV** (the last two are lossless, so they have no bitrate). Pick it next to *Audio*, or set a default in Settings
+- **Exact format**: **Exact format…** lists every resolution / codec / size the video offers (VP9, AV1, 60 fps…) and downloads exactly that one; the sound is added to picture-only formats
+- **Live streams and premieres**: a live video shows *Record this live stream from the start*; a scheduled one waits until it begins. Stopping a recording keeps what was recorded as an MP4. Tested with fakes, not against a real live stream
+- **Subtitles** in 15 languages (Korean, Spanish, French, German, Portuguese, Russian, Indonesian, Vietnamese, Thai, Arabic and Hindi added). A language the video lacks uses YouTube's automatic translation; "too many requests" answers are waited out and retried instead of giving up
+- **Skip videos already downloaded** for playlists and channels (Settings → Downloads), with a list that can be forgotten
+- **Network** settings: speed limit, proxy (HTTP or SOCKS) and retry count
+- **Update yt-dlp without a new VidGrab release** (Settings → Downloads → Download engine): checks PyPI, downloads the new yt-dlp (checksum verified), and uses it after a restart; **Use the built-in version** goes back. A quiet check at start (can be switched off) shows a button on the Download page when one exists. An update that fails to load is switched off automatically, and one made under an older VidGrab is ignored
+
+### Settings
+
+- Settings is now three tabs — **General**, **Downloads**, **Studio** — so nothing needs scrolling
+
 ### Fixed
 
+- **MP3s made for "MP4 + MP3" downloads, and trimmed or sped-up MP3s, came out at 64 kbps** whatever you chose (the bitrate was passed to ffmpeg without its "k"); they now use the chosen bitrate
 - **Links to a plain video file** (and other sites whose formats don't report a height) failed with "Requested format is not available" whenever a resolution was chosen; the resolution cap now lets formats of unknown height through
 
 ### Two videos at once

@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -65,11 +66,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab import __version__
+from vidgrab import __version__, ytdlp_update
 from vidgrab.captions import detect_gpus, speech_device, transcribe
 from vidgrab.downloader import (
+    AUDIO_FORMATS,
     NAME_TEMPLATES,
     DownloadCancelled,
+    configure_network,
     default_output_dir,
     download,
     download_both,
@@ -79,6 +82,7 @@ from vidgrab.downloader import (
     get_app_dir,
     get_bundle_dir,
     probe,
+    search,
 )
 from vidgrab.downloads_panel import (
     CANCELLED,
@@ -97,6 +101,7 @@ from vidgrab.gpu import detect_encoder
 from vidgrab.i18n import FLAGS, LANGUAGES, make_translator
 from vidgrab.jobs import DownloadJob, run_job
 from vidgrab.network import ConnectionStatus, check_internet
+from vidgrab.pick_dialogs import FormatDialog, SearchDialog
 from vidgrab.preview import QT_MULTIMEDIA_OK as _QT_MULTIMEDIA_OK
 from vidgrab.studio import compose_audio, compose_split, compose_video
 from vidgrab.studio_page import StudioPage
@@ -922,6 +927,12 @@ DEFAULT_SETTINGS: dict = {
     "gpu_captions": True,  # let auto captions use a graphics card when one works
     "caption_language": "auto",  # key of captions.LANGUAGES
     "caption_model": "balanced",  # key of captions.MODELS
+    "audio_format": "mp3",  # key of downloader.AUDIO_FORMATS
+    "rate_limit": 0,  # bytes per second, 0 = unlimited
+    "proxy": "",  # e.g. http://host:8080 or socks5://host:1080
+    "retries": 10,  # attempts for a failing download piece
+    "skip_downloaded": False,  # playlists: leave out videos downloaded before
+    "ytdlp_check": True,  # look for a newer yt-dlp when the app starts
 }
 
 
@@ -1363,6 +1374,26 @@ class _HwProbe(QThread):
         self.found.emit(encoder)
 
 
+class _YtdlpThread(QThread):
+    """Ask PyPI for a newer yt-dlp ("check"), or download and unpack it ("update")."""
+
+    result = Signal(object)  # check(): the dict; update(): {"updated": version}
+    failed = Signal(str)
+
+    def __init__(self, task: str) -> None:
+        super().__init__()
+        self._task = task
+
+    def run(self) -> None:
+        try:
+            if self._task == "check":
+                self.result.emit(ytdlp_update.check())
+            else:
+                self.result.emit({"updated": ytdlp_update.update()})
+        except Exception as exc:  # noqa: BLE001 - offline, PyPI down, bad file…
+            self.failed.emit(str(exc))
+
+
 class _Worker(QThread):
     """Run a download / processing / probe task off the main thread."""
 
@@ -1509,7 +1540,7 @@ _NAV_ITEMS: list[tuple[str, str]] = [
 
 # page index -> (title key, subtitle key) for the header above each page
 _PAGE_HEADERS: list[tuple[str, str]] = [
-    ("Download", "Grab videos, playlists and music from YouTube"),
+    ("Download", "Grab videos, playlists and music from YouTube and other sites"),
     ("Studio", "Join clips, add subtitles and background music"),
     ("Settings", "Appearance, language and app info"),
 ]
@@ -1664,6 +1695,9 @@ class VidGrabWindow(QMainWindow):
         self._link_rows: dict[str, tuple[QListWidgetItem, LinkRow]] = {}
         self._card_titles: list[tuple[QLabel, str]] = []
         self._probe_data: dict | None = None
+        self._ytdlp_thread: _YtdlpThread | None = None
+        self._ytdlp_info: dict | None = None  # last check(): current / latest / newer
+        self._ytdlp_msg = ""
 
         self.setWindowTitle("VidGrab")
         self.setMinimumSize(1180, 820)
@@ -1671,11 +1705,14 @@ class VidGrabWindow(QMainWindow):
         self.setAcceptDrops(True)
 
         self._apply_theme()
+        self._apply_network()
         self._build_ui()
         self._setup_probe()
         self._load_history()
         self._apply_language()
         self._apply_download_defaults()
+        self._refresh_ytdlp()
+        self._refresh_archive()
         self._studio.set_default_resolution(self.setting("studio_resolution"))
         self._update_ffmpeg_status()
         self._start_internet_check()
@@ -1683,6 +1720,8 @@ class VidGrabWindow(QMainWindow):
         if QApplication.platformName() != "offscreen":  # not in tests / scripts
             QTimer.singleShot(600, self._offer_recovery)
             QTimer.singleShot(1200, self.probe_hardware)
+            if self.setting("ytdlp_check"):  # one quiet request to pypi.org
+                QTimer.singleShot(4000, lambda: self._start_ytdlp("check", quiet=True))
 
     # ── ui construction ────────────────────────────────────────────────
 
@@ -1828,7 +1867,7 @@ class VidGrabWindow(QMainWindow):
         self._dl_source_title.hide()
         self._url = QLineEdit()
         self._url.setObjectName("url_input")
-        self._url.setPlaceholderText("Paste a YouTube link…")
+        self._url.setPlaceholderText("Paste a link, or type to search YouTube…")
         self._url.setClearButtonEnabled(True)
         self._url.returnPressed.connect(self._start_action)
         bl.addWidget(self._url, stretch=1)
@@ -1850,6 +1889,12 @@ class VidGrabWindow(QMainWindow):
         self._action.clicked.connect(self._start_action)
         bl.addWidget(self._action)
         lay.addWidget(bar)
+        self._update_note = QPushButton()  # only shown when a newer yt-dlp exists
+        self._update_note.setObjectName("secondary")
+        self._update_note.setCursor(QCursor(_HAND))
+        self._update_note.clicked.connect(self._update_note_clicked)
+        self._update_note.hide()
+        lay.addWidget(self._update_note, alignment=Qt.AlignLeft)
 
         body = QHBoxLayout()
         body.setSpacing(14)
@@ -1894,10 +1939,14 @@ class VidGrabWindow(QMainWindow):
         self._playlist_cb = QCheckBox()
         self._playlist_cb.setCursor(QCursor(_HAND))
         self._playlist_cb.hide()
+        self._live_cb = QCheckBox()  # shown for a live stream / premiere
+        self._live_cb.setCursor(QCursor(_HAND))
+        self._live_cb.hide()
         ivl.addSpacing(4)
         ivl.addWidget(self._info_name)
         ivl.addWidget(self._info_meta)
         ivl.addWidget(self._playlist_cb)
+        ivl.addWidget(self._live_cb)
         ivl.addStretch()
         body.addWidget(info, stretch=5)
 
@@ -1924,7 +1973,13 @@ class VidGrabWindow(QMainWindow):
         fr.setSpacing(16)
         fr.addWidget(self._mp4)
         fr.addWidget(self._mp3)
+        self._audio_fmt = QComboBox()  # MP3 / M4A / Opus / FLAC / WAV, only with Audio ticked
+        self._audio_fmt.setCursor(QCursor(_HAND))
+        self._audio_fmt.activated.connect(lambda _i: self._sync_audio_options())
+        fr.addWidget(self._audio_fmt)
         fr.addStretch()
+        self._mp4.toggled.connect(self._sync_audio_options)
+        self._mp3.toggled.connect(self._sync_audio_options)
         grid.addWidget(cap("_dl_format_title"), 0, 0)
         grid.addLayout(fr, 0, 1)
 
@@ -1933,7 +1988,15 @@ class VidGrabWindow(QMainWindow):
         self._quality.setCursor(QCursor(_HAND))
         self._quality.setMinimumWidth(170)
         qr = QHBoxLayout()
+        qr.setSpacing(10)
         qr.addWidget(self._quality)
+        self._exact_btn = QPushButton()
+        self._exact_btn.setObjectName("secondary")
+        self._exact_btn.setCursor(QCursor(_HAND))
+        self._exact_btn.setEnabled(False)
+        self._exact_btn.clicked.connect(self._choose_format)
+        self._exact_pick: dict | None = None
+        qr.addWidget(self._exact_btn)
         qr.addStretch()
         grid.addWidget(self._quality_lbl, 1, 0)
         grid.addLayout(qr, 1, 1)
@@ -1987,9 +2050,12 @@ class VidGrabWindow(QMainWindow):
         self._sub_cb.setCursor(QCursor(_HAND))
         self._sub_lang = QComboBox()
         self._sub_mode = QComboBox()
+        self._sub_lang.setMinimumWidth(190)
         for w in (self._sub_lang, self._sub_mode):
             w.setCursor(QCursor(_HAND))
             w.setEnabled(False)
+        self._sub_lang.setToolTip("If the video has no subtitles in this language, YouTube's "
+                                  "automatic translation is used.")
         self._sub_cb.toggled.connect(self._sync_sub_options)
         self._mp4.toggled.connect(self._sync_sub_options)
         self._mp3.toggled.connect(self._sync_sub_options)
@@ -2017,17 +2083,53 @@ class VidGrabWindow(QMainWindow):
 
 
     def _build_settings_form(self) -> QWidget:
-        """Appearance + download defaults (left); Studio, storage, about (right)."""
+        """Three tabs, so nothing needs scrolling: General (look, storage, about),
+        Downloads (defaults, network, yt-dlp) and Studio (render, hardware)."""
         page = QWidget()
-        outer = QHBoxLayout(page)
-        outer.setContentsMargins(24, 14, 24, 10)
-        outer.setSpacing(14)
-        left = QVBoxLayout()
-        left.setSpacing(12)
-        right = QVBoxLayout()
-        right.setSpacing(12)
-        outer.addLayout(left, stretch=1)
-        outer.addLayout(right, stretch=1)
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(24, 12, 24, 8)
+        outer.setSpacing(10)
+        seg = QWidget()
+        seg.setObjectName("segmented")
+        seg.setAttribute(Qt.WA_StyledBackground, True)
+        sl = QHBoxLayout(seg)
+        sl.setContentsMargins(4, 4, 4, 4)
+        sl.setSpacing(4)
+        self._set_stack = QStackedWidget()
+        self._set_tabs: list[QPushButton] = []
+
+        def column_page() -> tuple[QWidget, QVBoxLayout, QVBoxLayout]:
+            w = QWidget()
+            h = QHBoxLayout(w)
+            h.setContentsMargins(0, 2, 0, 0)
+            h.setSpacing(14)
+            a, b = QVBoxLayout(), QVBoxLayout()
+            a.setSpacing(12)
+            b.setSpacing(12)
+            h.addLayout(a, stretch=1)
+            h.addLayout(b, stretch=1)
+            return w, a, b
+
+        gen, gen_l, gen_r = column_page()
+        dl_page, dl_l, dl_r = column_page()
+        st_page, st_l, st_r = column_page()
+        for k, (label, tab) in enumerate((("General", gen), ("Downloads", dl_page),
+                                          ("Studio", st_page))):
+            b = QPushButton()
+            b.setObjectName("segment")
+            b.setCheckable(True)
+            b.setAutoExclusive(True)
+            b.setMinimumWidth(110)
+            b.setCursor(QCursor(_HAND))
+            self._trw(b, label)
+            b.clicked.connect(lambda _c=False, i=k: self._set_stack.setCurrentIndex(i))
+            sl.addWidget(b)
+            self._set_tabs.append(b)
+            self._set_stack.addWidget(_wrap_scroll(tab))
+        self._set_tabs[0].setChecked(True)
+        sl.addStretch()
+        outer.addWidget(seg, alignment=Qt.AlignLeft)
+        outer.addWidget(self._set_stack, stretch=1)
 
         # appearance ----------------------------------------------------------
         g1, a_title, fl = self._card("APPEARANCE", "settings_card", "settings")
@@ -2053,7 +2155,7 @@ class VidGrabWindow(QMainWindow):
         afl.addRow(self._theme_lbl, self._theme_combo)
         afl.addRow(self._lang_lbl, self._lang_combo)
         fl.addLayout(afl)
-        left.addWidget(g1)
+        gen_l.addWidget(g1)
 
         # download defaults ---------------------------------------------------
         g2, t2, dl = self._card("DOWNLOAD DEFAULTS", "settings_card", "format")
@@ -2077,17 +2179,21 @@ class VidGrabWindow(QMainWindow):
         self._set_fmt = QComboBox()
         self._set_vq = QComboBox()
         self._set_aq = QComboBox()
+        self._set_afmt = QComboBox()
         self._set_sub_lang = QComboBox()
         self._set_sub_mode = QComboBox()
         self._set_name = QComboBox()
-        for combo in (self._set_fmt, self._set_vq, self._set_aq, self._set_sub_lang,
-                      self._set_sub_mode, self._set_name):
+        self._set_sub_lang.setMinimumWidth(170)
+        for combo in (self._set_fmt, self._set_vq, self._set_aq, self._set_afmt,
+                      self._set_sub_lang, self._set_sub_mode, self._set_name):
             combo.setCursor(QCursor(_HAND))
         self._set_fmt.activated.connect(lambda _i: self._default_changed("fmt", self._set_fmt))
         self._set_vq.activated.connect(
             lambda _i: self._default_changed("video_quality", self._set_vq))
         self._set_aq.activated.connect(
             lambda _i: self._default_changed("audio_quality", self._set_aq))
+        self._set_afmt.activated.connect(
+            lambda _i: self._default_changed("audio_format", self._set_afmt))
         self._set_sub_lang.activated.connect(
             lambda _i: self._default_changed("sub_lang", self._set_sub_lang))
         self._set_sub_mode.activated.connect(
@@ -2096,6 +2202,7 @@ class VidGrabWindow(QMainWindow):
             lambda _i: self._default_changed("name_template", self._set_name))
         form.addRow(self._trw(QLabel(), "Format:"), self._set_fmt)
         form.addRow(self._trw(QLabel(), "Video quality:"), self._set_vq)
+        form.addRow(self._trw(QLabel(), "Audio format:"), self._set_afmt)
         form.addRow(self._trw(QLabel(), "Audio quality:"), self._set_aq)
         self._set_sub = QCheckBox()
         self._set_sub.setCursor(QCursor(_HAND))
@@ -2125,8 +2232,8 @@ class VidGrabWindow(QMainWindow):
         self._trw(hint, "These are the options the Download page starts with; you can still "
                         "change them there for each download.")
         dl.addWidget(hint)
-        left.addWidget(g2)
-        left.addStretch()
+        dl_l.addWidget(g2)
+        dl_l.addStretch()
 
         # studio ----------------------------------------------------------------
         g3, t3, sl = self._card("STUDIO", "settings_card", "clips")
@@ -2165,7 +2272,8 @@ class VidGrabWindow(QMainWindow):
         self._trw(phint, "Save a preset from the subtitle panel in the Studio to reuse fonts, "
                          "colours and position in other projects.")
         sl.addWidget(phint)
-        right.addWidget(g3)
+        st_l.addWidget(g3)
+        st_l.addStretch()
 
         # hardware --------------------------------------------------------------
         g6, t6, hl = self._card("HARDWARE", "settings_card", "speed")
@@ -2188,7 +2296,8 @@ class VidGrabWindow(QMainWindow):
             hint.setWordWrap(True)
             hl.addWidget(box)
             hl.addWidget(hint)
-        right.addWidget(g6)
+        st_r.addWidget(g6)
+        st_r.addStretch()
 
         # storage ---------------------------------------------------------------
         g4, t4, stl = self._card("STORAGE", "settings_card", "save")
@@ -2225,7 +2334,7 @@ class VidGrabWindow(QMainWindow):
         reset.clicked.connect(self._reset_settings)
         self._trw(reset, "Reset all settings…")
         stl.addWidget(reset, alignment=Qt.AlignLeft)
-        right.addWidget(g4)
+        gen_r.addWidget(g4)
 
         # about -----------------------------------------------------------------
         g5, b_title, al = self._card("ABOUT", "settings_card", "settings")
@@ -2239,9 +2348,87 @@ class VidGrabWindow(QMainWindow):
         self._versions_lbl.setTextFormat(Qt.RichText)
         self._versions_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
         al.addWidget(self._versions_lbl)
-        right.addWidget(g5)
-        right.addStretch()
-        return _wrap_scroll(page)
+        gen_l.addWidget(g5)
+        gen_l.addStretch()
+        gen_r.addStretch()
+
+        # network ---------------------------------------------------------------
+        g7, t7, nl = self._card("NETWORK", "settings_card", "speed")
+        self._trw(t7, "NETWORK")
+        nform = QFormLayout()
+        nform.setSpacing(9)
+        nform.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self._set_rate = QComboBox()
+        self._set_retries = QComboBox()
+        for combo in (self._set_rate, self._set_retries):
+            combo.setCursor(QCursor(_HAND))
+            combo.activated.connect(lambda _i: self._network_changed())
+        self._set_proxy = QLineEdit()
+        self._set_proxy.setClearButtonEnabled(True)
+        self._set_proxy.setPlaceholderText("http://host:8080  /  socks5://host:1080")
+        self._set_proxy.setText(self.setting("proxy") or "")
+        self._set_proxy.editingFinished.connect(self._network_changed)
+        nform.addRow(self._trw(QLabel(), "Speed limit:"), self._set_rate)
+        nform.addRow(self._trw(QLabel(), "Proxy:"), self._set_proxy)
+        nform.addRow(self._trw(QLabel(), "Retries:"), self._set_retries)
+        nl.addLayout(nform)
+        self._set_skip = QCheckBox()
+        self._set_skip.setCursor(QCursor(_HAND))
+        self._set_skip.setChecked(bool(self.setting("skip_downloaded")))
+        self._set_skip.toggled.connect(lambda on: self.set_setting("skip_downloaded", on))
+        self._trw(self._set_skip, "Playlists: skip videos I already downloaded")
+        nl.addWidget(self._set_skip)
+        arow = QHBoxLayout()
+        self._archive_lbl = QLabel()
+        self._archive_lbl.setObjectName("hint")
+        arow.addWidget(self._archive_lbl, stretch=1)
+        self._archive_btn = QPushButton()
+        self._archive_btn.setObjectName("secondary")
+        self._archive_btn.setCursor(QCursor(_HAND))
+        self._archive_btn.clicked.connect(self._forget_archive)
+        self._trw(self._archive_btn, "Forget the list")
+        arow.addWidget(self._archive_btn)
+        nl.addLayout(arow)
+        dl_r.addWidget(g7)
+
+        # download engine (yt-dlp) -----------------------------------------------
+        g8, t8, yl = self._card("DOWNLOAD ENGINE", "settings_card", "source")
+        self._trw(t8, "DOWNLOAD ENGINE")
+        self._ytdlp_lbl = QLabel()
+        yl.addWidget(self._ytdlp_lbl)
+        self._ytdlp_status = QLabel()
+        self._ytdlp_status.setObjectName("hint")
+        self._ytdlp_status.setWordWrap(True)
+        yl.addWidget(self._ytdlp_status)
+        yrow = QHBoxLayout()
+        self._ytdlp_btn = QPushButton()
+        self._ytdlp_btn.setObjectName("secondary")
+        self._ytdlp_btn.setCursor(QCursor(_HAND))
+        self._ytdlp_btn.clicked.connect(self._ytdlp_action)
+        self._ytdlp_reset = QPushButton()
+        self._ytdlp_reset.setObjectName("secondary")
+        self._ytdlp_reset.setCursor(QCursor(_HAND))
+        self._ytdlp_reset.clicked.connect(self._ytdlp_use_builtin)
+        self._trw(self._ytdlp_reset, "Use the built-in version")
+        yrow.addWidget(self._ytdlp_btn)
+        yrow.addWidget(self._ytdlp_reset)
+        yrow.addStretch()
+        yl.addLayout(yrow)
+        self._set_ytdlp_auto = QCheckBox()
+        self._set_ytdlp_auto.setCursor(QCursor(_HAND))
+        self._set_ytdlp_auto.setChecked(bool(self.setting("ytdlp_check")))
+        self._set_ytdlp_auto.toggled.connect(lambda on: self.set_setting("ytdlp_check", on))
+        self._trw(self._set_ytdlp_auto, "Look for a newer version when VidGrab starts")
+        yl.addWidget(self._set_ytdlp_auto)
+        yhint = QLabel()
+        yhint.setObjectName("hint")
+        yhint.setWordWrap(True)
+        self._trw(yhint, "yt-dlp is the part that talks to YouTube and other sites; it needs "
+                         "updating when a site changes. A new version is used after a restart.")
+        yl.addWidget(yhint)
+        dl_r.addWidget(g8)
+        dl_r.addStretch()
+        return page
 
     # ── settings helpers ───────────────────────────────────────────────
 
@@ -2268,9 +2455,15 @@ class VidGrabWindow(QMainWindow):
             ("4K (2160p)", "2160p"), ("1440p (QHD)", "1440p"), ("1080p (FHD)", "1080p"),
             ("720p (HD)", "720p"), ("480p (SD)", "480p"), ("360p", "360p"))])
         fill(self._set_aq, [(f"{b} kbps", b) for b in ("320", "256", "192", "128")])
-        fill(self._set_sub_lang, [(t("Traditional Chinese"), "zh-Hant"),
-                                  (t("Simplified Chinese"), "zh-Hans"),
-                                  (t("English"), "en"), (t("Japanese"), "ja")])
+        fill(self._set_sub_lang, [(t(name), key) for key, name in _SUB_LANGUAGES])
+        fill(self._set_afmt, [("MP3", "mp3"), ("M4A (AAC)", "m4a"), ("Opus", "opus"),
+                              (t("FLAC (lossless)"), "flac"), (t("WAV (lossless)"), "wav")])
+        fill(self._set_rate, [(t("No limit"), 0)] + [
+            (label, kb * 1024) for label, kb in (
+                ("256 KB/s", 256), ("512 KB/s", 512), ("1 MB/s", 1024), ("2 MB/s", 2048),
+                ("5 MB/s", 5120), ("10 MB/s", 10240))])
+        fill(self._set_retries, [(t("Fewer (3)"), 3), (t("Normal (10)"), 10),
+                                 (t("Persistent (30)"), 30)])
         fill(self._set_sub_mode, [(t("Save as .srt file"), "file"),
                                   (t("Burn into video"), "burn")])
         fill(self._set_name, [(t("Title"), "title"), (t("Title [video ID]"), "title_id"),
@@ -2287,13 +2480,132 @@ class VidGrabWindow(QMainWindow):
                            (self._set_aq, "audio_quality"), (self._set_sub_lang, "sub_lang"),
                            (self._set_sub_mode, "sub_mode"), (self._set_name, "name_template"),
                            (self._set_rq, "render_quality"),
-                           (self._set_res, "studio_resolution")):
-            idx = combo.findData(self.setting(key) or "")
+                           (self._set_res, "studio_resolution"),
+                           (self._set_afmt, "audio_format"), (self._set_rate, "rate_limit"),
+                           (self._set_retries, "retries")):
+            want = self.setting(key)
+            idx = combo.findData(want if want is not None else "")
             combo.setCurrentIndex(max(idx, 0))
+        if self._set_rate.findData(self.setting("rate_limit")) < 0:  # a custom value from the file
+            self._set_rate.setCurrentIndex(0)
         self._update_name_example()
         self._refresh_storage()
         self._refresh_presets()
         self._refresh_hardware()
+
+    # ── network, download archive, yt-dlp updates ───────────────────────
+
+    def _archive_path(self) -> Path:
+        return _config_dir() / "downloaded.txt"
+
+    def _apply_network(self) -> None:
+        """Hand the Settings to the downloader (speed limit, proxy, retries, archive)."""
+        configure_network(rate_limit=int(self.setting("rate_limit") or 0),
+                          proxy=self.setting("proxy") or "",
+                          retries=int(self.setting("retries") or 10),
+                          archive=self._archive_path())
+
+    def _network_changed(self) -> None:
+        self.set_setting("rate_limit", int(self._set_rate.currentData() or 0))
+        self.set_setting("retries", int(self._set_retries.currentData() or 10))
+        self.set_setting("proxy", self._set_proxy.text().strip())
+        self._apply_network()
+
+    def _refresh_archive(self) -> None:
+        path = self._archive_path()
+        n = 0
+        try:
+            n = sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+        except OSError:
+            pass
+        self._archive_lbl.setText(self._t("{n} videos remembered", n=n))
+        self._archive_btn.setEnabled(n > 0)
+
+    def _forget_archive(self) -> None:
+        answer = QMessageBox.question(
+            self, self._t("Forget the list"),
+            self._t("Forget which videos were downloaded? Playlists will download everything again."))
+        if answer == QMessageBox.Yes:
+            self._archive_path().unlink(missing_ok=True)
+            self._refresh_archive()
+
+    def _refresh_ytdlp(self) -> None:
+        t = self._t
+        try:
+            version, own = ytdlp_update.current_version(), ytdlp_update.in_use()
+        except Exception:  # noqa: BLE001
+            version, own = "?", False
+        pending = ytdlp_update.installed()
+        self._ytdlp_lbl.setText(f"yt-dlp <b>{version}</b> · "
+                                + (t("updated by you") if own else t("built in")))
+        self._ytdlp_lbl.setTextFormat(Qt.RichText)
+        info = self._ytdlp_info
+        busy = self._ytdlp_thread is not None and self._ytdlp_thread.isRunning()
+        if info and info.get("newer"):
+            self._ytdlp_btn.setText(t("Update to {v}", v=info["latest"]))
+        else:
+            self._ytdlp_btn.setText(t("Check for updates"))
+        self._ytdlp_btn.setEnabled(not busy)
+        self._ytdlp_reset.setVisible(bool(pending) or own)
+        if not self._ytdlp_msg:
+            self._ytdlp_status.setText(
+                t("Version {v} will be used after you restart VidGrab.", v=pending["version"])
+                if pending and not own else "")
+        self._ytdlp_status.setVisible(bool(self._ytdlp_status.text()))
+
+    def _ytdlp_say(self, text: str) -> None:
+        self._ytdlp_msg = text
+        self._ytdlp_status.setText(text)
+        self._ytdlp_status.setVisible(bool(text))
+
+    def _ytdlp_action(self) -> None:
+        if self._ytdlp_thread is not None and self._ytdlp_thread.isRunning():
+            return
+        updating = bool(self._ytdlp_info and self._ytdlp_info.get("newer"))
+        self._ytdlp_say(self._t("Downloading the update…") if updating
+                        else self._t("Looking for updates…"))
+        self._start_ytdlp("update" if updating else "check")
+
+    def _start_ytdlp(self, task: str, quiet: bool = False) -> None:
+        thread = _YtdlpThread(task)
+        thread.result.connect(lambda r, q=quiet: self._on_ytdlp_result(r, q))
+        thread.failed.connect(lambda m, q=quiet: self._on_ytdlp_failed(m, q))
+        thread.finished.connect(self._refresh_ytdlp)
+        self._ytdlp_thread = thread
+        self._refresh_ytdlp()
+        thread.start()
+
+    def _on_ytdlp_result(self, result: dict, quiet: bool) -> None:
+        t = self._t
+        if "updated" in result:
+            self._ytdlp_info = None
+            self._ytdlp_say(t("Updated to {v}. Restart VidGrab to use it.", v=result["updated"]))
+            self._update_note.hide()
+            return
+        self._ytdlp_info = result
+        if result["newer"]:
+            self._ytdlp_say(t("Version {v} is available.", v=result["latest"]))
+            self._update_note.setText(t("A newer yt-dlp ({v}) is available — update", v=result["latest"]))
+            self._update_note.show()
+        else:
+            self._ytdlp_say("" if quiet else t("yt-dlp is up to date."))
+            self._update_note.hide()
+
+    def _on_ytdlp_failed(self, msg: str, quiet: bool) -> None:
+        if not quiet:
+            self._ytdlp_say(self._t("Could not reach the update server: {err}", err=msg))
+
+    def _ytdlp_use_builtin(self) -> None:
+        ytdlp_update.reset()
+        self._ytdlp_info = None
+        self._ytdlp_say(self._t("The built-in version will be used after you restart VidGrab."))
+        self._refresh_ytdlp()
+
+    def _update_note_clicked(self) -> None:
+        self._sidebar.set_page(PAGE_SETTINGS) if hasattr(self._sidebar, "set_page") else None
+        self._stack.setCurrentIndex(PAGE_SETTINGS)
+        self._set_tabs[1].click()
+        self._ytdlp_action()
 
     def probe_hardware(self) -> None:
         """Check (in the background) which graphics encoder ffmpeg can use."""
@@ -2334,8 +2646,8 @@ class VidGrabWindow(QMainWindow):
 
     def _default_changed(self, key: str, source) -> None:
         value = source if isinstance(source, bool) else (source.currentData() or None)
-        if key in ("fmt", "audio_quality", "sub_lang", "sub_mode", "name_template",
-                   "render_quality", "studio_resolution") and value is None:
+        if key in ("fmt", "audio_quality", "audio_format", "sub_lang", "sub_mode",
+                   "name_template", "render_quality", "studio_resolution") and value is None:
             value = DEFAULT_SETTINGS[key]
         self.set_setting(key, value)
         if key == "name_template":
@@ -2351,6 +2663,9 @@ class VidGrabWindow(QMainWindow):
         fmt = self.setting("fmt") or "mp4"
         self._mp4.setChecked(fmt in ("mp4", "both"))
         self._mp3.setChecked(fmt in ("mp3", "both"))
+        idx = self._audio_fmt.findData(self.setting("audio_format") or "mp3")
+        if idx >= 0:
+            self._audio_fmt.setCurrentIndex(idx)
         self._populate_quality()
         want = self.setting("video_quality") if self._mp4.isChecked() \
             else self.setting("audio_quality")
@@ -2363,6 +2678,7 @@ class VidGrabWindow(QMainWindow):
             if idx >= 0:
                 combo.setCurrentIndex(idx)
         self._sync_sub_options()
+        self._sync_audio_options()
 
     def _set_default_dir(self, path: str) -> None:
         self.set_setting("out_dir", path)
@@ -2540,10 +2856,12 @@ class VidGrabWindow(QMainWindow):
         # the Studio has its own toolbar with Render + progress
         self._bottom.setVisible(idx == PAGE_DOWNLOAD)
         if idx == PAGE_DOWNLOAD:
-            self._action.setText(self._t("\u2b07  Download"))
+            self._update_action_label()
         if idx == PAGE_SETTINGS:  # sizes change while you work (a model was downloaded, a cache grew)
             self._refresh_storage()
             self._refresh_hardware()
+            self._refresh_archive()
+            self._refresh_ytdlp()
         self._refresh_btn()
         self._sidebar.retranslate(self._t, self._theme)
 
@@ -2625,17 +2943,19 @@ class VidGrabWindow(QMainWindow):
         self._dl_trim_title.setText(t("TRIM"))
         self._dl_speed_title.setText(t("SPEED"))
         self._dl_save_title.setText(t("SAVE TO"))
-        self._url.setPlaceholderText(t("Paste a YouTube link\u2026"))
+        self._url.setPlaceholderText(t("Paste a link, or type to search YouTube\u2026"))
         if self._probe_data is not None:
             self._render_info(self._probe_data)
         else:
             self._info_meta.setText(
-                t("Paste a YouTube link to see its details\u2026")
+                t("Paste a link to see its details\u2026")
             )
         self._hflip.setText(t("Horizontal"))
         self._vflip.setText(t("Vertical"))
         self._mp4.setText(t("MP4 (video)"))
-        self._mp3.setText(t("MP3 (audio)"))
+        self._mp3.setText(t("Audio"))
+        self._update_exact_btn()
+        self._update_action_label()
         self._ts_lbl.setText(t("Start:"))
         self._te_lbl.setText(t("End:"))
         self._dl_paste.setText(t("Paste"))
@@ -2672,8 +2992,9 @@ class VidGrabWindow(QMainWindow):
         self._sub_cb.setText(t("Download subtitles"))
         self._dl_subs_title.setText(t("SUBTITLES"))
         self._fill_sub_options()
+        self._fill_audio_formats()
         if not self._dl_worker:
-            self._action.setText(t("\u2b07  Download"))
+            self._update_action_label()
         # status bar
         self._update_ffmpeg_status()
         if self._internet_online is True:
@@ -2728,6 +3049,7 @@ class VidGrabWindow(QMainWindow):
             self._url.blockSignals(True)
             self._url.setText(clean)
             self._url.blockSignals(False)
+        self._update_action_label()
         self._probe_timer.start()
 
     def _start_probe(self) -> None:
@@ -2738,6 +3060,11 @@ class VidGrabWindow(QMainWindow):
             return
         self._info_stack.setCurrentIndex(0)
         url = links[0] if links else ""
+        if url and not _looks_like_url(url):  # words: Enter searches YouTube
+            self._probe_data = None
+            self._reset_info_card()
+            self._info_meta.setText(self._t("Press Enter to search YouTube for “{q}”", q=url))
+            return
         if not url or self._internet_online is not True:
             if not url:
                 self._reset_info_card()
@@ -2841,8 +3168,12 @@ class VidGrabWindow(QMainWindow):
         self._info_thumb.setPixmap(QPixmap())
         self._playlist_cb.hide()
         self._info_meta.setText(
-            self._t("Paste a YouTube link to see its details\u2026")
+            self._t("Paste a link to see its details\u2026")
         )
+        self._live_cb.hide()
+        self._exact_pick = None
+        self._exact_btn.setEnabled(False)
+        self._sync_audio_options()
 
     def _render_info(self, result: dict) -> None:
         self._probe_data = result
@@ -2879,6 +3210,16 @@ class VidGrabWindow(QMainWindow):
             if comments:
                 meta.append(self._t("Comments: {n}", n=_fmt_count(comments)))
             self._playlist_cb.setVisible(False)
+        status = result.get("live_status")
+        live = not result.get("is_playlist") and status in ("is_live", "is_upcoming")
+        if live:
+            meta.append(self._t("Live now") if status == "is_live" else self._t("Not started yet"))
+            self._live_cb.setText(
+                self._t("Record this live stream from the start") if status == "is_live"
+                else self._t("Wait for it to start, then record it"))
+            self._live_cb.setChecked(True)
+        self._live_cb.setVisible(live)
+        self._pick_formats(result)
         self._info_meta.setText("  \u00b7  ".join(meta))
         self._info_thumb.setPixmap(QPixmap())
         thumb = result.get("thumbnail_local")
@@ -2889,6 +3230,75 @@ class VidGrabWindow(QMainWindow):
                     _THUMB_SIZE, Qt.KeepAspectRatio, Qt.SmoothTransformation
                 )
                 self._info_thumb.setPixmap(scaled)
+
+    # ── audio format / exact format / search ──────────────────────────
+
+    def _fill_audio_formats(self) -> None:
+        prev = self._audio_fmt.currentData() or self.setting("audio_format") or "mp3"
+        self._audio_fmt.blockSignals(True)
+        self._audio_fmt.clear()
+        for key, label in (("mp3", "MP3"), ("m4a", "M4A (AAC)"), ("opus", "Opus"),
+                           ("flac", self._t("FLAC (lossless)")), ("wav", self._t("WAV (lossless)"))):
+            self._audio_fmt.addItem(label, key)
+        self._audio_fmt.setCurrentIndex(max(0, self._audio_fmt.findData(prev)))
+        self._audio_fmt.blockSignals(False)
+
+    def _sync_audio_options(self) -> None:
+        """The audio format choice shows with Audio ticked; lossless formats have
+        no bitrate; a picked exact format only fits the kind of download it was for."""
+        audio = self._mp3.isChecked()
+        self._audio_fmt.setVisible(audio)
+        lossless = not AUDIO_FORMATS[self._audio_fmt.currentData() or "mp3"][3]
+        if self._exact_pick and bool(self._exact_pick["vcodec"]) == self._audio_only():
+            self._exact_pick = None
+        self._update_exact_btn()
+        self._quality.setEnabled(not (audio and not self._mp4.isChecked() and lossless)
+                                 and not (self._exact_pick and self._exact_btn.isEnabled()))
+
+    def _audio_only(self) -> bool:
+        return self._mp3.isChecked() and not self._mp4.isChecked()
+
+    def _pick_formats(self, result: dict) -> None:
+        """A new video was described: forget an earlier pick; enable the button
+        when there is a list to choose from."""
+        self._exact_pick = None
+        self._exact_btn.setEnabled(bool(result.get("format_list")) and not result.get("is_playlist"))
+        self._sync_audio_options()
+
+    def _update_exact_btn(self) -> None:
+        pick = self._exact_pick
+        self._exact_btn.setText(self._t("Exact format…") if not pick else
+                                self._t("Exact: {what}", what=_pick_summary(pick)))
+        self._exact_btn.setToolTip(self._t("Choose one exact resolution and codec from the "
+                                           "formats this video offers"))
+
+    def _choose_format(self) -> None:
+        data = self._probe_data
+        if not data or not data.get("format_list"):
+            return
+        dlg = FormatDialog(self, self._t, data["format_list"], self._audio_only(),
+                           self._exact_pick["id"] if self._exact_pick else None)
+        self._format_dlg = dlg  # for tests
+        if dlg.exec() == QDialog.Accepted:
+            self._exact_pick = dlg.chosen()
+            self._sync_audio_options()
+
+    def _search_flow(self, query: str) -> None:
+        """Words in the link box: show YouTube's results to tick, then fill the box with them."""
+        if self._internet_online is not True:
+            QMessageBox.warning(self, self._t("No internet"), self._t(
+                "You appear to be offline.\nVidGrab needs a live connection."))
+            return
+        dlg = SearchDialog(self, self._t, query, lambda q: search(q, 12, translate=self._t))
+        self._search_dlg = dlg  # for tests
+        if dlg.exec() == QDialog.Accepted and dlg.urls():
+            self._url.setText(" ".join(dlg.urls()))
+            self._start_probe()
+
+    def _update_action_label(self) -> None:
+        words = bool(self._url.text().strip()) and not _looks_like_url(self._links()[0]) \
+            if self._links() else False
+        self._action.setText(self._t("Search") if words else self._t("\u2b07  Download"))
 
     def _start_dir(self, *prefer: str) -> str:
         """Folder file pickers open in: the last folder used, else the first
@@ -3095,6 +3505,9 @@ class VidGrabWindow(QMainWindow):
 
     def _start_download(self) -> None:
         links = self._links()
+        if len(links) == 1 and not _looks_like_url(links[0]):
+            self._search_flow(links[0])
+            return
         if not links:
             QMessageBox.warning(self, self._t("Missing URL"), self._t("Please paste a YouTube link."))
             return
@@ -3120,12 +3533,15 @@ class VidGrabWindow(QMainWindow):
         single_playlist = (len(links) == 1 and self._playlist_cb.isVisible()
                            and self._playlist_cb.isChecked())
         subs = self._sub_lang.currentData() if self._sub_cb.isChecked() else None
+        exact = self._exact_pick if self._exact_btn.isEnabled() else None
+        live = not self._live_cb.isHidden() and self._live_cb.isChecked()
         for url in links:
             job = DownloadJob(
                 url=url,
                 output_dir=self._out.text().strip() or str(default_output_dir()),
                 fmt=fmt,
-                quality=self._quality.currentData(),
+                quality=(f"{exact['height']}p" if exact and exact["vcodec"] and exact["height"]
+                         and self._mp4.isChecked() else self._quality.currentData()),
                 video_filter=_build_filter(self._hflip, self._vflip),
                 speed=_read_speed(self._speed),
                 section_start=self._ts.text().strip() or None,
@@ -3137,6 +3553,10 @@ class VidGrabWindow(QMainWindow):
                 and fmt != "mp3",
                 name_template=NAME_TEMPLATES.get(self.setting("name_template") or "title",
                                                  NAME_TEMPLATES["title"]),
+                audio_fmt=self._audio_fmt.currentData() or "mp3",
+                format_id=exact["id"] if exact and len(links) == 1 else None,
+                live=live and len(links) == 1,
+                skip_downloaded=bool(self.setting("skip_downloaded")),
             )
             item = DownloadItem(job=job)
             probe = (self._probe_data if (len(links) == 1 and self._probe_data)
@@ -3293,9 +3713,7 @@ class VidGrabWindow(QMainWindow):
     def _fill_sub_options(self) -> None:
         t = self._t
         for combo, items in (
-            (self._sub_lang, [(t("Traditional Chinese"), "zh-Hant"),
-                              (t("Simplified Chinese"), "zh-Hans"),
-                              (t("English"), "en"), (t("Japanese"), "ja")]),
+            (self._sub_lang, [(t(name), key) for key, name in _SUB_LANGUAGES]),
             (self._sub_mode, [(t("Save as .srt file"), "file"),
                               (t("Burn into video"), "burn")]),
         ):
@@ -3452,6 +3870,8 @@ class VidGrabWindow(QMainWindow):
             _stop_thread(self._dl_worker)
         if self._hw_probe is not None:
             _stop_thread(self._hw_probe)
+        if self._ytdlp_thread is not None:
+            _stop_thread(self._ytdlp_thread, 3000)
         # give any in-flight info fetch a moment to finish before teardown
         self._probe_token += 1
         for worker in list(self._probe_workers):
@@ -3538,6 +3958,27 @@ class _FitScrollArea(QScrollArea):
                 max(hint.height(), child.sizeHint().height() + frame),
             )
         return hint
+
+
+# subtitle languages offered (key of downloader.SUBTITLE_LANGS, English name)
+_SUB_LANGUAGES = (
+    ("zh-Hant", "Traditional Chinese"), ("zh-Hans", "Simplified Chinese"), ("en", "English"),
+    ("ja", "Japanese"), ("ko", "Korean"), ("es", "Spanish"), ("fr", "French"),
+    ("de", "German"), ("pt", "Portuguese"), ("ru", "Russian"), ("id", "Indonesian"),
+    ("vi", "Vietnamese"), ("th", "Thai"), ("ar", "Arabic"), ("hi", "Hindi"),
+)
+
+
+def _looks_like_url(text: str) -> bool:
+    """A link (with or without http://) rather than words to search for."""
+    text = text.strip()
+    return bool(text) and " " not in text and ("://" in text or "." in text or "/" in text)
+
+
+def _pick_summary(f: dict) -> str:
+    if f["vcodec"]:
+        return f"{f['height']}p {f['vcodec']}" if f["height"] else f["vcodec"]
+    return f"{f['acodec'] or 'audio'}" + (f" {int(f['abr'])}k" if f["abr"] else "")
 
 
 def _wrap_scroll(page: QWidget) -> QScrollArea:
@@ -3655,7 +4096,9 @@ def main() -> None:
 
         why = openvino_error()
         print(f"VIDGRAB_SELFTEST multimedia={int(_QT_MULTIMEDIA_OK)} "
-              f"captions={int(engine_ok())} openvino={int(not why)}", flush=True)
+              f"captions={int(engine_ok())} openvino={int(not why)} "
+              f"ytdlp={ytdlp_update.current_version()} ytdlp_update={int(ytdlp_update.in_use())}",
+              flush=True)
         if why:
             print(f"VIDGRAB_SELFTEST_ERROR openvino: {why}", flush=True)
         window.close()

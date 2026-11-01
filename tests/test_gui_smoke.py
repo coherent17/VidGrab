@@ -1648,3 +1648,159 @@ def test_studio_two_videos_at_once(qapp, tmp_path, monkeypatch) -> None:
     finally:
         win._studio.clear_autosave()
         win.close()
+
+
+def _wait(qapp, cond, seconds: float = 10.0) -> None:
+    import time
+    t0 = time.time()
+    while not cond() and time.time() - t0 < seconds:
+        qapp.processEvents()
+        time.sleep(0.01)
+    qapp.processEvents()
+
+
+def test_settings_tabs_and_network(qapp, tmp_path, monkeypatch) -> None:
+    """Settings is three tabs; the Network card reaches the downloader."""
+    from vidgrab import app as appmod
+    from vidgrab import downloader
+
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(appmod, "_models_dir", lambda: tmp_path / "models")
+    monkeypatch.setattr(appmod.QMessageBox, "question",
+                        staticmethod(lambda *_a, **_k: appmod.QMessageBox.Yes))
+    win = appmod.VidGrabWindow()
+    try:
+        assert [b.text() for b in win._set_tabs] == ["General", "Downloads", "Studio"]
+        assert win._set_stack.count() == 3
+        win._set_tabs[1].click()
+        assert win._set_stack.currentIndex() == 1
+        win._set_rate.setCurrentIndex(win._set_rate.findData(1024 * 1024))
+        win._set_retries.setCurrentIndex(win._set_retries.findData(3))
+        win._set_proxy.setText(" socks5://localhost:1080 ")
+        win._network_changed()
+        assert (downloader.NETWORK.rate_limit, downloader.NETWORK.retries,
+                downloader.NETWORK.proxy) == (1024 * 1024, 3, "socks5://localhost:1080")
+        assert appmod._load_config()["rate_limit"] == 1024 * 1024
+        win._set_skip.setChecked(True)
+        assert appmod._load_config()["skip_downloaded"] is True
+        # the remembered-videos list can be cleared
+        win._archive_path().write_text("youtube abc\nyoutube def\n")
+        win._refresh_archive()
+        assert "2 videos" in win._archive_lbl.text() and win._archive_btn.isEnabled()
+        win._forget_archive()
+        assert not win._archive_path().exists() and not win._archive_btn.isEnabled()
+        win._set_afmt.setCurrentIndex(win._set_afmt.findData("flac"))
+        win._default_changed("audio_format", win._set_afmt)
+        assert win._audio_fmt.currentData() == "flac"  # the Download page follows the default
+    finally:
+        downloader.configure_network()
+        win._studio.clear_autosave()
+        win.close()
+
+
+def test_download_page_search_exact_format_and_job(qapp, tmp_path, monkeypatch) -> None:
+    """Words in the link box open a search; an exact format and the audio
+    format end up on the queued job."""
+    from PySide6.QtWidgets import QDialog
+
+    from vidgrab import app as appmod
+
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    results = [{"id": f"id{i}", "title": f"Song {i}", "uploader": "Chan", "duration": 61 + i,
+                "views": 1500, "url": f"https://www.youtube.com/watch?v=id{i}",
+                "thumbnail": ""} for i in range(3)]
+    monkeypatch.setattr(appmod, "search", lambda q, n=10, translate=None: results)
+
+    def run_dialog(dlg):
+        if hasattr(dlg, "urls"):  # the search results
+            _wait(qapp, lambda: dlg.list.count() == 3)
+            dlg.list.item(0).setCheckState(appmod.Qt.Checked)
+            dlg.list.item(2).setCheckState(appmod.Qt.Checked)
+            assert dlg.add.isEnabled() and "2" in dlg.add.text()
+        else:  # the exact formats: Automatic + the video formats
+            assert dlg.list.count() == 2  # Automatic + the one video format
+            dlg.list.setCurrentRow(1)
+        return QDialog.Accepted
+
+    monkeypatch.setattr(QDialog, "exec", run_dialog)
+    win = appmod.VidGrabWindow()
+    try:
+        win._internet_online = True
+        win._run_next_job = lambda: None
+        win._probe_item = lambda _item: None
+        win._start_probe = lambda: None
+        win._url.setText("lofi beats")
+        assert win._action.text() == "Search"
+        win._start_download()
+        assert win._url.text() == " ".join(r["url"] for r in (results[0], results[2]))
+        assert win._action.text() != "Search"
+        assert not win._queue  # picking results only fills the box
+
+        win._url.setText("https://www.youtube.com/watch?v=abc")
+        win._probe_timer.stop()
+        win._render_info({
+            "title": "T", "uploader": "U", "duration": 10, "formats": ["1080p"],
+            "live_status": "is_live", "is_playlist": False,
+            "format_list": [
+                {"id": "137", "height": 1080, "fps": 30, "vcodec": "H.264", "acodec": "",
+                 "ext": "mp4", "size": 5000, "abr": 0, "note": ""},
+                {"id": "140", "height": 0, "fps": 0, "vcodec": "", "acodec": "AAC",
+                 "ext": "m4a", "size": 900, "abr": 128, "note": ""}]})
+        assert win._exact_btn.isEnabled() and not win._live_cb.isHidden()
+        win._choose_format()
+        assert win._exact_pick["id"] == "137" and "1080p" in win._exact_btn.text()
+        assert not win._quality.isEnabled()  # the exact format replaces the quality choice
+        win._mp3.setChecked(True)
+        win._audio_fmt.setCurrentIndex(win._audio_fmt.findData("flac"))
+        win._sync_audio_options()
+        win._start_download()
+        job = win._queue[0].job
+        assert (job.fmt, job.audio_fmt, job.format_id, job.quality, job.live) == (
+            "both", "flac", "137", "1080p", True)
+        # audio only: a video format can't apply, a new link forgets the pick
+        win._mp4.setChecked(False)
+        assert win._exact_pick is None and win._quality.isEnabled() is False  # FLAC: no bitrate
+        win._audio_fmt.setCurrentIndex(win._audio_fmt.findData("opus"))
+        win._sync_audio_options()
+        assert win._quality.isEnabled()
+    finally:
+        win._studio.clear_autosave()
+        win.close()
+
+
+def test_ytdlp_update_in_settings(qapp, tmp_path, monkeypatch) -> None:
+    """Checking finds a newer yt-dlp, the Download page says so, Update installs it."""
+    from vidgrab import app as appmod
+
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    monkeypatch.setenv("VIDGRAB_YTDLP_DIR", str(tmp_path / "ytdlp"))
+    state = {"updated": None}
+    monkeypatch.setattr(appmod.ytdlp_update, "check", lambda: {
+        "current": "2026.07.04", "latest": "2099.01.01", "newer": True, "url": "u",
+        "sha256": "s", "size": 1, "pending": None})
+
+    def fake_update(progress=None):
+        state["updated"] = "2099.01.01"
+        return "2099.01.01"
+
+    monkeypatch.setattr(appmod.ytdlp_update, "update", fake_update)
+    win = appmod.VidGrabWindow()
+    try:
+        assert "built in" in win._ytdlp_lbl.text() and win._update_note.isHidden()
+        win._ytdlp_action()
+        _wait(qapp, lambda: win._ytdlp_info is not None)
+        _wait(qapp, lambda: win._ytdlp_btn.text().startswith("Update to"))
+        assert "2099.01.01" in win._ytdlp_btn.text() and not win._update_note.isHidden()
+        win._ytdlp_action()
+        _wait(qapp, lambda: state["updated"] is not None)
+        _wait(qapp, lambda: "Restart" in win._ytdlp_status.text())
+        assert win._update_note.isHidden() and "2099.01.01" in win._ytdlp_status.text()
+        # a failed check is only said out loud when asked for
+        monkeypatch.setattr(appmod.ytdlp_update, "check",
+                            lambda: (_ for _ in ()).throw(OSError("offline")))
+        win._ytdlp_info = None
+        win._ytdlp_action()
+        _wait(qapp, lambda: "update server" in win._ytdlp_status.text())
+    finally:
+        win._studio.clear_autosave()
+        win.close()

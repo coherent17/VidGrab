@@ -116,6 +116,7 @@ class Clip:
     volume: float = 1.0  # level of the clip's own sound (0..2)
     muted: bool = False
     speed: float = 1.0  # 0.25 .. 4: the part plays this many times as fast
+    denoise: bool = False  # take the steady background hiss / hum out of the clip's sound
 
     def gain(self) -> float:
         return 0.0 if self.muted else max(0.0, float(self.volume))
@@ -243,6 +244,7 @@ class _ResolvedClip:
     pan_y: float = 0.5
     gain: float = 1.0  # 0 = muted
     speed: float = 1.0
+    denoise: bool = False
 
     @property
     def out_duration(self) -> float:
@@ -447,6 +449,7 @@ def _resolve(
                 pan_y=min(max(float(clip.pan_y), 0.0), 1.0),
                 gain=min(clip.gain(), 2.0),
                 speed=min(max(float(clip.speed or 1.0), SPEED_RANGE[0]), SPEED_RANGE[1]),
+                denoise=bool(clip.denoise),
             )
         )
     return resolved
@@ -970,11 +973,19 @@ def _input_args(clip: _ResolvedClip) -> list[str]:
 _AUDIO_FMT = (f"aformat=sample_fmts=fltp:sample_rates={SAMPLE_RATE}:channel_layouts=stereo")
 
 
-def _audio_norm(label: str, gain: float = 1.0) -> str:
+# a gentle hum / hiss remover: rumble below 70 Hz out, then a spectral denoiser that
+# learns the steady noise floor (it leaves speech and music alone)
+DENOISE = "highpass=f=70,afftdn=nr=14:nf=-35"
+# the loudness YouTube, Shorts and most players aim for (integrated LUFS, true peak dB)
+LOUDNESS = "loudnorm=I=-14:TP=-1.5:LRA=11"
+
+
+def _audio_norm(label: str, gain: float = 1.0, denoise: bool = False) -> str:
     return (
         f"{label}aresample={SAMPLE_RATE},"
         f"aformat=sample_fmts=fltp:sample_rates={SAMPLE_RATE}:channel_layouts=stereo,"
-        "asetpts=PTS-STARTPTS"
+        + (f"{DENOISE}," if denoise else "")
+        + "asetpts=PTS-STARTPTS"
         + ("" if gain == 1.0 else f",volume={gain:.3f}")  # clip level / mute
     )
 
@@ -1167,8 +1178,10 @@ def build_video_command(
     quality: str = "balanced",
     images: list[ImageOverlay] | None = None,
     encoder: HwEncoder | None = None,
+    normalize_loudness: bool = False,
 ) -> tuple[list[str], float]:
-    """ffmpeg argv + output length for a video montage.
+    """ffmpeg argv + output length for a video montage. With *normalize_loudness*
+    the finished mix is brought to `LOUDNESS` (and clips with `denoise` are cleaned).
 
     *subtitles_file* (an ASS script from `format_ass`) / *fonts_dir* are
     paths relative to the ffmpeg working
@@ -1228,7 +1241,7 @@ def build_video_command(
             graph.append(f"{_audio_norm(f'[{silence[i]}:a]')}[a{i}]")
         else:
             tempo = f",{_atempo(c.speed)}" if c.speed != 1.0 else ""
-            graph.append(f"{_audio_norm(f'[{i}:a:0]', c.gain)}{tempo}[a{i}]")
+            graph.append(f"{_audio_norm(f'[{i}:a:0]', c.gain, c.denoise)}{tempo}[a{i}]")
     if not any(overlaps):
         pairs = "".join(f"[v{i}][a{i}]" for i in range(len(clips)))
         graph.append(f"{pairs}concat=n={len(clips)}:v=1:a=1[vc][ac]")
@@ -1280,7 +1293,8 @@ def build_video_command(
 
     # hand AAC whole 1024-sample frames (crossfades emit bigger ones, which some
     # ffmpeg builds pass straight to the encoder and it rejects)
-    graph.append(f"{aout}{_AUDIO_FMT},asetnsamples=n=1024:p=0[aenc]")
+    loud = f"{LOUDNESS}," if normalize_loudness else ""
+    graph.append(f"{aout}{loud}{_AUDIO_FMT},asetnsamples=n=1024:p=0[aenc]")
     aout = "[aenc]"
     cmd += [
         "-filter_complex", ";".join(graph),
@@ -1500,6 +1514,7 @@ def compose_video(
     gif_width: int = 480,
     gif_fps: int = 15,
     hardware: bool = False,
+    normalize_loudness: bool = False,
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
     translate: TranslateFn | None = None,
@@ -1563,6 +1578,7 @@ def compose_video(
                 images=[img for img in images or [] if img.end > img.start],
                 quality=quality,
                 encoder=enc,
+                normalize_loudness=normalize_loudness,
             ),
             ffmpeg, work, hardware=hardware, on_progress=on_progress, on_log=on_log,
             translate=translate)

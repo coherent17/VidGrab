@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from vidgrab import studio
 from vidgrab.studio import (
     BackgroundMusic,
     Clip,
@@ -656,3 +657,46 @@ def test_wrap_breaks_cjk_and_words_the_same_for_preview_and_render() -> None:
     # the ASS script carries those breaks, so libass never has to wrap
     ass = format_ass([SubtitleCue(0, 2, "一二三四五六七八九十" * 4)], 1080, 1920)
     assert "\\N" in next(ln for ln in ass.splitlines() if ln.startswith("Dialogue"))
+
+
+# ── two videos at once ────────────────────────────────────────────────────
+
+
+def test_split_panels_cover_the_frame():
+    assert studio.split_panels("side", 1920, 1080, 0) == [(0, 0, 960, 1080), (960, 0, 960, 1080)]
+    left, right = studio.split_panels("side", 1920, 1080, 10)
+    assert right[0] - (left[0] + left[2]) >= 10
+    top, bottom = studio.split_panels("stack", 1080, 1920, 0)
+    assert top[3] + bottom[3] == 1920 and bottom[1] == top[3]
+    big, small = studio.split_panels("wide", 1920, 1080, 0)
+    assert big[2] > small[2] and big[2] + small[2] == 1920
+    full, inset = studio.split_panels("pip", 1920, 1080)
+    assert full == (0, 0, 1920, 1080)
+    assert inset[0] + inset[2] < 1920 and inset[1] + inset[3] < 1080
+
+
+def test_split_needs_two_videos(tmp_path):
+    clip = studio.Clip(str(tmp_path / "x.mp4"))
+    with pytest.raises(RuntimeError):
+        studio.compose_split([clip], tmp_path / "o.mp4")
+
+
+@pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
+                    reason="ffmpeg not available")
+@pytest.mark.parametrize("layout", studio.SPLIT_LAYOUTS)
+def test_split_renders_both_lengths(tmp_path, layout):
+    def make(name, spec, secs):
+        out = tmp_path / name
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                        f"{spec}:d={secs}", "-f", "lavfi", "-i", f"sine=d={secs}", "-shortest",
+                        str(out)], check=True)
+        return str(out)
+    a = make("a.mp4", "testsrc2=s=320x180:r=25", 2)
+    b = make("b.mp4", "smptebars=s=160x240:r=25", 1)
+    clips = [studio.Clip(a, fit="fill"), studio.Clip(b, fit="fill")]
+    for length, expect in (("longest", 2.0), ("shortest", 1.0)):
+        out = studio.compose_split(clips, tmp_path / f"{layout}-{length}.mp4", layout=layout,
+                                   resolution="480p", gap=4, length=length, audio="first")
+        info = studio.probe_media(out)
+        assert (info["width"], info["height"]) == (854, 480)
+        assert info["has_audio"] and abs(info["duration"] - expect) < 0.15

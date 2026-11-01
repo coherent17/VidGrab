@@ -158,7 +158,10 @@ class DownloadRow(QWidget):
             self.thumb.setPixmap(self._icon("music" if it.job.fmt == "mp3" else "film")
                                  .pixmap(28, 28))
 
-        kind = {"mp4": "MP4", "mp3": "MP3", "both": "MP4 + MP3"}.get(it.job.fmt, "")
+        audio = it.job.audio_fmt.upper()
+        kind = {"mp4": "MP4", "mp3": audio, "both": f"MP4 + {audio}"}.get(it.job.fmt, "")
+        if it.job.live:
+            kind = t("Live") + " · " + kind
         if it.job.playlist:
             kind = t("Playlist") + " · " + kind
         if it.status == QUEUED:
@@ -167,7 +170,9 @@ class DownloadRow(QWidget):
             text = it.message or t("Starting…")
         elif it.status == DONE:
             when = it.finished_at.replace("T", " ")[:16]
-            if it.missing():
+            if not it.files and it.message:  # e.g. nothing new in a playlist
+                text = it.message
+            elif it.missing():
                 text = t("File was moved or deleted") + f"  ·  {when}"
             else:
                 bits = [kind, human_size(it.size()), when]

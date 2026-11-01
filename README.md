@@ -62,12 +62,17 @@ the demo video, the user guide and `SHA256SUMS.txt` for verifying downloads.
 
 ### ⬇ Download
 
-- **MP4, MP3 or both** in one pass. Pick the quality from 4K down to 360p (MP3 at 128–320 kbps); at any resolution H.264 is preferred so files play everywhere
+- **MP4, audio or both** in one pass. Pick the quality from 4K down to 360p, or **Exact format…** to choose one resolution / codec from the list the video offers; at any resolution H.264 is preferred so files play everywhere
+- **Audio as MP3, M4A, Opus, FLAC or WAV** (MP3 / M4A / Opus at 128–320 kbps; FLAC and WAV are lossless)
+- **Search YouTube** by typing words in the link box, and download from **many other sites** (Vimeo, X, Twitch, SoundCloud, Bilibili, direct video links… anything yt-dlp supports that doesn't need a login)
 - **Several links at once** with a per-link preview (thumbnail, title, length, playlist size); remove any link before you start
 - **Download queue** that runs one item at a time, with progress, speed, ETA, **Cancel** and **Retry**
 - **Recent downloads** that stay between sessions; **Send to Studio** puts a file (and its subtitles) straight onto the timeline
 - **Playlists and channels**: every video, numbered in order
-- **YouTube subtitles** in 繁體中文, 简体中文, English or 日本語 (uploaded or auto-generated), saved as `.srt` or burned in. Timings follow any trim or speed change
+- **Subtitles** in 15 languages (uploaded, auto-generated or YouTube's automatic translation), saved as `.srt` or burned in. Timings follow any trim or speed change
+- **Live streams and premieres**: record from the start, or wait for a scheduled one
+- **Skip what you already have** when you re-run a playlist or channel; **speed limit**, **proxy** and **retries** in Settings
+- **Keeps working**: update the download engine (yt-dlp) from Settings when a site changes, without waiting for a new VidGrab
 - **Trim, flip and speed (0.25×–4×)** applied while downloading
 
 ### 🎬 Studio
@@ -77,6 +82,7 @@ the demo video, the user guide and `SHA256SUMS.txt` for verifying downloads.
 - **Multi-track timeline**: one row per clip, with thumbnails or waveforms. Drag the left and right handles to trim, drag a clip up or down to reorder, and click to seek. Zoom with Ctrl+wheel; handles and subtitles snap to the playhead and to each other
 - **Edit like an editor**: undo / redo, split at the playhead, keyboard trimming (I / O) and playback (J / K / L, frame steps), multi-select (Ctrl+click or a box) with copy / paste, and **per-clip speed** (0.25×–4×, pitch kept)
 - **Projects**: save the timeline as a `.vgproj` file and pick up where you left off (Open recent); an autosaved recovery copy brings back unsaved work after a crash
+- **Two videos at once**: **Two videos…** plays two clips side by side, stacked, big + small or picture-in-picture in one frame (16:9, vertical or square), with a preview, a gap, and a choice of sound; the result joins the timeline as one clip
 - **Transitions** between clips (crossfade, dip to black / white, wipe, slide, circle, zoom…) shown live in the preview, and **framing**: fill a vertical or square frame from a landscape clip, zoom in, and drag to choose what stays in view
 - **Subtitles**: add a line at the playhead, drag it in the preview or snap it with the position grid, retime it by dragging its block, split or duplicate lines. Font, bold, colour, background box with opacity, fade in / out and reusable **style presets**. Overlapping lines stack into lanes
 - **Subtitle effects**: any line can have **its own look** and an animation: *pop*, *slide up*, *typewriter* or *karaoke*. **Guides** show the centre and the safe area, and dragged text and pictures snap to them

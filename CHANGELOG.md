@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+## Unreleased
+
+### Downloads: more formats, sites and control
+
+- **Search YouTube from the link box**: type words instead of a link and the button becomes **Search**. The results appear in the page itself, with thumbnails and tick boxes (click anywhere on a row), and **Add to downloads** puts the ticked ones in the link box. Emoji and decorative letters in titles, which the fonts can't draw and used to show as empty boxes, are removed from the titles shown in the window (file names are not changed)
+- **Other sites**: the same link box works for the sites yt-dlp supports (Vimeo, X, Twitch, SoundCloud, Bilibili, Instagram, direct video files and many more); sites that need a login are not supported yet
+- **Audio formats**: besides MP3, **M4A (AAC)**, **Opus**, **FLAC** and **WAV** (the last two are lossless, so they have no bitrate). Pick it next to *Audio*, or set a default in Settings
+- **Exact format**: **Exact format…** lists every resolution / codec / size the video offers (VP9, AV1, 60 fps…) and downloads exactly that one; the sound is added to picture-only formats
+- **Live streams and premieres**: a live video shows *Record this live stream from the start*; a scheduled one waits until it begins. Stopping a recording keeps what was recorded as an MP4. Tested with fakes, not against a real live stream
+- **Subtitles** in 15 languages (Korean, Spanish, French, German, Portuguese, Russian, Indonesian, Vietnamese, Thai, Arabic and Hindi added). A language the video lacks uses YouTube's automatic translation; "too many requests" answers are waited out and retried instead of giving up
+- **Skip videos already downloaded** for playlists and channels (Settings → Downloads), with a list that can be forgotten
+- **Network** settings: speed limit, proxy (HTTP or SOCKS) and retry count
+- **Update yt-dlp without a new VidGrab release** (Settings → Downloads → Download engine): checks PyPI, downloads the new yt-dlp (checksum verified), and uses it after a restart; **Use the built-in version** goes back. A quiet check at start (can be switched off) shows a button on the Download page when one exists. An update that fails to load is switched off automatically, and one made under an older VidGrab is ignored
+
+### Settings
+
+- **Pop-up windows are easier to see**: dialogs, message boxes, menus, drop-down lists and tooltips now have a lifted background and a clear outline in both the dark and the light theme
+- Settings is now three tabs — **General**, **Downloads**, **Studio** — so nothing needs scrolling
+
+### Fixed
+
+- **MP3s made for "MP4 + MP3" downloads, and trimmed or sped-up MP3s, came out at 64 kbps** whatever you chose (the bitrate was passed to ffmpeg without its "k"); they now use the chosen bitrate
+- **Links to a plain video file** (and other sites whose formats don't report a height) failed with "Requested format is not available" whenever a resolution was chosen; the resolution cap now lets formats of unknown height through
+
+### Two videos at once
+
+- **Two videos…** in the Studio plays two videos at the same time in one frame and adds the result to the timeline as a normal clip (trim, subtitles and music work on it as usual). Layouts: **Left | Right**, **Top / Bottom**, **Big + small** and **Picture in picture**, with a live preview of both videos in their places. Choose the frame size (16:9, vertical 9:16 for Shorts / Reels, square; stacked videos start on vertical), the gap between them, whether each video is cropped to fill its space, which sound to keep (both, one, none) and whether it ends with the longer or the shorter video (the shorter one holds its last picture). It starts from the first two clips of the project, with their trims. It encodes on the graphics card when that switch is on, with the usual CPU fallback
+
 ## 4.0.0
 
 Offline AI captions that use your graphics card, plus a much bigger Studio: per-clip speed, animated and individually styled subtitles, multi-select, export presets and crash recovery.

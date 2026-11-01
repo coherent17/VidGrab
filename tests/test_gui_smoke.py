@@ -1893,8 +1893,16 @@ def test_pressing_enter_again_never_destroys_a_running_search(qapp, tmp_path) ->
         assert not pick_dialogs._LIVE
         # only the newest search shows its answer
         assert [r.url for r in panel._rows] == ["https://example.invalid/query 5"]
+        # and a finished thread is let go, not kept (objects kept until exit crash Qt while it shuts down)
+        panel.stop()
+        _wait(qapp, lambda: True, 0.3)
+        import gc
+        gc.collect()
+        assert not [o for o in gc.get_objects()
+                    if isinstance(o, (pick_dialogs._SearchThread, pick_dialogs._ThumbThread))]
     finally:
         release.set()
+        panel.stop()
         _wait(qapp, lambda: not pick_dialogs._LIVE, 10)
 
 
@@ -1913,4 +1921,5 @@ def test_shutdown_reports_a_search_that_will_not_stop(qapp, tmp_path) -> None:
     finally:
         release.set()
         _wait(qapp, lambda: not pick_dialogs._LIVE, 10)
+        panel.stop()
     assert pick_dialogs.shutdown_threads(200) == []

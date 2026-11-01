@@ -937,6 +937,7 @@ DEFAULT_SETTINGS: dict = {
     "retries": 10,  # attempts for a failing download piece
     "skip_downloaded": False,  # playlists: leave out videos downloaded before
     "ytdlp_check": True,  # look for a newer yt-dlp when the app starts
+    "ui_font": "jakarta",  # a key of UI_FONTS (bundled), or "system" (the computer's own font)
 }
 
 
@@ -2199,8 +2200,13 @@ class VidGrabWindow(QMainWindow):
         self._lang_combo.currentIndexChanged.connect(self._on_lang_change)
         self._theme_lbl = QLabel("Theme:")
         self._lang_lbl = QLabel("Language:")
+        self._font_lbl = QLabel("Font:")
+        self._font_combo = QComboBox()
+        self._font_combo.setCursor(QCursor(_HAND))
+        self._font_combo.activated.connect(lambda _i: self._on_font_change())
         afl.addRow(self._theme_lbl, self._theme_combo)
         afl.addRow(self._lang_lbl, self._lang_combo)
+        afl.addRow(self._font_lbl, self._font_combo)
         fl.addLayout(afl)
         gen_l.addWidget(g1)
 
@@ -2503,6 +2509,13 @@ class VidGrabWindow(QMainWindow):
         t = self._t
         fill = StudioPage._fill
         fill(self._theme_combo, [(t("Dark"), "dark"), (t("Light"), "light")])
+        fill(self._font_combo, [*((family, key) for key, family in UI_FONTS.items()),
+                                (t("System default"), "system")])
+        for i in range(self._font_combo.count()):  # each name in its own typeface
+            family = UI_FONTS.get(self._font_combo.itemData(i))
+            if family:
+                self._font_combo.setItemData(i, QFont(family), Qt.FontRole)
+        self._font_combo.setCurrentIndex(max(0, self._font_combo.findData(self.setting("ui_font"))))
         self._theme_combo.setCurrentIndex(max(0, self._theme_combo.findData(self._theme)))
         fill(self._set_fmt, [("MP4", "mp4"), ("MP3", "mp3"), ("MP4 + MP3", "both")])
         fill(self._set_vq, [(t("Best available"), "")] + [(label, token) for label, token in (
@@ -2936,11 +2949,15 @@ class VidGrabWindow(QMainWindow):
         muted = _PALETTES[self._theme]["TEXT_MUTED"]
         qss = qss.replace("@ARROW_DOWN@", _chevron_path(muted, down=True))
         qss = qss.replace("@ARROW_UP@", _chevron_path(muted, down=False))
-        qss = qss.replace("@FONT_CHAIN@", _font_chain(self._lang))
+        font = self.setting("ui_font") if hasattr(self, "_settings") else DEFAULT_UI_FONT
+        qss = qss.replace("@FONT_CHAIN@", _font_chain(self._lang, font))
         self.setStyleSheet(qss.replace("@CHECK@", check))
         app = QApplication.instance()
         if app is not None:
             app.setPalette(_qpalette(self._theme))
+            base = QFont()
+            base.setFamilies(_font_families(self._lang, font))
+            app.setFont(base)
         for label, kind in self._card_titles:
             self._style_card_title(label, kind)
         if hasattr(self, "_studio"):
@@ -2963,6 +2980,10 @@ class VidGrabWindow(QMainWindow):
         _save_config(self._theme, self._lang)
 
     # ── language ───────────────────────────────────────────────────────
+
+    def _on_font_change(self) -> None:
+        self.set_setting("ui_font", self._font_combo.currentData() or DEFAULT_UI_FONT)
+        self._apply_theme()
 
     def _on_lang_change(self) -> None:
         self._lang_combo.hidePopup()
@@ -3027,6 +3048,7 @@ class VidGrabWindow(QMainWindow):
         self._settings_title.setText(t("APPEARANCE"))
         self._theme_lbl.setText(t("Theme:"))
         self._lang_lbl.setText(t("Language:"))
+        self._font_lbl.setText(t("Font:"))
         self._about_title.setText(t("ABOUT"))
         self._about_lbl.setText(
             t("about_text", ver=__version__)
@@ -4121,6 +4143,20 @@ def _build_filter(hflip: QCheckBox, vflip: QCheckBox) -> str | None:
 # Fallback font chain used everywhere (QSS + app font). Noto Sans CJK TC
 # (bundled) covers Traditional Chinese; it is pulled to the front for zh so
 # glyphs render in their Traditional regional form.
+# the fonts offered in Settings -> Appearance: key -> family (all bundled in assets/, four
+# weights each). "system" (not in the table) leaves the computer's own UI font first.
+UI_FONTS: dict[str, str] = {
+    "jakarta": "Plus Jakarta Sans",
+    "inter": "Inter",
+    "poppins": "Poppins",
+    "manrope": "Manrope",
+    "dmsans": "DM Sans",
+    "nunito": "Nunito Sans",
+}
+DEFAULT_UI_FONT = "jakarta"
+_FONT_FILES = {"jakarta": "PlusJakartaSans", "inter": "Inter", "poppins": "Poppins",
+               "manrope": "Manrope", "dmsans": "DMSans", "nunito": "NunitoSans"}
+
 _FONT_FALLBACK = (
     "Segoe UI", "Noto Sans",
     "Noto Sans CJK TC", "Noto Sans TC", "Source Han Sans TC",
@@ -4128,24 +4164,35 @@ _FONT_FALLBACK = (
     "Droid Sans Fallback", "Ubuntu", "Cantarell", "sans-serif",
 )
 
-_LANG_FONT_PREF = {
-    "zh": "Noto Sans CJK TC",
-}
+# Latin letters and digits come from Inter in every language (a CJK font draws them
+# plainly); Chinese characters fall through the chain to the CJK fonts below it.
+_LANG_FONT_PREF: dict[str, str] = {}
 
 
-def _font_chain(lang: str) -> str:
-    """Return the QSS `font-family` list, leading with *lang*'s CJK font."""
+def _font_families(lang: str = "en", font: str = DEFAULT_UI_FONT) -> list[str]:
+    """The font chain: the chosen font first (Latin letters and digits; with *font*
+    "system" the computer's own UI font leads), then the fallbacks, among them the
+    CJK fonts that draw Chinese; *lang* may name a CJK font to lead with."""
     fams = list(_FONT_FALLBACK)
+    if font in UI_FONTS:
+        fams.insert(0, UI_FONTS[font])
     pref = _LANG_FONT_PREF.get(lang)
     if pref in fams:
         fams.remove(pref)
         fams.insert(0, pref)
-    return ", ".join(f'"{f}"' for f in fams)
+    return fams
+
+
+def _font_chain(lang: str, font: str = DEFAULT_UI_FONT) -> str:
+    """Return the QSS `font-family` list."""
+    return ", ".join(f'"{f}"' for f in _font_families(lang, font))
 
 
 _APP_FONT_FAMILIES = list(_FONT_FALLBACK)
 
 _BUNDLED_FONTS = (
+    *(f"{stem}-{weight}.ttf" for stem in _FONT_FILES.values()
+      for weight in ("Regular", "Medium", "SemiBold", "Bold")),
     "NotoSansTC-Regular.otf",
     "NotoSansCJKtc-Regular.otf",
     "SourceHanSansTC-Regular.otf",

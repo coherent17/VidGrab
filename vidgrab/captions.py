@@ -27,6 +27,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import types
 import unicodedata
 import urllib.request
@@ -153,8 +154,14 @@ def ensure_model(
         return dest
     ov = engine == "openvino"
     repo = model_info(size, engine)[0]
-    with urllib.request.urlopen(f"{_HF}/api/models/{repo}/tree/main", timeout=30) as resp:
-        tree = json.load(resp)
+    offline = tr("The speech model could not be downloaded. Check your internet connection.")
+    try:
+        with urllib.request.urlopen(f"{_HF}/api/models/{repo}/tree/main", timeout=30) as resp:
+            tree = json.load(resp)
+        if not isinstance(tree, list):  # an error object (rate limit, removed repo)
+            raise TypeError(str(tree)[:120])
+    except (OSError, ValueError, TypeError) as exc:
+        raise RuntimeError(f"{offline} ({exc})") from exc
     files = [(f["path"], int(f.get("size") or 0)) for f in tree
              if f.get("type", "file") == "file" and (
                  (not f["path"].startswith(".") and f["path"] != "README.md") if ov
@@ -171,15 +178,22 @@ def ensure_model(
             done += expected
             continue
         part = target.with_name(name + ".part")
-        with urllib.request.urlopen(f"{_HF}/{repo}/resolve/main/{name}", timeout=60) as resp, \
-                open(part, "wb") as fh:
-            while chunk := resp.read(1 << 20):
-                fh.write(chunk)
-                done += len(chunk)
-                pct = int(done * 100 / total)
-                if on_progress and pct != last:
-                    last = pct
-                    on_progress(tr("Downloading the speech model…"), min(pct, 100))
+        try:
+            with urllib.request.urlopen(f"{_HF}/{repo}/resolve/main/{name}", timeout=60) as resp, \
+                    open(part, "wb") as fh:
+                while chunk := resp.read(1 << 20):
+                    fh.write(chunk)
+                    done += len(chunk)
+                    pct = int(done * 100 / total)
+                    if on_progress and pct != last:
+                        last = pct
+                        on_progress(tr("Downloading the speech model…"), min(pct, 100))
+        except OSError as exc:  # no network, a dropped connection, a full disk
+            part.unlink(missing_ok=True)
+            raise RuntimeError(f"{offline} ({exc})") from exc
+        except BaseException:  # cancelled: don't leave a half file behind
+            part.unlink(missing_ok=True)
+            raise
         os.replace(part, target)
     (dest / "COMPLETE").write_text(repo + "\n", encoding="utf-8")
     return dest
@@ -413,6 +427,14 @@ def _nvidia_name() -> str:
     return name or "NVIDIA GPU"
 
 
+# An integrated GPU needs this many execution units to beat the CPU it sits next
+# to: the Arc 140T has 128 and Iris Xe 80-96, while the UHD 600-series of 6th-10th
+# generation Core chips (24 EUs, no hardware int8) is likely slower than their CPU.
+# A heuristic, not a measurement; discrete cards are always used.
+MIN_IGPU_EUS = 64
+_basic_gpus: list[str] = []  # names of integrated GPUs left out for being too basic
+
+
 def _openvino_gpu() -> SpeechGpu | None:
     """The Intel GPU OpenVINO sees (a discrete Arc card before an integrated one)."""
     try:
@@ -430,35 +452,68 @@ def _openvino_gpu() -> SpeechGpu | None:
                 return False
 
         dev = min(gpus, key=lambda d: not discrete(d))
-        name = str(core.get_property(dev, "FULL_DEVICE_NAME"))
-        return SpeechGpu("openvino", dev, re.sub(r"\((?:R|TM)\)", "", name).strip())
+        name = re.sub(r"\((?:R|TM)\)", "", str(core.get_property(dev, "FULL_DEVICE_NAME"))).strip()
+        if not discrete(dev):
+            try:
+                units = int(core.get_property(dev, "GPU_EXECUTION_UNITS_COUNT"))
+            except Exception:  # noqa: BLE001 - unknown size: give it the benefit of the doubt
+                units = MIN_IGPU_EUS
+            if units < MIN_IGPU_EUS:
+                _basic_gpus.append(name)
+                return None
+        return SpeechGpu("openvino", dev, name)
     except Exception:  # noqa: BLE001
         return None
 
 
 _gpus: list[list[SpeechGpu]] = []  # one entry once detected (a list, to cache without a global)
+_detect_lock = threading.Lock()
+_detector: list[threading.Thread] = []
+_gave_up: list[bool] = []  # detection took too long: counts as "no card" until it finishes
 
 
-def detect_gpus() -> list[SpeechGpu]:
-    """The graphics cards speech recognition can use here, best first. The
-    first call takes a second or two (it starts OpenVINO's GPU plugin), so the
-    window asks from a background thread."""
-    if not _gpus:
+def _detect() -> None:
+    try:
         found = [SpeechGpu("cuda", "cuda", _nvidia_name())] if cuda_available() else []
         gpu = _openvino_gpu()
-        _gpus.append(found + ([gpu] if gpu else []))
+        result = found + ([gpu] if gpu else [])
+    except Exception:  # noqa: BLE001 - a broken driver is "no card", not a crash
+        result = []
+    if not _gpus:
+        _gpus.append(result)
+
+
+def detect_gpus(timeout: float = 20.0) -> list[SpeechGpu]:
+    """The graphics cards speech recognition can use here, best first. Starting
+    the drivers takes a second or two, and a broken one can hang for good, so
+    the check runs in a helper thread and is given *timeout* seconds: after
+    that the computer counts as having no usable card, and nothing waits on
+    the driver (if it does answer later, later calls use the answer)."""
+    if not _gpus:
+        with _detect_lock:
+            if not _gpus and not (_detector and _detector[0].is_alive()):
+                _detector[:] = [threading.Thread(target=_detect, name="gpu-detect", daemon=True)]
+                _detector[0].start()
+            thread = _detector[0] if _detector else None
+        if thread is not None:
+            thread.join(timeout)
+        if not _gpus:
+            _gave_up[:] = [True]
+            return []
     return _gpus[0]
 
 
 def gpus_checked() -> bool:
-    return bool(_gpus)
+    return bool(_gpus) or bool(_gave_up)
 
 
-def speech_engines(gpu: bool = True, models_dir: str | Path | None = None) -> list[str]:
+def speech_engines(gpu: bool = True, models_dir: str | Path | None = None,
+                   timeout: float = 20.0) -> list[str]:
     """The engines to try, in order; the CPU is always the last. NVIDIA comes
     first, unless it still has to download its 1.3 GB of CUDA libraries and an
-    Intel GPU, which needs nothing extra, is there to use meanwhile."""
-    engines = [g.engine for g in detect_gpus()] if gpu else []
+    Intel GPU, which needs nothing extra, is there to use meanwhile. *timeout*
+    bounds the wait for the graphics-card check (see `detect_gpus`)."""
+    engines = [g.engine for g in detect_gpus(timeout)] if gpu else []
     if (len(engines) > 1 and engines[0] == "cuda" and models_dir is not None
             and not cuda_runtime.runtime_ready(models_dir)):
         engines.reverse()
@@ -481,6 +536,10 @@ def speech_device(gpu: bool, models_dir: str | Path | None = None) -> tuple[str,
         ready = ("Ready: {name}. Auto captions run on it; if it ever fails, they run on "
                  "the CPU instead.")
         return ready, {"name": found[0].name}
+    if gpu and _basic_gpus:
+        basic = ("{name} is too basic to speed up speech recognition (the CPU is faster), so "
+                 "auto captions run on the CPU ({n} threads).")
+        return basic, {"name": _basic_gpus[0], "n": threads}
     if gpu:
         none = ("No supported graphics card found for speech recognition (Intel graphics, or "
                 "NVIDIA with CUDA 12), so auto captions run on the CPU ({n} threads).")
@@ -560,7 +619,8 @@ class _FasterWhisper:
     def __init__(self, path: Path, device: str, language: str, on_log: LogCallback | None):
         WhisperModel = _whisper_model_class()
         if device == "cuda":
-            self.model = WhisperModel(str(path), device="cuda", compute_type="float16")
+            # "auto" = the fastest precision this card supports (older ones lack float16)
+            self.model = WhisperModel(str(path), device="cuda", compute_type="auto")
             if on_log:
                 on_log("Speech recognition on the NVIDIA GPU (CUDA)")
         else:
@@ -732,5 +792,6 @@ def transcribe(
             if n == len(engines) - 1:
                 raise
             if on_log:
-                on_log(f"Speech recognition on {engine} failed ({exc}); trying {engines[n + 1]}")
+                why = next((ln.strip() for ln in str(exc).splitlines() if ln.strip()), type(exc).__name__)
+                on_log(f"Speech recognition on {engine} failed ({why}); trying {engines[n + 1]}")
     raise AssertionError("unreachable")  # the CPU engine is always last

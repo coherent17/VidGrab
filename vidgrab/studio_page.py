@@ -4763,7 +4763,8 @@ class StudioPage(QWidget):
                  "best": t("Most accurate, and slow without a graphics card.")}
 
         # the model's format and size depend on the engine that will run it
-        engine = speech_engines(bool(setting("gpu_captions")), models_dir)[0]
+        # (the window is waiting: don't stay on a driver that is slow to answer)
+        engine = speech_engines(bool(setting("gpu_captions")), models_dir, timeout=3.0)[0]
         needs_cuda = (engine == "cuda" and models_dir is not None
                       and not cuda_runtime.runtime_ready(models_dir))
 

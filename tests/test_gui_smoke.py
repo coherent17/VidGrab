@@ -1502,3 +1502,83 @@ def test_speech_models_storage_row(qapp, tmp_path, monkeypatch) -> None:
         assert not models.exists() and not win._models_btn.isEnabled()
     finally:
         win.close()
+
+
+def test_hardware_probe_checks_video_and_captions(qapp, tmp_path, monkeypatch) -> None:
+    """The Settings status lines both leave "Checking this computer…": the
+    startup probe must look for the captions GPU too, not only the encoder."""
+    from vidgrab import app as appmod
+    from vidgrab import captions
+    from vidgrab.gpu import CANDIDATES
+
+    qsv = next(e for e in CANDIDATES if e.key == "qsv")
+    intel = captions.SpeechGpu("openvino", "GPU", "Intel Arc 140T GPU")
+    monkeypatch.setattr(appmod, "detect_encoder", lambda ffmpeg: qsv)
+    monkeypatch.setattr(captions, "_gpus", [])
+    monkeypatch.setattr(captions, "cuda_available", lambda: False)
+    monkeypatch.setattr(captions, "_openvino_gpu", lambda: intel)
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    win = appmod.VidGrabWindow()
+    try:
+        assert not captions.gpus_checked()
+        assert win._gpu_captions_hint.text() == win._t("Checking this computer…")
+        probe = appmod._HwProbe("ffmpeg")
+        probe.found.connect(win._on_hardware)
+        probe.run()  # what the background thread does
+        assert captions.gpus_checked()
+        assert "Intel Quick Sync" in win._gpu_render_hint.text()
+        assert "Intel Arc 140T GPU" in win._gpu_captions_hint.text()
+        assert win._t("Checking this computer…") not in (
+            win._gpu_render_hint.text(), win._gpu_captions_hint.text())
+    finally:
+        win.close()
+
+
+def test_closing_with_stuck_threads_neither_crashes_nor_hangs(qapp, tmp_path, monkeypatch) -> None:
+    """A caption job or a hardware check stuck inside a driver call must not
+    keep the window from closing, and must never be destroyed while running
+    (Qt aborts the whole process for that)."""
+    import threading
+    import time
+
+    from PySide6.QtCore import QThread
+
+    from vidgrab import app as appmod
+
+    class Stuck(QThread):
+        _task = "transcribe"
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.gate = threading.Event()
+            self.cancel_asked = False
+
+        def cancel(self) -> None:
+            self.cancel_asked = True
+
+        def run(self) -> None:
+            self.gate.wait(30)
+
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(appmod, "_STOP_GRACE_MS", 200)
+    answer = {"value": appmod.QMessageBox.No}
+    monkeypatch.setattr(appmod.QMessageBox, "question", staticmethod(lambda *_a, **_k: answer["value"]))
+    win = appmod.VidGrabWindow()
+    probe, worker = Stuck(), Stuck()
+    try:
+        probe.start()
+        worker.start()
+        win._hw_probe, win._worker = probe, worker
+        assert win.close() is False  # "Stop them and quit?" -> No: still open, nothing touched
+        assert not worker.cancel_asked and not appmod._STUCK
+        answer["value"] = appmod.QMessageBox.Yes
+        t0 = time.monotonic()
+        assert win.close() is True  # Yes: asked to stop, gave up waiting, closed anyway
+        assert time.monotonic() - t0 < 5
+        assert worker.cancel_asked and probe.isRunning() and worker.isRunning()
+        assert {id(t) for t in appmod._STUCK} == {id(probe), id(worker)}  # parked, not destroyed
+    finally:
+        for t in (probe, worker):
+            t.gate.set()
+            t.wait(5000)
+        appmod._STUCK.clear()

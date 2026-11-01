@@ -164,11 +164,20 @@ def ensure_runtime(
                 last = pct
                 on_progress(tr("Downloading the NVIDIA CUDA libraries…"), pct)
 
-        for filename, url, sha256, _size in PINS[key]:
+        for filename, url, sha256, size in PINS[key]:
+            if (folder / (filename + ".done")).is_file():  # a retry resumes after the last package
+                on_bytes(size)
+                continue
             wheel = folder / (filename + ".part")
-            _download(url, sha256, wheel, on_bytes)
-            _unpack(wheel, folder, key)
-            wheel.unlink(missing_ok=True)
+            try:
+                _download(url, sha256, wheel, on_bytes)
+                _unpack(wheel, folder, key)
+            except OSError as exc:  # no network, a dropped connection, a full disk
+                raise RuntimeError(tr("The NVIDIA CUDA libraries could not be downloaded. "
+                                      "Check your internet connection.") + f" ({exc})") from exc
+            finally:
+                wheel.unlink(missing_ok=True)
+            (folder / (filename + ".done")).write_text("ok\n", encoding="utf-8")
         (folder / "COMPLETE").write_text("cuBLAS 12.9.2.10, cuDNN 9.27.0.42\n", encoding="utf-8")
     register(folder)
     if not libs_loadable():

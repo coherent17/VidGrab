@@ -48,7 +48,8 @@ def test_ensure_runtime_downloads_unpacks_and_registers(tmp_path, fake_wheels) -
     folder = cr.runtime_dir(models)
     # the libraries sit side by side (cuDNN finds its parts next to itself); no headers, no wheels left
     assert sorted(p.name for p in folder.iterdir()) == [
-        "COMPLETE", "libcublas.so.12", "libcublasLt.so.12", "libcudnn.so.9", "libcudnn_ops.so.9"]
+        "COMPLETE", "blas.whl.done", "dnn.whl.done",
+        "libcublas.so.12", "libcublasLt.so.12", "libcudnn.so.9", "libcudnn_ops.so.9"]
     assert state["registered"] and state["folder"] == folder
     assert seen == sorted(seen) and seen[-1] == 100
     assert cr.runtime_ready(models)
@@ -89,3 +90,29 @@ def test_unpacks_the_windows_layout_and_pins_cover_both_platforms() -> None:
         assert ("win_amd64" in pins[0][0]) == (plat == "win")
     assert cr._MEMBER_DIRS["win"] == ("nvidia/cublas/bin/", "nvidia/cudnn/bin/")
     assert cr.download_size_label() in ("1.3 GB", "1.2 GB")
+
+
+def test_a_failed_download_is_friendly_and_resumes_after_the_last_package(
+        tmp_path, fake_wheels, monkeypatch) -> None:
+    models = tmp_path / "models"
+    real = cr._download
+    calls: list[str] = []
+
+    dropped: list[bool] = []
+
+    def flaky(url, sha256, dest, on_bytes):
+        calls.append(dest.name)
+        if dest.name.startswith("dnn") and not dropped:
+            dropped.append(True)
+            raise OSError("connection reset")  # the second package drops on the first try
+        real(url, sha256, dest, on_bytes)
+
+    monkeypatch.setattr(cr, "_download", flaky)
+    with pytest.raises(RuntimeError, match="Check your internet connection"):
+        cr.ensure_runtime(models)
+    folder = cr.runtime_dir(models)
+    assert (folder / "blas.whl.done").is_file() and not (folder / "COMPLETE").exists()
+    assert not list(folder.glob("*.part"))
+    calls.clear()
+    cr.ensure_runtime(models)  # the retry fetches only the package that failed
+    assert calls == ["dnn.whl.part"] and (folder / "COMPLETE").is_file()

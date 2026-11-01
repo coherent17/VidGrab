@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -562,3 +563,41 @@ def test_compose_video_hardware_encoder_falls_back_to_the_cpu(tmp_path: Path, mo
     asked.clear()
     cpu = compose_video([Clip(str(a))], tmp_path / "cpu.mp4", hardware=False)
     assert probe_media(cpu)["has_video"] and asked == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in ffmpeg is a shell script")
+def test_a_render_that_stops_answering_is_killed_not_waited_for(tmp_path: Path) -> None:
+    import time
+
+    from vidgrab.studio import _run_with_progress
+
+    fake = tmp_path / "fake_ffmpeg"
+    fake.write_text("#!/bin/sh\necho out_time_us=1000\nexec sleep 60\n")  # one line of progress, then silence
+    fake.chmod(0o755)
+    t0 = time.monotonic()
+    with pytest.raises(RuntimeError, match="stopped responding"):
+        _run_with_progress([str(fake)], 10.0, label="x", on_progress=None, on_log=None,
+                           translate=None, stall_s=1.5)
+    assert time.monotonic() - t0 < 15  # not the 60 s the "driver" would have taken
+
+
+@requires_ffmpeg
+def test_only_the_graphics_card_attempt_has_a_stall_limit(tmp_path: Path, monkeypatch) -> None:
+    from vidgrab import studio
+    from vidgrab.gpu import HwEncoder
+
+    a = _make(tmp_path / "a.mp4", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25",
+              "-f", "lavfi", "-i", "sine=frequency=440", "-t", "1", "-shortest")
+    monkeypatch.setattr(studio, "detect_encoder", lambda ffmpeg: HwEncoder("fake", "h264_nope", "Fake GPU"))
+    seen: list[tuple[str, float | None]] = []
+
+    def run(cmd, total, **kw):
+        seen.append((cmd[cmd.index("-c:v") + 1], kw.get("stall_s")))
+        if len(seen) == 1:  # the card hangs and is given up on
+            raise RuntimeError("ffmpeg stopped responding (no progress for 120 s).")
+
+    monkeypatch.setattr(studio, "_run_with_progress", run)
+    log: list[str] = []
+    compose_video([Clip(str(a))], tmp_path / "o.mp4", hardware=True, on_log=log.append)
+    assert seen == [("h264_nope", studio.HW_STALL_S), ("libx264", None)]
+    assert any("rendering on the CPU instead" in line and "stopped responding" in line for line in log)

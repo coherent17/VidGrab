@@ -101,7 +101,7 @@ def _patch(monkeypatch, recognisers: dict[str, _Recogniser], gpus=(), length_s: 
         return recognisers[engine]
 
     monkeypatch.setattr(captions, "_recogniser", recogniser)
-    monkeypatch.setattr(captions, "detect_gpus", lambda: list(gpus))
+    monkeypatch.setattr(captions, "detect_gpus", lambda timeout=20.0: list(gpus))
     monkeypatch.setattr(captions, "_require_ffmpeg", lambda tr=None: "ffmpeg")
     monkeypatch.setattr(captions, "load_audio",
                         lambda src, ff: np.full(int(length_s * captions.SAMPLE_RATE), 0.1, np.float32))
@@ -125,10 +125,10 @@ def test_transcribe_maps_source_time_to_montage_time(monkeypatch, tmp_path) -> N
 
 
 def test_engine_order_and_the_switch(monkeypatch) -> None:
-    monkeypatch.setattr(captions, "detect_gpus", lambda: [CUDA, INTEL])
+    monkeypatch.setattr(captions, "detect_gpus", lambda timeout=20.0: [CUDA, INTEL])
     assert captions.speech_engines(True) == ["cuda", "openvino", "cpu"]
     assert captions.speech_engines(False) == ["cpu"]  # the switch is off
-    monkeypatch.setattr(captions, "detect_gpus", list)
+    monkeypatch.setattr(captions, "detect_gpus", lambda timeout=20.0: [])
     assert captions.speech_engines(True) == ["cpu"]
 
 
@@ -178,11 +178,11 @@ def test_speech_device_messages(monkeypatch) -> None:
     assert captions.speech_device(True)[0] == "Checking this computer…"
     assert captions.speech_device(False) == ("Auto captions run on the CPU ({n} threads).", {"n": 6})
     monkeypatch.setattr(captions, "gpus_checked", lambda: True)
-    monkeypatch.setattr(captions, "detect_gpus", lambda: [INTEL])
+    monkeypatch.setattr(captions, "detect_gpus", lambda timeout=20.0: [INTEL])
     key, fill = captions.speech_device(True)
     assert key.startswith("Ready: {name}") and fill == {"name": "Intel Arc 140T GPU"}
     assert captions.speech_device(False)[1] == {"n": 6}  # switched off: CPU even with a GPU
-    monkeypatch.setattr(captions, "detect_gpus", list)
+    monkeypatch.setattr(captions, "detect_gpus", lambda timeout=20.0: [])
     assert captions.speech_device(True)[0].startswith("No supported graphics card") \
         and captions.speech_device(True)[1] == {"n": 6}
 
@@ -295,13 +295,13 @@ def test_openvino_never_loads_its_telemetry() -> None:
 def test_nvidia_waits_for_its_download_when_an_intel_gpu_can_start_now(monkeypatch, tmp_path) -> None:
     from vidgrab import cuda_runtime
 
-    monkeypatch.setattr(captions, "detect_gpus", lambda: [CUDA, INTEL])
+    monkeypatch.setattr(captions, "detect_gpus", lambda timeout=20.0: [CUDA, INTEL])
     monkeypatch.setattr(cuda_runtime, "runtime_ready", lambda models_dir: False)
     assert captions.speech_engines(True, tmp_path) == ["openvino", "cuda", "cpu"]
     monkeypatch.setattr(cuda_runtime, "runtime_ready", lambda models_dir: True)
     assert captions.speech_engines(True, tmp_path) == ["cuda", "openvino", "cpu"]
     # with only NVIDIA there is nothing to wait for: it downloads, then runs
-    monkeypatch.setattr(captions, "detect_gpus", lambda: [CUDA])
+    monkeypatch.setattr(captions, "detect_gpus", lambda timeout=20.0: [CUDA])
     monkeypatch.setattr(cuda_runtime, "runtime_ready", lambda models_dir: False)
     assert captions.speech_engines(True, tmp_path) == ["cuda", "cpu"]
     monkeypatch.setattr(captions, "gpus_checked", lambda: True)
@@ -321,3 +321,121 @@ def test_cuda_engine_gets_its_libraries_before_the_model(monkeypatch, tmp_path) 
     order.clear()
     captions._recogniser("cpu", tmp_path, "fast", "auto", None, None, None)
     assert order == ["model", "cpu"]  # the CPU needs no CUDA
+
+
+# ── fallbacks: nothing may hang or crash ────────────────────────────────
+
+
+@pytest.fixture
+def fresh_detection(monkeypatch):
+    """Empty the module-level detection state (shared across tests otherwise)."""
+    monkeypatch.setattr(captions, "_gpus", [])
+    monkeypatch.setattr(captions, "_detector", [])
+    monkeypatch.setattr(captions, "_gave_up", [])
+    monkeypatch.setattr(captions, "_basic_gpus", [])
+    monkeypatch.setattr(captions, "cuda_available", lambda: False)
+
+
+def test_gpu_detection_never_waits_on_a_hung_driver(monkeypatch, fresh_detection) -> None:
+    import threading
+    import time
+
+    release = threading.Event()
+    monkeypatch.setattr(captions, "_openvino_gpu", lambda: release.wait(30) and INTEL)
+    t0 = time.monotonic()
+    assert captions.detect_gpus(timeout=0.3) == []  # gave up: counts as "no card"
+    assert time.monotonic() - t0 < 5 and captions.gpus_checked()
+    assert captions.speech_engines(True, timeout=0.1) == ["cpu"]  # captions go to the CPU, no waiting
+    release.set()  # the driver answers after all
+    captions._detector[0].join(5)
+    assert captions.detect_gpus(timeout=0.3) == [INTEL]  # later calls use the answer
+    # a driver that raises is just "no card"
+    monkeypatch.setattr(captions, "_gpus", [])
+    monkeypatch.setattr(captions, "_detector", [])
+    monkeypatch.setattr(captions, "_openvino_gpu", lambda: (_ for _ in ()).throw(OSError("driver")))
+    assert captions.detect_gpus(timeout=5) == []
+
+
+def _fake_openvino(monkeypatch, *, kind: str, units, name: str = "Intel(R) UHD Graphics 620"):
+    props = {"FULL_DEVICE_NAME": name, "DEVICE_TYPE": f"Type.{kind}"}
+
+    class Core:
+        @property
+        def available_devices(self):
+            return ["CPU", "GPU"]
+
+        def get_property(self, dev, prop):
+            if prop == "GPU_EXECUTION_UNITS_COUNT":
+                if units is None:
+                    raise RuntimeError("unsupported")
+                return units
+            return props[prop]
+
+    monkeypatch.setitem(sys.modules, "openvino", SimpleNamespace(Core=Core))
+
+
+@pytest.mark.parametrize(("kind", "units", "used"), [
+    ("INTEGRATED", 24, False),   # UHD 620 (6th-10th gen): slower than the CPU
+    ("INTEGRATED", 128, True),   # Arc 140T
+    ("INTEGRATED", 96, True),    # Iris Xe
+    ("INTEGRATED", None, True),  # size unknown: benefit of the doubt
+    ("DISCRETE", 32, True),      # a discrete card is always worth it
+])
+def test_basic_integrated_graphics_are_left_to_the_cpu(monkeypatch, fresh_detection,
+                                                       kind, units, used) -> None:
+    _fake_openvino(monkeypatch, kind=kind, units=units)
+    gpu = captions._openvino_gpu()
+    assert (gpu is not None) == used
+    if not used:
+        assert captions._basic_gpus == ["Intel UHD Graphics 620"]
+        monkeypatch.setattr(captions, "gpus_checked", lambda: True)
+        monkeypatch.setattr(captions, "detect_gpus", lambda timeout=20.0: [])
+        key, fill = captions.speech_device(True)
+        assert key.startswith("{name} is too basic") and fill["name"] == "Intel UHD Graphics 620"
+
+
+def test_model_download_failures_are_friendly_and_leave_no_half_files(monkeypatch, tmp_path) -> None:
+    import io
+    import json as jsonlib
+    import urllib.error
+
+    from vidgrab.downloader import DownloadCancelled
+
+    def offline(*_a, **_k):
+        raise urllib.error.URLError("no network")
+
+    monkeypatch.setattr(captions.urllib.request, "urlopen", offline)
+    with pytest.raises(RuntimeError, match="Check your internet connection"):
+        captions.ensure_model(tmp_path, "fast", engine="cpu")
+
+    # an error object instead of a file list (rate limit)
+    monkeypatch.setattr(captions.urllib.request, "urlopen",
+                        lambda *_a, **_k: io.BytesIO(jsonlib.dumps({"error": "rate limited"}).encode()))
+    with pytest.raises(RuntimeError, match="Check your internet connection"):
+        captions.ensure_model(tmp_path, "fast", engine="cpu")
+
+    # the connection drops half way / the user cancels: no .part file stays behind
+    tree = [{"type": "file", "path": "model.bin", "size": 3 << 20}, {"type": "file", "path": "config.json", "size": 2}]
+
+    class Stream(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def opener(url, **_k):
+        if "/api/models/" in url:
+            return Stream(jsonlib.dumps(tree).encode())
+        return Stream(b"x" * (3 << 20))
+
+    monkeypatch.setattr(captions.urllib.request, "urlopen", opener)
+
+    def cancel(msg, pct):
+        raise DownloadCancelled
+
+    with pytest.raises(DownloadCancelled):
+        captions.ensure_model(tmp_path, "fast", engine="cpu", on_progress=cancel)
+    assert not list(tmp_path.rglob("*.part")) and not captions.model_ready(tmp_path, "fast")
+    captions.ensure_model(tmp_path, "fast", engine="cpu")  # and a retry completes
+    assert captions.model_ready(tmp_path, "fast")

@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from array import array
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -39,6 +40,7 @@ from vidgrab.downloader import (
 from vidgrab.gpu import HwEncoder, detect_encoder, video_args
 
 SAMPLE_RATE = 48000
+HW_STALL_S = 120.0  # a graphics-card render with no progress for this long is abandoned
 SUBTITLE_FONT_FILE = "NotoSansTC-Regular.otf"
 SUBTITLE_FONT_NAME = "Noto Sans CJK TC"
 
@@ -791,8 +793,12 @@ def _run_with_progress(
     on_progress: ProgressCallback | None,
     on_log: LogCallback | None,
     translate: TranslateFn | None,
+    stall_s: float | None = None,
 ) -> None:
-    """Run ffmpeg, mapping its ``-progress`` output onto a 0..100 percentage."""
+    """Run ffmpeg, mapping its ``-progress`` output onto a 0..100 percentage.
+    With *stall_s*, ffmpeg is killed (and RuntimeError raised) if it prints no
+    progress for that long, so a graphics driver that stops answering can't
+    hang the render."""
     tr = translate or _noop_tr
     if on_log:
         on_log(" ".join(cmd))
@@ -823,9 +829,23 @@ def _run_with_progress(
 
     t = threading.Thread(target=drain, daemon=True)
     t.start()
+    last_seen = [time.monotonic()]
+    stalled = threading.Event()
+
+    def watch() -> None:
+        while proc.poll() is None:
+            time.sleep(1.0)
+            if stall_s and time.monotonic() - last_seen[0] > stall_s:
+                stalled.set()
+                proc.kill()
+                return
+
+    if stall_s:
+        threading.Thread(target=watch, daemon=True).start()
     assert proc.stdout is not None
     try:
         for line in proc.stdout:
+            last_seen[0] = time.monotonic()
             key, _, value = line.strip().partition("=")
             if key == "out_time_us" and total > 0 and on_progress:
                 secs = (_to_float(value) or 0) / 1_000_000
@@ -837,6 +857,8 @@ def _run_with_progress(
         raise
     proc.wait()
     t.join(timeout=2)
+    if stalled.is_set():
+        raise RuntimeError(tr("ffmpeg stopped responding (no progress for {s} s).", s=round(stall_s or 0)))
     if proc.returncode != 0:
         if on_log:
             for line in err_tail[-6:]:
@@ -1310,6 +1332,7 @@ def compose_video(
                 _run_with_progress(
                     cmd, total, cwd=work, label=tr("Rendering…"),
                     on_progress=on_progress, on_log=on_log, translate=translate,
+                    stall_s=HW_STALL_S if attempt else None,
                 )
                 break
             except RuntimeError as exc:

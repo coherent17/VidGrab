@@ -66,7 +66,7 @@ from PySide6.QtWidgets import (
 )
 
 from vidgrab import __version__
-from vidgrab.captions import speech_device, transcribe
+from vidgrab.captions import detect_gpus, speech_device, transcribe
 from vidgrab.downloader import (
     NAME_TEMPLATES,
     DownloadCancelled,
@@ -1326,6 +1326,27 @@ def _get_existing_directory(parent, caption, directory=""):
 # ── worker thread ──────────────────────────────────────────────────────────
 
 
+_STOP_GRACE_MS = 5000  # how long a thread gets to finish when the window closes
+_STUCK: list[QThread] = []  # threads that ignored a stop request; kept alive, see main()
+
+
+def _stop_thread(thread: QThread, grace_ms: int | None = None) -> bool:
+    """Ask *thread* to stop and wait for it; True if it finished. One that is
+    stuck in a driver or library call can't be killed safely: it is parked in
+    `_STUCK` (destroying a running QThread aborts the whole process) and
+    `main()` leaves with `os._exit` instead of tearing it down."""
+    if not thread.isRunning():
+        return True
+    cancel = getattr(thread, "cancel", None)
+    if callable(cancel):
+        cancel()
+    if thread.wait(_STOP_GRACE_MS if grace_ms is None else grace_ms):
+        return True
+    if thread not in _STUCK:
+        _STUCK.append(thread)
+    return False
+
+
 class _HwProbe(QThread):
     """Find the graphics video encoder that works here (it test-encodes a clip,
     a couple of seconds) without freezing the window."""
@@ -1337,7 +1358,9 @@ class _HwProbe(QThread):
         self._ffmpeg = ffmpeg
 
     def run(self) -> None:
-        self.found.emit(detect_encoder(self._ffmpeg) if self._ffmpeg else None)
+        encoder = detect_encoder(self._ffmpeg) if self._ffmpeg else None
+        detect_gpus()  # the captions engines too (starts OpenVINO's GPU plugin); cached for later
+        self.found.emit(encoder)
 
 
 class _Worker(QThread):
@@ -3372,16 +3395,25 @@ class VidGrabWindow(QMainWindow):
             return
         _save_config(self._theme, self._lang)
         if self._worker is not None and self._worker.isRunning():
-            QMessageBox.information(
-                self,
-                self._t("Task in progress"),
-                self._t(
-                    "A download or processing task is still running.\n"
-                    "Please wait for it to complete before closing."
-                ),
-            )
-            event.ignore()
-            return
+            if self._worker._task == "transcribe":  # captions can simply be stopped
+                answer = QMessageBox.question(
+                    self, self._t("Task in progress"),
+                    self._t("Auto captions are still running. Stop them and quit?"))
+                if answer != QMessageBox.Yes:
+                    event.ignore()
+                    return
+                _stop_thread(self._worker)
+            else:
+                QMessageBox.information(
+                    self,
+                    self._t("Task in progress"),
+                    self._t(
+                        "A download or processing task is still running.\n"
+                        "Please wait for it to complete before closing."
+                    ),
+                )
+                event.ignore()
+                return
         if self._dl_worker is not None and self._dl_worker.isRunning():
             answer = QMessageBox.question(
                 self, self._t("Task in progress"),
@@ -3393,15 +3425,13 @@ class VidGrabWindow(QMainWindow):
             for item in self._queue:
                 if item.status == QUEUED:
                     item.status = CANCELLED
-            self._dl_worker.cancel()
-            self._dl_worker.wait(5000)
-        if self._hw_probe is not None and self._hw_probe.isRunning():
-            self._hw_probe.wait(5000)
+            _stop_thread(self._dl_worker)
+        if self._hw_probe is not None:
+            _stop_thread(self._hw_probe)
         # give any in-flight info fetch a moment to finish before teardown
         self._probe_token += 1
         for worker in list(self._probe_workers):
-            if worker.isRunning():
-                worker.wait(3000)
+            _stop_thread(worker, 3000)
         self._studio.preview.stop()
         self._studio.shutdown()
         self._studio.clear_autosave()  # a normal close: nothing to recover
@@ -3608,7 +3638,11 @@ def main() -> None:
         return
 
     window.show()
-    sys.exit(app.exec())
+    code = app.exec()
+    if any(thread.isRunning() for thread in _STUCK):
+        # a thread stuck in a driver call: destroying it would abort the process
+        os._exit(code)
+    sys.exit(code)
 
 
 if __name__ == "__main__":

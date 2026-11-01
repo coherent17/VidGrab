@@ -66,7 +66,7 @@ def _works(ffmpeg: str, encoder: HwEncoder) -> bool:
            "color=c=black:s=320x180:r=30:d=0.5", "-vf", "format=yuv420p",
            *video_args(encoder, "veryfast", 23), "-f", "null", "-"]
     try:
-        done = subprocess.run(cmd, capture_output=True, timeout=30, check=False, **_no_window())
+        done = subprocess.run(cmd, capture_output=True, timeout=15, check=False, **_no_window())
     except (OSError, subprocess.SubprocessError):
         return False
     return done.returncode == 0

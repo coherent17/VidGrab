@@ -14,8 +14,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: requirements.txt
+
+      # uv installs the requirements several times faster than pip (pip is still what the
+      # "package" jobs and the wheel check use, because that is what users run)
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: requirements.txt
+
+      - name: Cache the pinned ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: |
+            ffmpeg/linux
+            ffmpeg/win
+            ffmpeg/mac
+          key: ffmpeg-${{ runner.os }}-${{ hashFiles('ffmpeg/pin.json') }}
 
       # the version pinned in ffmpeg/pin.json (SHA-256 checked)
       - name: Download pinned ffmpeg
@@ -25,9 +39,7 @@ jobs:
           & .\ffmpeg\win\ffmpeg.exe -hide_banner -version | Select-Object -First 1
 
       - name: Install Python deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+        run: uv pip install --system -r requirements.txt
 
       - name: Generate version info (from vidgrab/_version.py)
         run: python scripts\write_version_info.py

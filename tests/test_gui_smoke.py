@@ -2141,3 +2141,49 @@ def test_every_bundled_font_file_exists() -> None:
     for name in appmod._BUNDLED_FONTS:
         if name.endswith(".ttf"):
             assert appmod._asset(name).is_file(), name
+
+
+def test_studio_tab_labels_are_not_cut_off(qapp, tmp_path, monkeypatch) -> None:
+    """The tabs of the clip and subtitle panels show their whole label, in English
+    and in Chinese, at the usual window size ("Picture and sound" used to be clipped)."""
+    import shutil
+    import subprocess
+
+    from PySide6.QtGui import QFont, QFontMetrics
+
+    from vidgrab import app as appmod
+    from vidgrab.studio import SubtitleCue
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        pytest.skip("ffmpeg / ffprobe not on PATH")
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(appmod.QMessageBox, "question",
+                        staticmethod(lambda *_a, **_k: appmod.QMessageBox.Discard))
+    clip = tmp_path / "c.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc=size=160x90:rate=10", "-f", "lavfi", "-i", "sine", "-t", "2",
+                    str(clip)], check=True)
+    win = appmod.VidGrabWindow()
+    try:
+        win.resize(1500, 950)
+        win.show()
+        win._switch_page(appmod.PAGE_STUDIO)
+        st = win._studio
+        st.add_clips([str(clip)])
+        st._cues = [SubtitleCue(0.2, 1.0, "hello")]
+        st._cues_changed()
+        for lang in ("en", "zh"):
+            win._lang_combo.setCurrentIndex(win._lang_combo.findData(lang))
+            for show, buttons in ((lambda: st.select_clip(0), st.clip_tab_btns),
+                                  (lambda: st.select_cue(0), st.cue_tab_btns)):
+                show()
+                qapp.processEvents()
+                for b in buttons:
+                    assert "&" not in b.text(), b.text()  # Qt would read it as a shortcut marker
+                    font = QFont(b.font())
+                    font.setBold(True)  # the tabs are drawn bold
+                    need = QFontMetrics(font).horizontalAdvance(b.text())
+                    assert b.width() >= need + 12, f"{lang}: {b.text()!r} needs {need}px, has {b.width()}px"
+    finally:
+        win._studio.clear_autosave()
+        win.close()

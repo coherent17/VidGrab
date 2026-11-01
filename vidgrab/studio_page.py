@@ -49,6 +49,7 @@ from PySide6.QtGui import (
     QColor,
     QCursor,
     QFont,
+    QFontMetrics,
     QFontMetricsF,
     QIcon,
     QImage,
@@ -2424,7 +2425,19 @@ class StudioPage(QWidget):
             bl.addWidget(b, stretch=1)
             buttons.append(b)
         buttons[0].setChecked(True)
+        self._tab_bars = getattr(self, "_tab_bars", [])
+        self._tab_bars.append((bl, buttons))
+        self._balance_tabs()
         return bar, stack, buttons
+
+    def _balance_tabs(self) -> None:
+        """Give each tab a width in proportion to its label, so a long label (in any
+        language or font) is not cut off while a short one leaves room."""
+        for lay, buttons in getattr(self, "_tab_bars", []):
+            for i, b in enumerate(buttons):
+                font = QFont(b.font())
+                font.setBold(True)
+                lay.setStretch(i, QFontMetrics(font).horizontalAdvance(b.text()) + 28)
 
     def _choice_grid(self, items: list[tuple[str, str]], columns: int, slot,
                      store: dict[str, QPushButton]) -> QWidget:
@@ -2471,7 +2484,7 @@ class StudioPage(QWidget):
         lay.addLayout(top)
         outer = lay
         tabs, self.clip_tabs, self.clip_tab_btns = self._tab_bar(
-            ("Trim", "Transition", "Picture and sound"))
+            ("Trim", "Transition", "Sound + frame"))
         outer.addWidget(tabs)
         outer.addWidget(self.clip_tabs, stretch=1)
         page, lay = self._page()
@@ -3006,6 +3019,7 @@ class StudioPage(QWidget):
         t = self.t
         for widget, key, method in self._i18n:
             getattr(widget, method)(t(key))
+        self._balance_tabs()
         self.track.set_labels(
             subs=t("Subtitles"), music=t("Music"), images=t("Images"),
             empty_images=t("Double-click to add a picture"),

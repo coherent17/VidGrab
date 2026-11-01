@@ -6,7 +6,7 @@
 
 ### Downloads: more formats, sites and control
 
-- **Search YouTube from the link box**: type words instead of a link and the button becomes **Search**; tick the results to add them to the downloads
+- **Search YouTube from the link box**: type words instead of a link and the button becomes **Search**. The results appear in the page itself, with thumbnails and tick boxes (click anywhere on a row), and **Add to downloads** puts the ticked ones in the link box. Emoji and decorative letters in titles, which the fonts can't draw and used to show as empty boxes, are removed from the titles shown in the window (file names are not changed)
 - **Other sites**: the same link box works for the sites yt-dlp supports (Vimeo, X, Twitch, SoundCloud, Bilibili, Instagram, direct video files and many more); sites that need a login are not supported yet
 - **Audio formats**: besides MP3, **M4A (AAC)**, **Opus**, **FLAC** and **WAV** (the last two are lossless, so they have no bitrate). Pick it next to *Audio*, or set a default in Settings
 - **Exact format**: **Exact format…** lists every resolution / codec / size the video offers (VP9, AV1, 60 fps…) and downloads exactly that one; the sound is added to picture-only formats
@@ -18,6 +18,7 @@
 
 ### Settings
 
+- **Pop-up windows are easier to see**: dialogs, message boxes, menus, drop-down lists and tooltips now have a lifted background and a clear outline in both the dark and the light theme
 - Settings is now three tabs — **General**, **Downloads**, **Studio** — so nothing needs scrolling
 
 ### Fixed

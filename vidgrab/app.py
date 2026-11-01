@@ -101,7 +101,7 @@ from vidgrab.gpu import detect_encoder
 from vidgrab.i18n import FLAGS, LANGUAGES, make_translator
 from vidgrab.jobs import DownloadJob, run_job
 from vidgrab.network import ConnectionStatus, check_internet
-from vidgrab.pick_dialogs import FormatDialog, SearchDialog
+from vidgrab.pick_dialogs import FormatDialog, SearchPanel
 from vidgrab.preview import QT_MULTIMEDIA_OK as _QT_MULTIMEDIA_OK
 from vidgrab.studio import compose_audio, compose_split, compose_video
 from vidgrab.studio_page import StudioPage
@@ -122,6 +122,7 @@ _PALETTES: dict[str, dict[str, str]] = {
         "SCROLL": "#2c3060", "SCROLL_HI": "#3e4380", "PREVIEW_BG": "#05060f",
         "AMBER": "#f59e0b", "AMBER_HI": "#fbbf24",
         "DISABLED_BG": "#1d1f3a", "DISABLED_TEXT": "#545a85",
+        "POPUP": "#1c1e3e", "EDGE": "#5b62b5",  # pop-up windows: lifted surface + clear outline
     },
     "light": {
         "BG": "#f5f6fc", "BG2": "#ecebff", "SIDEBAR": "#ffffff",
@@ -134,6 +135,7 @@ _PALETTES: dict[str, dict[str, str]] = {
         "SCROLL": "#d3d6ea", "SCROLL_HI": "#b8bcdc", "PREVIEW_BG": "#0b0c18",
         "AMBER": "#d97706", "AMBER_HI": "#f59e0b",
         "DISABLED_BG": "#e4e6f3", "DISABLED_TEXT": "#a2a6c2",
+        "POPUP": "#ffffff", "EDGE": "#8f96cc",
     },
 }
 
@@ -393,8 +395,8 @@ QComboBox::down-arrow {
     margin-right: 10px;
 }
 QComboBox QAbstractItemView {
-    background-color: @SURFACE@;
-    border: 1px solid @BORDER@;
+    background-color: @POPUP@;
+    border: 1px solid @EDGE@;
     color: @TEXT@;
     selection-background-color: @SEL@;
     selection-color: @TEXT@;
@@ -772,14 +774,15 @@ QScrollBar::add-page, QScrollBar::sub-page {
 
 /* ── dialogs (Qt file dialog, message boxes) and generic widgets ── */
 QDialog, QMessageBox {
-    background-color: @SURFACE@;
+    background-color: @POPUP@;
+    border: 2px solid @EDGE@;
 }
 QDialog QLabel, QMessageBox QLabel {
     color: @TEXT@;
 }
 QDialog QPushButton {
     background-color: @SURFACE_HI@;
-    border: 1px solid @BORDER@;
+    border: 1px solid @BORDER_HI@;
     border-radius: 8px;
     padding: 6px 16px;
     min-width: 64px;
@@ -831,8 +834,8 @@ QTreeView::item:selected, QListView::item:selected {
     color: @TEXT@;
 }
 QMenu {
-    background-color: @SURFACE@;
-    border: 1px solid @BORDER@;
+    background-color: @POPUP@;
+    border: 1px solid @EDGE@;
     color: @TEXT@;
     padding: 4px;
 }
@@ -847,8 +850,8 @@ QSplitter::handle {
     background-color: @BORDER@;
 }
 QToolTip {
-    background-color: @SURFACE_HI@;
-    border: 1px solid @BORDER@;
+    background-color: @POPUP@;
+    border: 1px solid @EDGE@;
     border-radius: 6px;
     padding: 5px 10px;
     font-size: 11px;
@@ -1898,6 +1901,15 @@ class VidGrabWindow(QMainWindow):
 
         body = QHBoxLayout()
         body.setSpacing(14)
+        body_page = QWidget()
+        body_page.setLayout(body)
+        # the video card + options, or (while a search is open) its results
+        self._body_stack = QStackedWidget()
+        self._body_stack.addWidget(body_page)
+        self._search_panel = SearchPanel(self._t, _thumb_cache_dir())
+        self._search_panel.chosen.connect(self._search_chosen)
+        self._search_panel.closed.connect(self._close_search)
+        self._body_stack.addWidget(self._search_panel)
 
         # ── video card ──
         info, info_title, card_lay = self._card("VIDEO INFO", "info_card", "source")
@@ -2073,7 +2085,7 @@ class VidGrabWindow(QMainWindow):
         ol.addLayout(grid)
         ol.addStretch()
         body.addWidget(opts, stretch=6)
-        lay.addLayout(body)
+        lay.addWidget(self._body_stack)
         # progress + log fill the rest of the page
         self._bottom = self._build_bottom()
         lay.addWidget(self._bottom, stretch=1)
@@ -3055,6 +3067,9 @@ class VidGrabWindow(QMainWindow):
     def _start_probe(self) -> None:
         self._probe_token += 1
         links = self._links()
+        if (self._body_stack.currentIndex() == 1 and links
+                and all(_looks_like_url(link) for link in links)):
+            self._close_search()  # a link was typed: back to the video card
         if len(links) > 1:
             self._show_links(links)
             return
@@ -3289,11 +3304,18 @@ class VidGrabWindow(QMainWindow):
             QMessageBox.warning(self, self._t("No internet"), self._t(
                 "You appear to be offline.\nVidGrab needs a live connection."))
             return
-        dlg = SearchDialog(self, self._t, query, lambda q: search(q, 12, translate=self._t))
-        self._search_dlg = dlg  # for tests
-        if dlg.exec() == QDialog.Accepted and dlg.urls():
-            self._url.setText(" ".join(dlg.urls()))
+        self._body_stack.setCurrentIndex(1)
+        self._search_panel.start(query, lambda q: search(q, 12, translate=self._t))
+
+    def _search_chosen(self, urls: list[str]) -> None:
+        self._close_search()
+        if urls:
+            self._url.setText(" ".join(urls))
             self._start_probe()
+
+    def _close_search(self) -> None:
+        self._search_panel.stop()
+        self._body_stack.setCurrentIndex(0)
 
     def _update_action_label(self) -> None:
         words = bool(self._url.text().strip()) and not _looks_like_url(self._links()[0]) \
@@ -3872,6 +3894,7 @@ class VidGrabWindow(QMainWindow):
             _stop_thread(self._hw_probe)
         if self._ytdlp_thread is not None:
             _stop_thread(self._ytdlp_thread, 3000)
+        self._search_panel.stop()
         # give any in-flight info fetch a moment to finish before teardown
         self._probe_token += 1
         for worker in list(self._probe_workers):

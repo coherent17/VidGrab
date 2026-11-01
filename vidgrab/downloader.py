@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+import unicodedata
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -101,6 +102,21 @@ def _net_opts(*, archive: bool = False) -> dict:
     if archive and NETWORK.archive:
         opts["download_archive"] = str(NETWORK.archive)
     return opts
+
+
+def display_text(text: str | None) -> str:
+    """A title as the window can draw it. YouTube titles carry emoji and
+    "fancy" letters (𝒑𝒍𝒂𝒚𝒍𝒊𝒔𝒕) that the app's fonts have no glyphs for — they would show
+    as empty boxes: styled letters become plain ones, symbols and emoji go."""
+    out = []
+    for ch in text or "":
+        if 0x1D400 <= ord(ch) <= 0x1D7FF:  # mathematical bold / italic / script letters
+            ch = unicodedata.normalize("NFKC", ch)
+        if (unicodedata.category(ch) in ("So", "Cs", "Co", "Cn", "Cf")
+                or "\ufe00" <= ch <= "\ufe0f" or ch == "\u200d"):
+            continue
+        out.append(ch)
+    return re.sub(r"[ \t]{2,}", " ", "".join(out)).strip()
 
 
 def _noop_tr(text: str, **kw: object) -> str:
@@ -737,8 +753,8 @@ def _summarize(info: dict, thumb_dir: Path | None = None) -> dict:
     result: dict = {
         "is_playlist": bool(is_playlist),
         "id": info.get("id"),
-        "title": info.get("title") or info.get("id") or "",
-        "uploader": (
+        "title": display_text(info.get("title")) or info.get("id") or "",
+        "uploader": display_text(
             info.get("uploader")
             or info.get("channel")
             or info.get("uploader_id")
@@ -834,8 +850,8 @@ def search(query: str, count: int = 10, *, translate: TranslateFn | None = None)
         thumbs = e.get("thumbnails") or []
         results.append({
             "id": vid,
-            "title": e.get("title") or vid,
-            "uploader": e.get("channel") or e.get("uploader") or "",
+            "title": display_text(e.get("title")) or vid,
+            "uploader": display_text(e.get("channel") or e.get("uploader") or ""),
             "duration": e.get("duration"),
             "views": e.get("view_count"),
             "url": e.get("webpage_url") or f"https://www.youtube.com/watch?v={vid}",

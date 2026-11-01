@@ -1711,15 +1711,9 @@ def test_download_page_search_exact_format_and_job(qapp, tmp_path, monkeypatch) 
                 "thumbnail": ""} for i in range(3)]
     monkeypatch.setattr(appmod, "search", lambda q, n=10, translate=None: results)
 
-    def run_dialog(dlg):
-        if hasattr(dlg, "urls"):  # the search results
-            _wait(qapp, lambda: dlg.list.count() == 3)
-            dlg.list.item(0).setCheckState(appmod.Qt.Checked)
-            dlg.list.item(2).setCheckState(appmod.Qt.Checked)
-            assert dlg.add.isEnabled() and "2" in dlg.add.text()
-        else:  # the exact formats: Automatic + the video formats
-            assert dlg.list.count() == 2  # Automatic + the one video format
-            dlg.list.setCurrentRow(1)
+    def run_dialog(dlg):  # the exact formats: Automatic + the one video format
+        assert dlg.list.count() == 2
+        dlg.list.setCurrentRow(1)
         return QDialog.Accepted
 
     monkeypatch.setattr(QDialog, "exec", run_dialog)
@@ -1732,9 +1726,21 @@ def test_download_page_search_exact_format_and_job(qapp, tmp_path, monkeypatch) 
         win._url.setText("lofi beats")
         assert win._action.text() == "Search"
         win._start_download()
+        panel = win._search_panel
+        assert win._body_stack.currentIndex() == 1  # the results replace the cards, in the page
+        _wait(qapp, lambda: len(panel._rows) == 3)
+        assert panel.add.isEnabled() is False
+        panel._rows[0].check.setChecked(True)
+        panel._rows[2].mousePressEvent(type("E", (), {"button": lambda self: appmod.Qt.LeftButton})())
+        assert panel.add.isEnabled() and "2" in panel.add.text()  # a click anywhere on a row ticks it
+        panel.add.click()
+        assert win._body_stack.currentIndex() == 0
         assert win._url.text() == " ".join(r["url"] for r in (results[0], results[2]))
         assert win._action.text() != "Search"
         assert not win._queue  # picking results only fills the box
+        win._search_flow("again")  # closing the results leaves the box alone
+        panel.closed.emit()
+        assert win._body_stack.currentIndex() == 0
 
         win._url.setText("https://www.youtube.com/watch?v=abc")
         win._probe_timer.stop()

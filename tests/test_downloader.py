@@ -802,3 +802,13 @@ def test_stopping_a_recording_keeps_what_was_recorded(tmp_path):
     assert out == tmp_path / "Live show.mp4" and out.stat().st_size > 0
     assert not part.exists()
     assert downloader._keep_recording(tmp_path, time.time() - 5, None, lambda _m: None, downloader._noop_tr) is None
+
+
+def test_titles_lose_what_the_fonts_cannot_draw():
+    assert downloader.display_text("lofi hip hop radio 📚 beats ✨ to relax") == \
+        "lofi hip hop radio beats to relax"
+    assert downloader.display_text("𝒑𝒍𝒂𝒚𝒍𝒊𝒔𝒕 | Vinyl 𝐉𝐚𝐳𝐳") == "playlist | Vinyl Jazz"
+    # ordinary text, CJK and its full-width punctuation are left alone
+    assert downloader.display_text("孝親費一個月一萬很多嗎？｜男友 [EP279]") == \
+        "孝親費一個月一萬很多嗎？｜男友 [EP279]"
+    assert downloader.display_text(None) == ""

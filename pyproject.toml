@@ -30,7 +30,7 @@ dependencies = [
 # auto captions: Whisper on the CPU / NVIDIA, and OpenVINO for Intel graphics
 captions = [
     "faster-whisper>=1.1.0",
-    "openvino-genai>=2026.1",
+    "openvino-genai>=2026.1; sys_platform != 'darwin'",
 ]
 dev = [
     "pytest>=8.0",

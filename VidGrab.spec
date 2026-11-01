@@ -63,7 +63,10 @@ from PyInstaller.utils.hooks import get_package_paths
 
 _OV_SKIP = ("onnx", "paddle", "tensorflow_lite", "gguf", "npu", "openvino_c.")
 for _pkg in ("openvino", "openvino_genai", "openvino_tokenizers"):
-    _pkg_dir = Path(get_package_paths(_pkg)[1])
+    try:
+        _pkg_dir = Path(get_package_paths(_pkg)[1])
+    except Exception:  # not installed: macOS builds leave OpenVINO out (it serves Intel graphics)
+        continue
     # libs/: OpenVINO's plugins and frontends; lib/: the tokenizer extension the
     # Whisper models load by path (nothing imports it, so PyInstaller can't see it)
     for _sub in ("libs", "lib"):

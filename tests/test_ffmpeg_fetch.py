@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import io
+import sys
 import tarfile
 import zipfile
 
@@ -31,7 +32,8 @@ def test_one_gzip_per_program_is_unpacked_once(tmp_path):
     dest = tmp_path / "out"
     ff.fetch("mac-arm64", dest, pin=pin, log=lambda _m: None)
     assert (dest / "ffmpeg").read_bytes() == b"FFMPEG" and (dest / "ffprobe").read_bytes() == b"FFPROBE"
-    assert (dest / "ffmpeg").stat().st_mode & 0o111  # runnable
+    if sys.platform != "win32":
+        assert (dest / "ffmpeg").stat().st_mode & 0o111  # runnable
     assert (dest / "VERSION").read_text().strip() == "ffmpeg-darwin-arm64.gz"
     (dest / "ffmpeg").write_bytes(b"changed")
     logs = []

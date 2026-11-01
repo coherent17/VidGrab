@@ -62,7 +62,7 @@ jobs:
           QT_QPA_PLATFORM=offscreen dist/VidGrab.app/Contents/MacOS/VidGrab --selftest | tee /tmp/vidgrab-selftest.log
           grep -q "multimedia=1" /tmp/vidgrab-selftest.log
           grep -q "captions=1" /tmp/vidgrab-selftest.log
-          grep -q "openvino=1" /tmp/vidgrab-selftest.log
+          # (no OpenVINO on a Mac: it is the Intel-graphics engine; the CPU engine does the work)
 
       - name: Zip the app
         run: |

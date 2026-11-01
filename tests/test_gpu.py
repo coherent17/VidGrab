@@ -83,7 +83,7 @@ def test_speech_threads_is_capped_and_has_a_fallback(monkeypatch) -> None:
     monkeypatch.setattr(gpu, "fast_cores", lambda: 0)
     assert gpu.speech_threads() == 1
     monkeypatch.undo()
-    monkeypatch.setattr(gpu.sys, "platform", "darwin")  # no topology source: half the CPUs
+    monkeypatch.setattr(gpu.sys, "platform", "freebsd")  # no topology source: half the CPUs
     monkeypatch.setattr(gpu.os, "cpu_count", lambda: 12)
     assert gpu.fast_cores() == 6
 

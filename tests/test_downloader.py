@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -607,3 +608,197 @@ def test_unreachable_network_retries_over_ipv4() -> None:
     opts = downloader._ytdl_options("u", Path("."), "mp4", ffmpeg=None, ipv4=True)
     assert opts["source_address"] == "0.0.0.0"
     assert "source_address" not in downloader._ytdl_options("u", Path("."), "mp4", ffmpeg=None)
+
+
+# ── network settings, audio formats, exact formats, live, search ──────────
+
+
+@pytest.fixture
+def fresh_network():
+    downloader.configure_network()
+    yield
+    downloader.configure_network()
+
+
+def _opts(fmt="mp4", **kw):
+    return downloader._ytdl_options("u", Path("."), fmt, ffmpeg=None, **kw)
+
+
+def test_network_settings_reach_every_download(fresh_network, tmp_path):
+    assert "ratelimit" not in _opts() and "proxy" not in _opts()
+    downloader.configure_network(rate_limit=500_000, proxy=" http://p:8080 ", retries=3,
+                        archive=tmp_path / "a.txt")
+    o = _opts()
+    assert (o["ratelimit"], o["proxy"], o["retries"], o["fragment_retries"]) == (
+        500_000, "http://p:8080", 3, 3)
+    assert "download_archive" not in o  # only playlists use the archive
+    assert _opts(archive=True)["download_archive"] == str(tmp_path / "a.txt")
+    downloader.configure_network(rate_limit=0)
+    assert "ratelimit" not in _opts()
+
+
+@pytest.mark.parametrize("key,codec,quality", [
+    ("mp3", "mp3", "128"), ("m4a", "m4a", "128"), ("opus", "opus", "128"),
+    ("flac", "flac", None), ("wav", "wav", None)])
+def test_audio_formats_choose_the_codec(key, codec, quality):
+    pp = _opts("mp3", audio_fmt=key, quality="128")["postprocessors"][0]
+    assert pp["preferredcodec"] == codec and pp.get("preferredquality") == quality
+
+
+def test_unknown_audio_format_is_mp3():
+    assert downloader.audio_format("nope")[1] == ".mp3" and downloader.audio_format(None)[1] == ".mp3"
+
+
+def test_bitrates_are_kilobits():
+    assert downloader._bitrate_arg("192") == "192k" and downloader._bitrate_arg(None) == "192k"
+    assert downloader._bitrate_arg("320k") == "320k"
+
+
+def test_an_exact_format_comes_first_with_a_fallback():
+    sel = _opts(format_id="137", quality="720p")["format"]
+    assert sel.startswith("137+bestaudio") and sel.endswith("best[height<=?720]")
+    assert _opts("mp3", format_id="140")["format"] == "140"
+
+
+def test_live_recording_options():
+    o = _opts(live=True)
+    assert o["live_from_start"] and o["hls_use_mpegts"]
+    assert "live_from_start" not in _opts()
+
+
+def test_format_list_orders_and_skips_junk():
+    fl = downloader._format_options([
+        {"format_id": "sb0", "ext": "mhtml", "vcodec": "none", "acodec": "none"},
+        {"format_id": "140", "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.2", "abr": 128},
+        {"format_id": "137", "ext": "mp4", "vcodec": "avc1.64002a", "acodec": "none",
+         "height": 1080, "fps": 30, "filesize": 5000},
+        {"format_id": "18", "ext": "mp4", "vcodec": "avc1.42001E", "acodec": "mp4a.40.2",
+         "height": 360, "fps": 25},
+    ])
+    assert [f["id"] for f in fl] == ["137", "18", "140"]  # video by height, then audio only
+    assert fl[0]["vcodec"] == "H.264" and fl[2]["acodec"] == "AAC" and fl[2]["vcodec"] == ""
+
+
+class _FakeYDL:
+    """Stands in for yt_dlp.YoutubeDL: `calls` lists the options of each use."""
+
+    calls: ClassVar[list[dict]] = []
+    behaviour = staticmethod(lambda opts, url: {})
+
+    def __init__(self, opts):
+        self.opts = opts
+        _FakeYDL.calls.append(opts)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
+    def extract_info(self, url, download=True):
+        return _FakeYDL.behaviour(self.opts, url)
+
+
+@pytest.fixture
+def fake_ydl(monkeypatch):
+    _FakeYDL.calls = []
+    _FakeYDL.behaviour = staticmethod(lambda opts, url: {})
+    monkeypatch.setattr(downloader.yt_dlp, "YoutubeDL", _FakeYDL)
+    return _FakeYDL
+
+
+def test_playlist_with_nothing_new_says_so(fake_ydl, fresh_network, tmp_path):
+    downloader.configure_network(archive=tmp_path / "archive.txt")
+    logs = []
+    files = downloader.download_playlist("https://x/list", tmp_path, "mp4", skip_downloaded=True,
+                                on_log=logs.append)
+    assert files == [] and any("Nothing new" in m for m in logs)
+    assert fake_ydl.calls[0]["download_archive"] == str(tmp_path / "archive.txt")
+    with pytest.raises(RuntimeError, match="output file was not found"):
+        downloader.download_playlist("https://x/list", tmp_path, "mp4")  # no archive: a real failure
+
+
+def test_search_returns_plain_results(fake_ydl):
+    fake_ydl.behaviour = staticmethod(lambda opts, url: {"entries": [
+        {"id": "abc", "title": "T", "channel": "C", "duration": 61, "view_count": 5,
+         "thumbnails": [{"url": "t1"}, {"url": "t2"}]},
+        {"title": "no id"}]})
+    res = downloader.search("  lofi  ", 5)
+    assert fake_ydl.calls[0]["extract_flat"] and res == [{
+        "id": "abc", "title": "T", "uploader": "C", "duration": 61, "views": 5,
+        "url": "https://www.youtube.com/watch?v=abc", "thumbnail": "t2"}]
+    with pytest.raises(RuntimeError):
+        downloader.search("   ")
+
+
+def test_translated_subtitles_are_asked_again_after_429(fake_ydl, tmp_path, monkeypatch):
+    waits = []
+    monkeypatch.setattr(downloader, "_sleep", waits.append)
+    monkeypatch.setattr(downloader, "find_ffmpeg", lambda: None)
+
+    def behave(opts, url):
+        if len(fake_ydl.calls) == 1:  # the first answer is "too many requests"
+            opts["logger"].error("ERROR: Unable to download: HTTP Error 429: Too Many Requests")
+        else:
+            (tmp_path / "clip.ja.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n")
+        return {}
+
+    fake_ydl.behaviour = staticmethod(behave)
+    logs = []
+    out = downloader.fetch_subtitles("https://x/v", tmp_path, "ja", "clip", on_log=logs.append)
+    assert out and out.name == "clip.ja.srt"
+    assert waits == [downloader.SUBTITLE_RETRY_WAITS[0]] and len(fake_ydl.calls) == 2
+
+
+def test_subtitles_give_up_quietly_after_the_retries(fake_ydl, tmp_path, monkeypatch):
+    monkeypatch.setattr(downloader, "_sleep", lambda _s: None)
+    monkeypatch.setattr(downloader, "find_ffmpeg", lambda: None)
+    fake_ydl.behaviour = staticmethod(lambda opts, url: opts["logger"].error("HTTP Error 429") or {})
+    assert downloader.fetch_subtitles("https://x/v", tmp_path, "ko", "clip") is None
+    assert len(fake_ydl.calls) == 1 + len(downloader.SUBTITLE_RETRY_WAITS)
+
+
+def test_a_missing_language_is_not_retried(fake_ydl, tmp_path, monkeypatch):
+    monkeypatch.setattr(downloader, "find_ffmpeg", lambda: None)
+    assert downloader.fetch_subtitles("https://x/v", tmp_path, "ko", "clip") is None
+    assert len(fake_ydl.calls) == 1
+
+
+def test_waiting_for_a_stream_polls_until_it_starts(monkeypatch):
+    states = iter([("is_upcoming", None), ("is_upcoming", None), ("is_live", None)])
+    monkeypatch.setattr(downloader, "_stream_status", lambda _u: next(states))
+    monkeypatch.setattr(downloader, "_sleep", lambda _s: None)
+    shown = []
+    downloader._wait_for_stream("u", lambda m, p: shown.append(m), lambda _m: None, downloader._noop_tr)
+    assert len(shown) == 2 * downloader.STREAM_POLL_S and "Waiting" in shown[0]
+
+
+def test_waiting_for_a_stream_can_be_cancelled(monkeypatch):
+    monkeypatch.setattr(downloader, "_stream_status", lambda _u: ("is_upcoming", None))
+    monkeypatch.setattr(downloader, "_sleep", lambda _s: None)
+
+    def progress(_m, _p):
+        raise downloader.DownloadCancelled()
+
+    with pytest.raises(downloader.DownloadCancelled):
+        downloader._wait_for_stream("u", progress, lambda _m: None, downloader._noop_tr)
+
+
+def test_a_stream_that_is_already_live_does_not_wait(monkeypatch):
+    monkeypatch.setattr(downloader, "_stream_status", lambda _u: ("is_live", None))
+    downloader._wait_for_stream("u", lambda *_a: pytest.fail("waited"), lambda _m: None, downloader._noop_tr)
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not available")
+def test_stopping_a_recording_keeps_what_was_recorded(tmp_path):
+    import subprocess
+    import time
+    part = tmp_path / "Live show.mp4.part"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc=size=160x90:rate=10", "-t", "1", "-f", "mpegts", str(part)],
+                   check=True)
+    out = downloader._keep_recording(tmp_path, time.time() - 5, shutil.which("ffmpeg"),
+                            lambda _m: None, downloader._noop_tr)
+    assert out == tmp_path / "Live show.mp4" and out.stat().st_size > 0
+    assert not part.exists()
+    assert downloader._keep_recording(tmp_path, time.time() - 5, None, lambda _m: None, downloader._noop_tr) is None

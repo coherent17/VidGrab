@@ -12,6 +12,7 @@ import sys
 import time
 import urllib.request
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import yt_dlp
@@ -40,6 +41,66 @@ DEFAULT_NAME = NAME_TEMPLATES["title"]
 
 MIN_SPEED = 0.25
 MAX_SPEED = 4.0
+
+# audio output formats: key -> (yt-dlp codec, file extension, ffmpeg encoder, lossy)
+AUDIO_FORMATS: dict[str, tuple[str, str, str, bool]] = {
+    "mp3": ("mp3", ".mp3", "libmp3lame", True),
+    "m4a": ("m4a", ".m4a", "aac", True),
+    "opus": ("opus", ".opus", "libopus", True),
+    "flac": ("flac", ".flac", "flac", False),
+    "wav": ("wav", ".wav", "pcm_s16le", False),
+}
+AUDIO_EXTS = tuple(v[1] for v in AUDIO_FORMATS.values())
+_CODEC_BY_EXT = {v[1]: (v[2], v[3]) for v in AUDIO_FORMATS.values()}
+
+
+def _bitrate_arg(value: str | None) -> str:
+    """ffmpeg's -b:a takes bits per second: '192' (kbps, as the settings store it) -> '192k'."""
+    value = str(value or DEFAULT_MP3_BITRATE)
+    return value + "k" if value.isdigit() else value
+
+
+def audio_format(key: str | None) -> tuple[str, str, str, bool]:
+    return AUDIO_FORMATS.get(key or "mp3", AUDIO_FORMATS["mp3"])
+
+
+@dataclass
+class Network:
+    """Settings that apply to every download (see `configure_network`)."""
+
+    rate_limit: int | None = None  # bytes per second
+    proxy: str = ""
+    retries: int = 10
+    archive: Path | None = None  # yt-dlp download archive (playlists skip what it lists)
+
+
+NETWORK = Network()
+
+
+def configure_network(*, rate_limit: int | None = None, proxy: str = "", retries: int = 10,
+                      archive: str | Path | None = None) -> None:
+    """Set the speed limit, proxy, retry count and download archive used by
+    every later probe / download."""
+    NETWORK.rate_limit = rate_limit if rate_limit and rate_limit > 0 else None
+    NETWORK.proxy = (proxy or "").strip()
+    NETWORK.retries = max(0, int(retries))
+    NETWORK.archive = Path(archive) if archive else None
+
+
+def _net_opts(*, archive: bool = False) -> dict:
+    """yt-dlp options for `NETWORK` (the archive only where *archive*)."""
+    opts: dict = {
+        "retries": NETWORK.retries,
+        "fragment_retries": NETWORK.retries,
+        "extractor_retries": min(NETWORK.retries, 5),
+    }
+    if NETWORK.rate_limit:
+        opts["ratelimit"] = NETWORK.rate_limit
+    if NETWORK.proxy:
+        opts["proxy"] = NETWORK.proxy
+    if archive and NETWORK.archive:
+        opts["download_archive"] = str(NETWORK.archive)
+    return opts
 
 
 def _noop_tr(text: str, **kw: object) -> str:
@@ -160,9 +221,9 @@ def _speed_marker(speed: float | None) -> str:
 
 
 def _locate_output(
-    output_path: Path, title: str, fmt: str, suffix: str
+    output_path: Path, title: str, fmt: str, suffix: str, audio_ext: str = ".mp3"
 ) -> Path | None:
-    ext = ".mp3" if fmt == "mp3" else ".mp4"
+    ext = audio_ext if fmt == "mp3" else ".mp4"
     patterns = [f"*{suffix}{ext}"] if suffix else [f"*{ext}"]
     for pat in patterns:
         matches = [
@@ -242,9 +303,12 @@ def _trim(
     if not needs_encode:
         args += ["-c", "copy"]
     else:
-        is_audio_out = dst.suffix.lower() in (".mp3", ".aac", ".m4a")
+        is_audio_out = dst.suffix.lower() in (*AUDIO_EXTS, ".aac")
         if is_audio_out:
-            args += ["-vn", "-c:a", "libmp3lame", "-b:a", audio_bitrate or DEFAULT_MP3_BITRATE]
+            codec, lossy = _CODEC_BY_EXT.get(dst.suffix.lower(), ("libmp3lame", True))
+            args += ["-vn", "-c:a", codec]
+            if lossy:
+                args += ["-b:a", _bitrate_arg(audio_bitrate)]
             if speed is not None:
                 args += ["-af", ",".join(_atempo_chain(speed))]
         else:
@@ -304,11 +368,13 @@ def derive_mp3(
     output_dir: str | Path,
     *,
     audio_bitrate: str | None = None,
+    audio_fmt: str = "mp3",
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
     translate: TranslateFn | None = None,
 ) -> Path:
-    """Extract audio from an already-downloaded video as MP3 (no re-download)."""
+    """Extract audio from an already-downloaded video as MP3 — or another
+    audio format, *audio_fmt* (no re-download)."""
     tr = translate or _noop_tr
     src = Path(source)
     if not src.is_file():
@@ -320,7 +386,8 @@ def derive_mp3(
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    out = output_path / f"{src.stem}.mp3"
+    _codec, ext, encoder, lossy = audio_format(audio_fmt)
+    out = output_path / f"{src.stem}{ext}"
     out.unlink(missing_ok=True)
 
     if on_progress:
@@ -328,7 +395,8 @@ def derive_mp3(
     _run_ffmpeg(
         [
             ffmpeg, "-y", "-i", str(src), "-vn", "-map", "0:a:0",
-            "-c:a", "libmp3lame", "-b:a", audio_bitrate or DEFAULT_MP3_BITRATE, str(out),
+            "-c:a", encoder, *(["-b:a", _bitrate_arg(audio_bitrate)] if lossy else []),
+            str(out),
         ],
         on_log=on_log,
         error_prefix=tr("ffmpeg failed to extract MP3 audio"),
@@ -474,6 +542,10 @@ def _ytdl_options(
     player_client: str = "tv_embedded",
     name_template: str = DEFAULT_NAME,
     ipv4: bool = False,
+    audio_fmt: str = "mp3",
+    format_id: str | None = None,
+    archive: bool = False,
+    live: bool = False,
 ) -> dict:
     common: dict = {
         "outtmpl": outtmpl
@@ -487,6 +559,10 @@ def _ytdl_options(
         # used as the fallback in download() when YouTube answers 403.
         "extractor_args": {"youtube": {"player_client": [player_client]}},
     }
+    common.update(_net_opts(archive=archive))
+    if live:  # record from the first segment; MPEG-TS stays playable if it is stopped early
+        common["live_from_start"] = True
+        common["hls_use_mpegts"] = True
     if ipv4:  # see _network_unreachable()
         common["source_address"] = "0.0.0.0"
     if progress_hook is not None:
@@ -497,17 +573,11 @@ def _ytdl_options(
         common["download_sections"] = download_sections
 
     if fmt == "mp3":
-        return {
-            **common,
-            "format": "bestaudio/best",
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": quality or DEFAULT_MP3_BITRATE,
-                }
-            ],
-        }
+        codec, _ext, _encoder, lossy = audio_format(audio_fmt)
+        extract: dict = {"key": "FFmpegExtractAudio", "preferredcodec": codec}
+        if lossy:  # FLAC / WAV have no bitrate
+            extract["preferredquality"] = quality or DEFAULT_MP3_BITRATE
+        return {**common, "format": format_id or "bestaudio/best", "postprocessors": [extract]}
     height = None
     if quality:
         try:
@@ -522,6 +592,8 @@ def _ytdl_options(
         )
     else:
         fmt_sel = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+    if format_id:  # an exact format picked from the list; the usual choice if it is gone
+        fmt_sel = f"{format_id}+bestaudio[ext=m4a]/{format_id}+bestaudio/{format_id}/{fmt_sel}"
     return {
         **common,
         "format": fmt_sel,
@@ -589,6 +661,10 @@ def _codec_short(codec: str) -> str:
         return "AV1"
     if c.startswith("hev"):
         return "H.265"
+    if c.startswith("mp4a"):
+        return "AAC"
+    if c.startswith("opus"):
+        return "Opus"
     if c in ("none", "mp4a"):
         return c
     return codec
@@ -626,6 +702,32 @@ def _height_key(label: str | None) -> int:
     return int(match.group(1)) if match else 0
 
 
+def _format_options(formats: list[dict]) -> list[dict]:
+    """The formats a person can choose between, best first: what `format_id`
+    in `download()` takes, plus the details to tell them apart."""
+    out: list[dict] = []
+    for f in formats:
+        fid = f.get("format_id")
+        vcodec, acodec = f.get("vcodec") or "none", f.get("acodec") or "none"
+        if not fid or f.get("ext") == "mhtml" or "storyboard" in str(f.get("format_note")):
+            continue
+        if vcodec == "none" and acodec == "none":
+            continue
+        out.append({
+            "id": str(fid),
+            "height": f.get("height") or 0,
+            "fps": f.get("fps") or 0,
+            "vcodec": "" if vcodec == "none" else _codec_short(vcodec),
+            "acodec": "" if acodec == "none" else _codec_short(acodec),
+            "ext": f.get("ext") or "",
+            "size": f.get("filesize") or f.get("filesize_approx") or 0,
+            "abr": f.get("abr") or 0,
+            "note": f.get("format_note") or "",
+        })
+    out.sort(key=lambda f: (f["vcodec"] == "", -f["height"], -f["fps"], -f["size"], -f["abr"]))
+    return out
+
+
 def _summarize(info: dict, thumb_dir: Path | None = None) -> dict:
     """Turn a raw yt-dlp extract_info dict into a compact UI summary."""
     entries = info.get("entries")
@@ -649,6 +751,9 @@ def _summarize(info: dict, thumb_dir: Path | None = None) -> dict:
         "like_count": info.get("like_count"),
         "comment_count": info.get("comment_count"),
         "dislike_count": info.get("dislike_count"),
+        "live_status": info.get("live_status"),  # is_live / is_upcoming / was_live / not_live
+        "release_timestamp": info.get("release_timestamp"),
+        "format_list": [],
     }
     if is_playlist and result["playlist_count"] is None:
         result["playlist_count"] = len(entries) if entries else None
@@ -663,6 +768,7 @@ def _summarize(info: dict, thumb_dir: Path | None = None) -> dict:
             if label:
                 result["formats"].append(label)
         result["formats"].sort(key=_height_key, reverse=True)
+        result["format_list"] = _format_options(info.get("formats") or [])
     if thumb_dir:
         local = _fetch_thumbnail(result.get("thumbnail"), Path(thumb_dir))
         if local:
@@ -689,7 +795,10 @@ def probe(
         "no_warnings": True,
         "noplaylist": True,
         "extract_flat": "in_playlist",
+        # a stream that has not started has no formats yet: still describe it
+        "ignore_no_formats_error": True,
         "extractor_args": {"youtube": {"player_client": ["tv_embedded"]}},
+        **_net_opts(),
     }
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -702,6 +811,37 @@ def probe(
     if info is None:
         raise RuntimeError(tr("Could not fetch video information."))
     return _summarize(info, thumb_dir=thumb_dir)
+
+
+def search(query: str, count: int = 10, *, translate: TranslateFn | None = None) -> list[dict]:
+    """Search YouTube for *query*: [{id, title, uploader, duration, views, url,
+    thumbnail}] without opening each video."""
+    tr = translate or _noop_tr
+    query = query.strip()
+    if not query:
+        raise RuntimeError(tr("Type something to search for."))
+    opts = {"quiet": True, "no_warnings": True, "extract_flat": True, **_net_opts()}
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(f"ytsearch{int(count)}:{query}", download=False) or {}
+    except Exception as exc:
+        raise RuntimeError(tr("Search failed: {exc}", exc=exc)) from exc
+    results = []
+    for e in info.get("entries") or []:
+        vid = e.get("id")
+        if not vid:
+            continue
+        thumbs = e.get("thumbnails") or []
+        results.append({
+            "id": vid,
+            "title": e.get("title") or vid,
+            "uploader": e.get("channel") or e.get("uploader") or "",
+            "duration": e.get("duration"),
+            "views": e.get("view_count"),
+            "url": e.get("webpage_url") or f"https://www.youtube.com/watch?v={vid}",
+            "thumbnail": (thumbs[-1].get("url") if thumbs else e.get("thumbnail")) or "",
+        })
+    return results
 
 
 # ── playlist downloads ─────────────────────────────────────────────────
@@ -745,9 +885,13 @@ def download_playlist(
     on_log: LogCallback | None = None,
     translate: TranslateFn | None = None,
     name_template: str = DEFAULT_NAME,
+    audio_fmt: str = "mp3",
+    skip_downloaded: bool = False,
 ) -> list[Path]:
     """
     Download every video in a playlist (or channel) as MP4 / MP3.
+    With *skip_downloaded*, videos listed in the download archive
+    (`configure_network`) are left out, and new ones are added to it.
 
     Trim, flip and speed are *not* applied — each entry is downloaded in
     the selected format and quality. Returns the list of saved files,
@@ -819,6 +963,8 @@ def download_playlist(
             outtmpl=str(output_path / f"%(playlist_index)02d - {name_template}.%(ext)s"),
             player_client=client,
             ipv4=ipv4,
+            audio_fmt=audio_fmt,
+            archive=skip_downloaded,
         )
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.extract_info(url, download=True)
@@ -826,6 +972,11 @@ def download_playlist(
     _try_clients(extract, log, tr)
 
     files = sorted(_new_files(output_path, t0), key=_playlist_order)
+    if not files and skip_downloaded and NETWORK.archive:
+        log(tr("Nothing new: every video in this playlist was downloaded before."))
+        if on_progress:
+            on_progress(tr("Complete"), 100.0)
+        return []
     if not files:
         raise RuntimeError(tr("Download finished but output file was not found."))
     for f in files:
@@ -833,6 +984,78 @@ def download_playlist(
     if on_progress:
         on_progress(tr("Complete"), 100.0)
     return files
+
+
+# ── live streams ──────────────────────────────────────────────────────────
+
+_sleep = time.sleep  # replaced in tests
+STREAM_POLL_S = 30  # how often a stream that has not started yet is asked again
+
+
+def _stream_status(url: str) -> tuple[str | None, float | None]:
+    """(live_status, scheduled start) of *url*; (None, None) if it can't be told."""
+    opts = {"quiet": True, "no_warnings": True, "noplaylist": True,
+            "ignore_no_formats_error": True, **_net_opts()}
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False) or {}
+    except Exception:  # noqa: BLE001 - the download itself will report the real problem
+        return None, None
+    return info.get("live_status"), info.get("release_timestamp")
+
+
+def _wait_for_stream(
+    url: str, on_progress: ProgressCallback | None, log: LogCallback, tr: TranslateFn
+) -> None:
+    """Block until a scheduled stream / premiere has started. The progress
+    callback (called every second) is where a Cancel is noticed."""
+    status, when = _stream_status(url)
+    if status != "is_upcoming":
+        return
+    log(tr("The stream has not started yet; waiting for it."))
+    while status == "is_upcoming":
+        for _ in range(STREAM_POLL_S):
+            if on_progress:
+                left = max(0, int(when - time.time())) if when else None
+                on_progress(tr("Waiting for the stream to start…")
+                            + (f" {left // 60}:{left % 60:02d}" if left is not None else ""),
+                            None)
+            _sleep(1)
+        status, when = _stream_status(url)
+
+
+def _keep_recording(
+    output_path: Path, since: float, ffmpeg: str | None, log: LogCallback, tr: TranslateFn
+) -> Path | None:
+    """After a recording was stopped: turn the partial file into a playable
+    MP4 (None if nothing was recorded)."""
+    parts = []
+    for p in output_path.glob("*.part"):
+        try:
+            if p.stat().st_mtime >= since - 1 and p.stat().st_size > 0:
+                parts.append(p)
+        except OSError:
+            continue
+    if not parts:
+        return None
+    part = max(parts, key=lambda p: p.stat().st_mtime)
+    target = part.with_suffix("")  # drop ".part"
+    if ffmpeg:
+        out = target.with_suffix(".mp4")
+        if out.exists():
+            out = out.with_name(f"{out.stem}.recorded.mp4")
+        proc = subprocess.run(
+            [ffmpeg, "-y", "-i", str(part), "-c", "copy", "-movflags", "+faststart", str(out)],
+            capture_output=True, text=True, check=False)
+        if proc.returncode == 0 and out.is_file() and out.stat().st_size > 0:
+            part.unlink(missing_ok=True)
+            log(tr("Recording stopped; saved what was recorded: {name}", name=out.name))
+            return out
+        out.unlink(missing_ok=True)
+    kept = target.with_suffix(".ts")
+    part.replace(kept)
+    log(tr("Recording stopped; saved what was recorded: {name}", name=kept.name))
+    return kept
 
 
 def download(
@@ -849,9 +1072,14 @@ def download(
     on_log: LogCallback | None = None,
     translate: TranslateFn | None = None,
     name_template: str = DEFAULT_NAME,
+    audio_fmt: str = "mp3",
+    format_id: str | None = None,
+    live: bool = False,
 ) -> Path:
     """
-    Download a YouTube URL as MP4 or MP3.
+    Download a URL as MP4 or audio (MP3 unless *audio_fmt* says otherwise).
+    *format_id* picks one exact format from `probe()`'s ``format_list``;
+    *live* records a live stream from its start (waiting for it to begin).
 
     Returns the path to the downloaded file.
     """
@@ -876,6 +1104,9 @@ def download(
                 "or install ffmpeg and add it to PATH."
             )
         )
+
+    audio_ext = audio_format(audio_fmt)[1]
+    out_ext = audio_ext.lstrip(".") if fmt == "mp3" else "mp4"
 
     def log(msg: str) -> None:
         if on_log:
@@ -928,6 +1159,10 @@ def download(
             player_client=client,
             name_template=name_template,
             ipv4=ipv4,
+            audio_fmt=audio_fmt,
+            # format ids belong to one player client: the fallback goes by height
+            format_id=format_id if client == "tv_embedded" else None,
+            live=live,
         )
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -935,12 +1170,24 @@ def download(
                 raise RuntimeError(tr("Could not fetch video information."))
             return info
 
+    started = time.time()
+    if live:
+        _wait_for_stream(url, on_progress, log, tr)
     # tv_embedded gives the full resolution but YouTube can 403 its media
     # URLs; android is low-res but reliable, so it acts as the last resort.
-    info = _try_clients(extract, log, tr)
+    try:
+        info = _try_clients(extract, log, tr)
+    except DownloadCancelled:
+        # stopping a recording keeps what was recorded so far
+        saved = _keep_recording(output_path, started, ffmpeg, log, tr) if live else None
+        if saved is None:
+            raise
+        if on_progress:
+            on_progress(tr("Complete"), 100.0)
+        return saved
 
     title = info.get("title", "download")
-    out_file = _locate_output(output_path, title, fmt, suffix)
+    out_file = _locate_output(output_path, title, fmt, suffix, audio_ext)
     if out_file is None:
         raise RuntimeError(tr("Download finished but output file was not found."))
 
@@ -952,7 +1199,7 @@ def download(
             if base.endswith(tmp_suffix):
                 base = base[: -len(tmp_suffix)]
                 break
-        final_file = output_path / f"{base}{speed_m}.{fmt}"
+        final_file = output_path / f"{base}{speed_m}.{out_ext}"
         if final_file != out_file:
             final_file.unlink(missing_ok=True)
             out_file.replace(final_file)
@@ -962,7 +1209,7 @@ def download(
             on_progress(tr("Complete"), 100.0)
         return out_file
 
-    ext = "mp3" if fmt == "mp3" else "mp4"
+    ext = out_ext
     base = out_file.stem
     for tmp_suffix in (".trimtmp", ".proctmp", ".mp3tmp"):
         if base.endswith(tmp_suffix):
@@ -1006,6 +1253,8 @@ def download_both(
     on_log: LogCallback | None = None,
     translate: TranslateFn | None = None,
     name_template: str = DEFAULT_NAME,
+    audio_fmt: str = "mp3",
+    format_id: str | None = None,
 ) -> tuple[Path, Path]:
     """
     Download a video once as MP4, then derive the MP3 from it locally.
@@ -1028,10 +1277,13 @@ def download_both(
         on_log=on_log,
         translate=translate,
         name_template=name_template,
+        format_id=format_id,
     )
     mp3_path = derive_mp3(
         mp4_path,
         output_dir,
+        audio_bitrate=quality if quality and quality.isdigit() else None,
+        audio_fmt=audio_fmt,
         on_progress=on_progress,
         on_log=on_log,
         translate=translate,
@@ -1049,7 +1301,35 @@ SUBTITLE_LANGS: dict[str, list[str]] = {
     "zh-Hans": ["zh-CN", "zh-Hans", "zh"],
     "en": ["en", "en-US", "en-GB"],
     "ja": ["ja"],
+    "ko": ["ko"],
+    "es": ["es", "es-419", "es-ES"],
+    "fr": ["fr"],
+    "de": ["de"],
+    "pt": ["pt", "pt-BR", "pt-PT"],
+    "ru": ["ru"],
+    "id": ["id"],
+    "vi": ["vi"],
+    "th": ["th"],
+    "ar": ["ar"],
+    "hi": ["hi"],
 }
+SUBTITLE_RETRY_WAITS = (4, 10)  # seconds to wait before asking again after HTTP 429
+
+
+class _ErrorLog:
+    """yt-dlp logger that only remembers errors (to tell HTTP 429 apart)."""
+
+    def __init__(self) -> None:
+        self.errors: list[str] = []
+
+    def debug(self, _msg: str) -> None: ...
+
+    def info(self, _msg: str) -> None: ...
+
+    def warning(self, _msg: str) -> None: ...
+
+    def error(self, msg: str) -> None:
+        self.errors.append(str(msg))
 
 
 def fetch_subtitles(
@@ -1086,21 +1366,36 @@ def fetch_subtitles(
         "outtmpl": {"subtitle": str(output_path / f"{base_name}.%(ext)s"),
                     "default": str(output_path / f"{base_name}.%(ext)s")},
         "postprocessors": [{"key": "FFmpegSubtitlesConvertor", "format": "srt"}],
+        **_net_opts(),
     }
     if ffmpeg:
         opts["ffmpeg_location"] = ffmpeg
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.extract_info(url, download=True)
-    except DownloadCancelled:
-        raise
-    except Exception as exc:  # noqa: BLE001 - captions are optional; keep what was saved
-        if on_log:
-            on_log(tr("Could not download subtitles: {exc}", exc=exc))
-    found = [
-        p for p in output_path.glob(f"{glob_escape(base_name)}.*.srt")
-        if p.stat().st_mtime >= before - 1
-    ]
+
+    def saved() -> list[Path]:
+        return [p for p in output_path.glob(f"{glob_escape(base_name)}.*.srt")
+                if p.stat().st_mtime >= before - 1]
+
+    # YouTube's translated tracks answer HTTP 429 when asked too fast: wait and
+    # ask again (ignoreerrors hides the error, so it is read from the logger)
+    found: list[Path] = []
+    for wait in (0, *SUBTITLE_RETRY_WAITS):
+        if wait:
+            if on_log:
+                on_log(tr("Too many requests; trying the subtitles again in {s} s.", s=wait))
+            _sleep(wait)
+        errors = _ErrorLog()
+        try:
+            with yt_dlp.YoutubeDL({**opts, "logger": errors}) as ydl:
+                ydl.extract_info(url, download=True)
+        except DownloadCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - captions are optional; keep what was saved
+            errors.errors.append(str(exc))
+            if on_log:
+                on_log(tr("Could not download subtitles: {exc}", exc=exc))
+        found = saved()
+        if found or not any("429" in e for e in errors.errors):
+            break
     if not found:
         if on_log:
             on_log(tr("No subtitles in that language for this video."))

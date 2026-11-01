@@ -23,7 +23,7 @@ from vidgrab.downloader import (
 )
 from vidgrab.studio import Clip, compose_video, format_srt, parse_srt, retime_cues
 
-MEDIA_SUFFIXES = {".mp4", ".mp3", ".m4a", ".webm", ".mkv"}
+MEDIA_SUFFIXES = {".mp4", ".mp3", ".m4a", ".opus", ".flac", ".wav", ".webm", ".mkv", ".ts"}
 
 
 @dataclass
@@ -40,6 +40,10 @@ class DownloadJob:
     subtitles: str | None = None  # language key from downloader.SUBTITLE_LANGS
     burn_subtitles: bool = False
     name_template: str = DEFAULT_NAME  # yt-dlp output template for the file name
+    audio_fmt: str = "mp3"  # key of downloader.AUDIO_FORMATS (for fmt "mp3" / "both")
+    format_id: str | None = None  # an exact format picked from the probe's format_list
+    live: bool = False  # record a live stream / premiere from its start
+    skip_downloaded: bool = False  # playlists: leave out what was downloaded before
 
 
 def run_job(
@@ -56,17 +60,20 @@ def run_job(
     if job.playlist:
         return download_playlist(
             job.url, job.output_dir, "mp3" if job.fmt == "mp3" else "mp4",
-            quality=job.quality, **common,
+            quality=job.quality, audio_fmt=job.audio_fmt,
+            skip_downloaded=job.skip_downloaded, **common,
         )
     edit = {
         "video_filter": job.video_filter, "speed": job.speed, "quality": job.quality,
         "section_start": job.section_start, "section_end": job.section_end,
     }
     if job.fmt == "both":
-        files = list(download_both(job.url, job.output_dir, **edit, **common))
+        files = list(download_both(job.url, job.output_dir, **edit, **common,
+                                   audio_fmt=job.audio_fmt, format_id=job.format_id))
     else:
-        files = [download(job.url, job.output_dir, job.fmt, **edit, **common)]
-    if not job.subtitles:
+        files = [download(job.url, job.output_dir, job.fmt, **edit, **common,
+                          audio_fmt=job.audio_fmt, format_id=job.format_id, live=job.live)]
+    if not job.subtitles or job.live:
         return files
 
     media = next((f for f in files if f.suffix.lower() == ".mp4"), files[0])

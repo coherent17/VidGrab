@@ -3218,6 +3218,8 @@ class VidGrabWindow(QMainWindow):
     def _on_job_done(self, item: DownloadItem, result: object) -> None:
         files = [str(p) for p in (result if isinstance(result, (list, tuple)) else [result])]
         item.status, item.files, item.message = DONE, files, ""
+        if not files:  # a playlist with nothing new in it
+            item.message = self._t("Nothing new: every video was downloaded before.")
         self._finished_since_idle += 1
         item.finished_at = datetime.now().astimezone().isoformat(timespec="minutes")
         if not item.title and item.media():

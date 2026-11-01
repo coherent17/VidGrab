@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Build and CI
+
+- **The one-file binary is packed on every CPU core.** PyInstaller compresses the files of the single-file binary one after another on one thread, which is three quarters of a build; `scripts/pyi_parallel_pkg.py` compresses them in parallel with the same level and order, so the file is the same size and a build takes about 40 s instead of 90 s on 4 cores
+- Python packages are installed with `uv` (several times faster than pip) in the test and build jobs, and the pinned ffmpeg is cached between runs
+
 ## 4.1.1
 
 A crash fix for the new search.

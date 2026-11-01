@@ -19,6 +19,15 @@ from pathlib import Path
 block_cipher = None
 ROOT = Path(SPECPATH)
 
+# PyInstaller packs the one-file binary on one thread (three quarters of the build
+# time); scripts/pyi_parallel_pkg.py compresses the same files, at the same level and
+# in the same order, on every core. VIDGRAB_SERIAL_PKG=1 turns it off.
+if not os.environ.get("VIDGRAB_SERIAL_PKG"):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import pyi_parallel_pkg
+
+    pyi_parallel_pkg.install()
+
 # --- icon / assets -------------------------------------------------------
 _datas: list[tuple[str, str]] = []
 # NotoSansTC renders the zh UI and burned-in Chinese subtitles (Studio).

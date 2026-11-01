@@ -33,6 +33,12 @@ MAX_WHEEL = 40 * 1024 * 1024
 _POINTER = "current.json"
 
 
+def can_self_update() -> bool:
+    """The packaged app updates yt-dlp itself; a pip install leaves it to pip
+    (VIDGRAB_YTDLP_DIR, used by the tests, switches it on)."""
+    return bool(getattr(sys, "frozen", False) or os.environ.get("VIDGRAB_YTDLP_DIR"))
+
+
 def update_root() -> Path:
     """Where updates live (VIDGRAB_YTDLP_DIR overrides it, for tests)."""
     env = os.environ.get("VIDGRAB_YTDLP_DIR")

@@ -33,9 +33,8 @@ from vidgrab.downloader import (
     TranslateFn,
     _noop_tr,
     _parse_trim,
+    asset_roots,
     find_ffmpeg,
-    get_app_dir,
-    get_bundle_dir,
 )
 from vidgrab.gpu import HwEncoder, detect_encoder, video_args
 
@@ -824,7 +823,7 @@ def font_file(family: str) -> Path | None:
 
 
 def _subtitle_font() -> Path | None:
-    for root in (get_app_dir(), get_bundle_dir()):
+    for root in asset_roots():
         p = root / "assets" / SUBTITLE_FONT_FILE
         if p.is_file():
             return p

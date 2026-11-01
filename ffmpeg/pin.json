@@ -1,5 +1,5 @@
 {
-  "comment": "The one ffmpeg every build, CI job and `make ffmpeg` uses. BtbN keeps each month's last autobuild long-term, so pin to one of those. To upgrade: pick a newer month-end autobuild-YYYY-MM-DD-* release at https://github.com/BtbN/FFmpeg-Builds/releases, copy the *-linux64-gpl-X.Y.tar.xz / *-win64-gpl-X.Y.zip names and their sha256 digests here, and let CI render-test it.",
+  "comment": "The one ffmpeg every build, CI job and `make ffmpeg` uses. BtbN keeps each month's last autobuild long-term, so pin to one of those. To upgrade: pick a newer month-end autobuild-YYYY-MM-DD-* release at https://github.com/BtbN/FFmpeg-Builds/releases, copy the *-linux64-gpl-X.Y.tar.xz / *-win64-gpl-X.Y.zip names and their sha256 digests here, and let CI render-test it. The macOS entries are eugeneware/ffmpeg-static b6.1.1 (static, GPL, libass + x264; built with --enable-nonfree, so VidGrab never bundles it: the app downloads it on first use, checking these SHA-256s).",
   "version": "9.0.2 (n9.0.2-17-g2a571b6068)",
   "release": "autobuild-2026-09-30-13-08",
   "files": {
@@ -10,6 +10,30 @@
     "win": {
       "name": "ffmpeg-n9.0.2-17-g2a571b6068-win64-gpl-9.0.zip",
       "sha256": "a0e45723c72141975f51d8666302e614711745f3102b704ca3f82c897a58d278"
+    },
+    "mac-arm64": {
+      "url_base": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/",
+      "version": "6.1.1",
+      "ffmpeg": {
+        "name": "ffmpeg-darwin-arm64.gz",
+        "sha256": "8923876afa8db5585022d7860ec7e589af192f441c56793971276d450ed3bbfa"
+      },
+      "ffprobe": {
+        "name": "ffprobe-darwin-arm64.gz",
+        "sha256": "d986a8ec7b030899fe66a8a288ed809a3543338705a3ce178cfb85869c5d80be"
+      }
+    },
+    "mac-x64": {
+      "url_base": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/",
+      "version": "6.1.1",
+      "ffmpeg": {
+        "name": "ffmpeg-darwin-x64.gz",
+        "sha256": "929b375c1182d956c51f7ac25e0b2b0411fb01f6f407aa15c9758efeb4242106"
+      },
+      "ffprobe": {
+        "name": "ffprobe-darwin-x64.gz",
+        "sha256": "d4da574d6e2e197bd259b47d69cf262df9e312af24ad960444f6d806d3d4c186"
+      }
     }
   }
 }

@@ -351,6 +351,13 @@ def _whisper_model_class():
     return WhisperModel
 
 
+def installed() -> bool:
+    """Is the speech add-on there at all? (A pip install without the `captions`
+    extra has no Whisper; the packaged apps always do.) Cheap: no imports."""
+    import importlib.util
+    return all(importlib.util.find_spec(m) is not None for m in ("faster_whisper", "ctranslate2"))
+
+
 def engine_ok() -> bool:
     """Whether the CPU engine can run here (a packaged build checks this in
     --selftest): faster-whisper and the tokenizer import, CTranslate2's native

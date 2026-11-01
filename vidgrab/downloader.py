@@ -19,6 +19,8 @@ from pathlib import Path
 import yt_dlp
 from yt_dlp.utils import parse_duration
 
+from vidgrab import ffmpeg_fetch
+
 ProgressCallback = Callable[[str, float | None], None]
 LogCallback = Callable[[str], None]
 TranslateFn = Callable[..., str]
@@ -145,6 +147,17 @@ def get_app_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def package_dir() -> Path:
+    """The vidgrab package itself: where a pip install keeps its assets."""
+    return Path(__file__).resolve().parent
+
+
+def asset_roots() -> list[Path]:
+    """Folders that may hold an ``assets/`` directory: the PyInstaller bundle, the
+    folder beside the exe, the project checkout, and (pip install) the package."""
+    return [get_app_dir(), get_bundle_dir(), package_dir()]
+
+
 def get_bundle_dir() -> Path:
     """Directory next to the executable when frozen, else project root."""
     if getattr(sys, "frozen", False):
@@ -174,10 +187,11 @@ def find_ffmpeg() -> str | None:
         ]
     else:
         ffmpeg_cmd = "ffmpeg"
+        sub = "mac" if sys.platform == "darwin" else "linux"
         candidates = [
-            bundle / "ffmpeg" / "linux" / "ffmpeg",
+            bundle / "ffmpeg" / sub / "ffmpeg",
             bundle / "ffmpeg" / "ffmpeg",
-            app / "ffmpeg" / "linux" / "ffmpeg",
+            app / "ffmpeg" / sub / "ffmpeg",
             app / "ffmpeg" / "ffmpeg",
         ]
 
@@ -185,7 +199,8 @@ def find_ffmpeg() -> str | None:
         if path.is_file():
             return str(path)
 
-    return shutil.which(ffmpeg_cmd)
+    # the pinned build the app fetched itself (macOS app, pip install), then the system's
+    return ffmpeg_fetch.cached_ffmpeg() or shutil.which(ffmpeg_cmd)
 
 
 def _ensure_ffmpeg_on_path(ffmpeg: str) -> None:

@@ -47,6 +47,8 @@ jobs:
           $out = & .\dist\VidGrab.exe --selftest 2>&1 | Out-String
           Write-Output $out
           if ($out -notmatch "multimedia=1") { throw "multimedia selftest failed" }
+          if ($out -notmatch "captions=1") { throw "captions selftest failed" }
+          if ($out -notmatch "openvino=1") { throw "openvino selftest failed" }
 
       - name: Show artifact sizes
         shell: pwsh

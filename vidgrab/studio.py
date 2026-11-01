@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from array import array
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -36,8 +37,10 @@ from vidgrab.downloader import (
     get_app_dir,
     get_bundle_dir,
 )
+from vidgrab.gpu import HwEncoder, detect_encoder, video_args
 
 SAMPLE_RATE = 48000
+HW_STALL_S = 120.0  # a graphics-card render with no progress for this long is abandoned
 SUBTITLE_FONT_FILE = "NotoSansTC-Regular.otf"
 SUBTITLE_FONT_NAME = "Noto Sans CJK TC"
 
@@ -533,8 +536,11 @@ def box_padding(font_px: float) -> int:
     return max(2, round(font_px * 0.18))
 
 
-def subtitle_scale(height: int) -> float:
-    return height / REFERENCE_HEIGHT
+def subtitle_scale(width: int, height: int) -> float:
+    """Size factor of a *width* x *height* frame. The shorter side counts: a
+    9:16 video is as wide as a 16:9 one is tall, and text sized from its height
+    would be twice too big for its width."""
+    return min(width, height) / REFERENCE_HEIGHT
 
 
 def _ass_ts(seconds: float) -> str:
@@ -543,6 +549,52 @@ def _ass_ts(seconds: float) -> str:
     m, cs = divmod(cs, 6000)
     s, cs = divmod(cs, 100)
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+
+# ── wrapping ─────────────────────────────────────────────────────────────
+# libass only breaks lines at spaces, so a long Chinese line (no spaces) runs off
+# the frame, and its "smart" wrapping differs from any simple rule. We break the
+# lines ourselves, with one function used by both the ASS file and the preview,
+# so they agree on where. Widths are estimated (not measured) for the same reason.
+
+_CJK = "\u2e80-\u9fff\uf900-\ufaff\u3000-\u303f\uff00-\uffef"
+_WRAP_TOKEN = re.compile(rf"[{_CJK}]|[^\s{_CJK}]+\s*|\s+")
+_NO_BREAK_BEFORE = tuple("，。！？、；：）」』》〉】,.!?;:)]}%")
+_LINE_RATIO = 1.45  # libass font size is the line height; a CJK em is that / 1.45
+
+
+def text_advance(text: str, size: float) -> float:
+    """Estimated width of *text* at ASS font size *size* (the line height)."""
+    em = size / _LINE_RATIO
+    return sum(em if "\u2e80" <= ch <= "\uffef" and ch not in " " else em * (0.3 if ch.isspace() else 0.58)
+               for ch in text)
+
+
+def wrap_line(text: str, width, max_w: float) -> list[str]:
+    """*text* broken into lines no wider than *max_w* (*width* measures a
+    string): between CJK characters, or after the spaces between other words,
+    never before a closing mark."""
+    if max_w <= 0 or width(text) <= max_w:
+        return [text]
+    lines: list[str] = []
+    cur = ""
+    for token in _WRAP_TOKEN.findall(text):
+        trial = cur + token
+        if cur and width(trial.rstrip()) > max_w and not token.startswith(_NO_BREAK_BEFORE):
+            lines.append(cur.rstrip())
+            cur = token.lstrip()
+        else:
+            cur = trial
+    if cur.strip():
+        lines.append(cur.rstrip())
+    return lines or [text]
+
+
+def wrap_cue_text(text: str, size: float, max_w: float) -> list[str]:
+    """The lines a subtitle is shown on: its own line breaks, each wrapped to
+    *max_w* at font size *size*."""
+    return [seg for line in text.split("\n")
+            for seg in wrap_line(line, lambda part: text_advance(part, size), max_w)]
 
 
 def _ass_text(text: str) -> str:
@@ -602,7 +654,7 @@ def format_ass(
     look (a line's own colours / size over the shared style) is one ASS
     style; animations are override tags."""
     style = style or SubtitleStyle()
-    k = subtitle_scale(height)
+    k = subtitle_scale(width, height)
     align = 8 if style.position == "top" else 2
     margin = round(SUBTITLE_MARGIN * k)
     looks: dict[tuple, str] = {}
@@ -621,7 +673,7 @@ def format_ass(
         "ScriptType: v4.00+",
         f"PlayResX: {width}",
         f"PlayResY: {height}",
-        "WrapStyle: 0",
+        "WrapStyle: 2",  # no automatic wrapping: wrap_cue_text already broke the lines
         "ScaledBorderAndShadow: yes",
         "",
         "[V4+ Styles]",
@@ -666,7 +718,8 @@ def format_ass(
             tags += f"\\fscx40\\fscy40\\t(0,{ms},\\fscx100\\fscy100)"
         elif anim == "slide" and not fade_ms:
             tags += f"\\fad({round(ANIM_IN['slide'] * 700)},0)"
-        text = _ass_text(cue.text)
+        size = round(cue_style(cue, style).size * k)
+        text = _ass_text("\n".join(wrap_cue_text(cue.text, size, width - 2 * margin)))
         if anim == "typewriter":
             chars = _ass_chars(text)
             visible = [c for c in chars if c != "\\N"]
@@ -790,8 +843,12 @@ def _run_with_progress(
     on_progress: ProgressCallback | None,
     on_log: LogCallback | None,
     translate: TranslateFn | None,
+    stall_s: float | None = None,
 ) -> None:
-    """Run ffmpeg, mapping its ``-progress`` output onto a 0..100 percentage."""
+    """Run ffmpeg, mapping its ``-progress`` output onto a 0..100 percentage.
+    With *stall_s*, ffmpeg is killed (and RuntimeError raised) if it prints no
+    progress for that long, so a graphics driver that stops answering can't
+    hang the render."""
     tr = translate or _noop_tr
     if on_log:
         on_log(" ".join(cmd))
@@ -822,9 +879,23 @@ def _run_with_progress(
 
     t = threading.Thread(target=drain, daemon=True)
     t.start()
+    last_seen = [time.monotonic()]
+    stalled = threading.Event()
+
+    def watch() -> None:
+        while proc.poll() is None:
+            time.sleep(1.0)
+            if stall_s and time.monotonic() - last_seen[0] > stall_s:
+                stalled.set()
+                proc.kill()
+                return
+
+    if stall_s:
+        threading.Thread(target=watch, daemon=True).start()
     assert proc.stdout is not None
     try:
         for line in proc.stdout:
+            last_seen[0] = time.monotonic()
             key, _, value = line.strip().partition("=")
             if key == "out_time_us" and total > 0 and on_progress:
                 secs = (_to_float(value) or 0) / 1_000_000
@@ -836,6 +907,8 @@ def _run_with_progress(
         raise
     proc.wait()
     t.join(timeout=2)
+    if stalled.is_set():
+        raise RuntimeError(tr("ffmpeg stopped responding (no progress for {s} s).", s=round(stall_s or 0)))
     if proc.returncode != 0:
         if on_log:
             for line in err_tail[-6:]:
@@ -1080,6 +1153,7 @@ def build_video_command(
     music_has_audio: bool = True,
     quality: str = "balanced",
     images: list[ImageOverlay] | None = None,
+    encoder: HwEncoder | None = None,
 ) -> tuple[list[str], float]:
     """ffmpeg argv + output length for a video montage.
 
@@ -1198,7 +1272,7 @@ def build_video_command(
     cmd += [
         "-filter_complex", ";".join(graph),
         "-map", vout, "-map", aout,
-        "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+        *video_args(encoder, preset, crf),
         "-c:a", "aac", "-b:a", abr,
         "-movflags", "+faststart",
         str(output),
@@ -1236,13 +1310,16 @@ def compose_video(
     images: list[ImageOverlay] | None = None,
     gif_width: int = 480,
     gif_fps: int = 15,
+    hardware: bool = False,
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
     translate: TranslateFn | None = None,
 ) -> Path:
     """Join video clips, then optionally burn in subtitles and add music.
     The output's suffix picks the format: .mp4, or .gif / .mp3 / .m4a / .wav
-    (rendered as MP4 first, then converted)."""
+    (rendered as MP4 first, then converted). With *hardware*, the video is
+    encoded on the graphics card when one works (see `gpu.detect_encoder`),
+    and again on the CPU if that render fails."""
     tr = translate or _noop_tr
     ffmpeg = _require_ffmpeg(translate)
     if on_progress:
@@ -1287,19 +1364,33 @@ def compose_video(
         # GIF / audio-only exports: render the video first, then convert it
         kind = out.suffix.lower()
         render_to = out if kind == ".mp4" else work / "render.mp4"
-        cmd, total = build_video_command(
-            ffmpeg, resolved, render_to,
-            resolution=resolution,
-            subtitles_file=subs_name,
-            fonts_dir=fonts_name,
-            music=songs,
-            images=[img for img in images or [] if img.end > img.start],
-            quality=quality,
-        )
-        _run_with_progress(
-            cmd, total, cwd=work, label=tr("Rendering…"),
-            on_progress=on_progress, on_log=on_log, translate=translate,
-        )
+        encoder = detect_encoder(ffmpeg) if hardware else None
+        for attempt in (encoder, None) if encoder else (None,):
+            cmd, total = build_video_command(
+                ffmpeg, resolved, render_to,
+                resolution=resolution,
+                subtitles_file=subs_name,
+                fonts_dir=fonts_name,
+                music=songs,
+                images=[img for img in images or [] if img.end > img.start],
+                quality=quality,
+                encoder=attempt,
+            )
+            if attempt and on_log:
+                on_log(tr("Encoding on the graphics card ({name})", name=attempt.label))
+            try:
+                _run_with_progress(
+                    cmd, total, cwd=work, label=tr("Rendering…"),
+                    on_progress=on_progress, on_log=on_log, translate=translate,
+                    stall_s=HW_STALL_S if attempt else None,
+                )
+                break
+            except RuntimeError as exc:
+                if attempt is None:
+                    raise
+                if on_log:  # a driver problem in the middle of the render: do it on the CPU
+                    on_log(tr("The graphics card could not encode this ({err}); "
+                              "rendering on the CPU instead", err=str(exc).splitlines()[-1]))
         if render_to != out:
             if on_progress:
                 on_progress(tr("Converting…"), None)

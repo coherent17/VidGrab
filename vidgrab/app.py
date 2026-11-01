@@ -66,6 +66,7 @@ from PySide6.QtWidgets import (
 )
 
 from vidgrab import __version__
+from vidgrab.captions import detect_gpus, speech_device, transcribe
 from vidgrab.downloader import (
     NAME_TEMPLATES,
     DownloadCancelled,
@@ -92,6 +93,7 @@ from vidgrab.downloads_panel import (
     load_history,
     save_history,
 )
+from vidgrab.gpu import detect_encoder
 from vidgrab.i18n import FLAGS, LANGUAGES, make_translator
 from vidgrab.jobs import DownloadJob, run_job
 from vidgrab.network import ConnectionStatus, check_internet
@@ -888,6 +890,17 @@ def _config_dir() -> Path:
     return base / "vidgrab"
 
 
+def _models_dir() -> Path:
+    """The speech models (hundreds of MB, downloaded again on demand) live in
+    the local cache, not the config folder: on Windows that one is the
+    *roaming* profile, which managed accounts sync to a server."""
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA", str(Path.home())))
+        return base / "VidGrab" / "models"
+    base = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+    return base / "vidgrab" / "models"
+
+
 # every persisted setting with its default; config.json may hold any subset
 DEFAULT_SETTINGS: dict = {
     "theme": "dark",
@@ -905,6 +918,10 @@ DEFAULT_SETTINGS: dict = {
     "studio_resolution": "auto",
     "subtitle_presets": {},  # name -> SubtitleStyle fields
     "recent_projects": [],  # Studio .vgproj files, newest first
+    "gpu_render": True,  # encode Studio videos on the graphics card when one works
+    "gpu_captions": True,  # let auto captions use a graphics card when one works
+    "caption_language": "auto",  # key of captions.LANGUAGES
+    "caption_model": "balanced",  # key of captions.MODELS
 }
 
 
@@ -1309,6 +1326,43 @@ def _get_existing_directory(parent, caption, directory=""):
 # ── worker thread ──────────────────────────────────────────────────────────
 
 
+_STOP_GRACE_MS = 5000  # how long a thread gets to finish when the window closes
+_STUCK: list[QThread] = []  # threads that ignored a stop request; kept alive, see main()
+
+
+def _stop_thread(thread: QThread, grace_ms: int | None = None) -> bool:
+    """Ask *thread* to stop and wait for it; True if it finished. One that is
+    stuck in a driver or library call can't be killed safely: it is parked in
+    `_STUCK` (destroying a running QThread aborts the whole process) and
+    `main()` leaves with `os._exit` instead of tearing it down."""
+    if not thread.isRunning():
+        return True
+    cancel = getattr(thread, "cancel", None)
+    if callable(cancel):
+        cancel()
+    if thread.wait(_STOP_GRACE_MS if grace_ms is None else grace_ms):
+        return True
+    if thread not in _STUCK:
+        _STUCK.append(thread)
+    return False
+
+
+class _HwProbe(QThread):
+    """Find the graphics video encoder that works here (it test-encodes a clip,
+    a couple of seconds) without freezing the window."""
+
+    found = Signal(object)  # gpu.HwEncoder or None
+
+    def __init__(self, ffmpeg: str | None) -> None:
+        super().__init__()
+        self._ffmpeg = ffmpeg
+
+    def run(self) -> None:
+        encoder = detect_encoder(self._ffmpeg) if self._ffmpeg else None
+        detect_gpus()  # the captions engines too (starts OpenVINO's GPU plugin); cached for later
+        self.found.emit(encoder)
+
+
 class _Worker(QThread):
     """Run a download / processing / probe task off the main thread."""
 
@@ -1395,6 +1449,17 @@ class _Worker(QThread):
                     music=self._kw.get("music"),
                     images=self._kw.get("images"),
                     quality=self._kw.get("render_quality", "balanced"),
+                    hardware=bool(self._kw.get("hardware")),
+                    on_progress=self._cb_progress,
+                    on_log=self._cb_log,
+                    translate=self._kw.get("translate"),
+                )
+            elif self._task == "transcribe":
+                result = transcribe(
+                    self._kw["sources"], _models_dir(),
+                    language=self._kw.get("language", "auto"),
+                    size=self._kw.get("size", "balanced"),
+                    gpu=bool(self._kw.get("gpu", True)),
                     on_progress=self._cb_progress,
                     on_log=self._cb_log,
                     translate=self._kw.get("translate"),
@@ -1575,6 +1640,8 @@ class VidGrabWindow(QMainWindow):
         self._busy = False
         self._internet_online: bool | None = None
         self._worker: _Worker | None = None  # Studio render
+        self._hw_encoder: object = False  # False = not checked yet, None = none works
+        self._hw_probe: _HwProbe | None = None
         self._dl_worker: _Worker | None = None  # current queued download
         self._dl_item: DownloadItem | None = None
         self._queue: list[DownloadItem] = []
@@ -1601,6 +1668,7 @@ class VidGrabWindow(QMainWindow):
         self._setup_shortcuts()
         if QApplication.platformName() != "offscreen":  # not in tests / scripts
             QTimer.singleShot(600, self._offer_recovery)
+            QTimer.singleShot(1200, self.probe_hardware)
 
     # ── ui construction ────────────────────────────────────────────────
 
@@ -1625,6 +1693,8 @@ class VidGrabWindow(QMainWindow):
         self._stack.addWidget(self._build_download_form())
         self._studio = StudioPage(self)
         self._studio.render_requested.connect(self._start_studio)
+        self._studio.cancel_requested.connect(
+            lambda: self._worker.cancel() if self._worker is not None else None)
         self._studio.apply_theme(self._theme, _PALETTES[self._theme], _CARD_ACCENTS[self._theme])
         self._stack.addWidget(self._studio)
         self._stack.addWidget(self._build_settings_form())
@@ -2083,6 +2153,29 @@ class VidGrabWindow(QMainWindow):
         sl.addWidget(phint)
         right.addWidget(g3)
 
+        # hardware --------------------------------------------------------------
+        g6, t6, hl = self._card("HARDWARE", "settings_card", "speed")
+        self._trw(t6, "HARDWARE")
+        self._set_gpu_render = QCheckBox()
+        self._set_gpu_captions = QCheckBox()
+        self._gpu_render_hint = QLabel()
+        self._gpu_captions_hint = QLabel()
+        for box, key, label, hint in (
+                (self._set_gpu_render, "gpu_render", "Render videos on the graphics card",
+                 self._gpu_render_hint),
+                (self._set_gpu_captions, "gpu_captions", "Make auto captions on the graphics card",
+                 self._gpu_captions_hint)):
+            box.setCursor(QCursor(_HAND))
+            box.setChecked(bool(self.setting(key)))
+            box.toggled.connect(lambda on, k=key: (self.set_setting(k, on),
+                                                   self._refresh_hardware()))
+            self._trw(box, label)
+            hint.setObjectName("hint")
+            hint.setWordWrap(True)
+            hl.addWidget(box)
+            hl.addWidget(hint)
+        right.addWidget(g6)
+
         # storage ---------------------------------------------------------------
         g4, t4, stl = self._card("STORAGE", "settings_card", "save")
         self._trw(t4, "STORAGE")
@@ -2093,17 +2186,22 @@ class VidGrabWindow(QMainWindow):
         self._cache_lbl = QLabel()
         self._history_lbl = QLabel()
         self._log_lbl = QLabel()
+        self._models_lbl = QLabel()
         rows = (
             (self._cache_lbl, "Clear", self._clear_cache),
             (self._history_lbl, "Clear", self._clear_history),
+            (self._models_lbl, "Delete", self._clear_models),
             (self._log_lbl, "Export…", self._export_log),
         )
+        self._models_btn: QPushButton | None = None
         for r, (lbl, key, slot) in enumerate(rows):
             b = QPushButton()
             b.setObjectName("secondary")
             b.setCursor(QCursor(_HAND))
             b.clicked.connect(slot)
             self._trw(b, key)
+            if lbl is self._models_lbl:
+                self._models_btn = b
             grid.addWidget(lbl, r, 0)
             grid.addWidget(b, r, 1)
         stl.addLayout(grid)
@@ -2181,6 +2279,34 @@ class VidGrabWindow(QMainWindow):
         self._update_name_example()
         self._refresh_storage()
         self._refresh_presets()
+        self._refresh_hardware()
+
+    def probe_hardware(self) -> None:
+        """Check (in the background) which graphics encoder ffmpeg can use."""
+        if self._hw_probe is not None and self._hw_probe.isRunning():
+            return
+        self._hw_probe = _HwProbe(find_ffmpeg())
+        self._hw_probe.found.connect(self._on_hardware)
+        self._hw_probe.start()
+
+    def _on_hardware(self, encoder: object) -> None:
+        self._hw_encoder = encoder
+        self._refresh_hardware()
+
+    def _refresh_hardware(self) -> None:
+        """The status lines under the two hardware switches."""
+        t, enc = self._t, self._hw_encoder
+        if enc is False:
+            video = t("Checking this computer…")
+        elif enc:
+            video = t("Ready: {name}. Faster at Balanced and High quality (little at Fast); "
+                      "if it ever fails, VidGrab renders on the CPU instead.", name=enc.label)
+        else:
+            video = t("No supported graphics encoder found (NVIDIA, Intel or AMD), so videos "
+                      "are rendered on the CPU.")
+        self._gpu_render_hint.setText(video)
+        key, fill = speech_device(bool(self.setting("gpu_captions")), _models_dir())
+        self._gpu_captions_hint.setText(t(key, **fill))
 
     def _update_name_example(self) -> None:
         examples = {
@@ -2278,10 +2404,24 @@ class VidGrabWindow(QMainWindow):
         log = _config_dir() / "vidgrab.log"
         size = log.stat().st_size if log.is_file() else 0
         self._log_lbl.setText(self._t("Log file: {size}", size=human_size(size)))
+        models = _dir_size(_models_dir())
+        self._models_lbl.setText(self._t("Speech models: {size}", size=human_size(models)))
+        if self._models_btn is not None:
+            self._models_btn.setEnabled(models > 0)
 
     def _clear_cache(self) -> None:
         shutil.rmtree(_config_dir() / "cache", ignore_errors=True)
         self._refresh_storage()
+
+    def _clear_models(self) -> None:
+        size = human_size(_dir_size(_models_dir()))
+        answer = QMessageBox.question(
+            self, self._t("Delete"),
+            self._t("Delete the downloaded speech models ({size})? They are downloaded again "
+                    "the next time you use auto captions.", size=size))
+        if answer == QMessageBox.Yes:
+            shutil.rmtree(_models_dir(), ignore_errors=True)
+            self._refresh_storage()
 
     def _clear_history(self) -> None:
         self._clear_finished()
@@ -2387,6 +2527,9 @@ class VidGrabWindow(QMainWindow):
         self._bottom.setVisible(idx == PAGE_DOWNLOAD)
         if idx == PAGE_DOWNLOAD:
             self._action.setText(self._t("\u2b07  Download"))
+        if idx == PAGE_SETTINGS:  # sizes change while you work (a model was downloaded, a cache grew)
+            self._refresh_storage()
+            self._refresh_hardware()
         self._refresh_btn()
         self._sidebar.retranslate(self._t, self._theme)
 
@@ -2795,6 +2938,10 @@ class VidGrabWindow(QMainWindow):
     def autosave_path(self) -> Path:
         return _config_dir() / "studio-recovery.vgproj"
 
+    def models_dir(self) -> Path:
+        """Where the auto-caption speech models are downloaded to."""
+        return _models_dir()
+
     def _offer_recovery(self) -> None:
         """VidGrab closed with unsaved Studio work last time: offer it back."""
         path = self.autosave_path()
@@ -3201,6 +3348,7 @@ class VidGrabWindow(QMainWindow):
         self._worker.error.connect(self._on_error)
         self._worker.progress.connect(self._on_progress)
         self._worker.log.connect(self._append_log)
+        self._worker.cancelled.connect(self._on_cancelled)
         self._worker.start()
 
     # ── callbacks ──────────────────────────────────────────────────────
@@ -3209,6 +3357,12 @@ class VidGrabWindow(QMainWindow):
         self._studio.show_progress(msg, pct if isinstance(pct, (int, float)) else None)
 
     def _on_result(self, result: object) -> None:
+        if self._worker is not None and self._worker._task == "transcribe":
+            replace_lines = bool(self._worker._kw.get("replace"))
+            self._set_busy(False)
+            self._studio.finish(True)
+            self._studio.captions_ready(list(result), replace_lines)
+            return
         self._set_busy(False)
         files = list(result) if isinstance(result, (tuple, list)) else [str(result)]
         self._studio.finish(True)
@@ -3216,6 +3370,11 @@ class VidGrabWindow(QMainWindow):
             self, self._t("Success"),
             self._t("Saved to:\n{paths}", paths="\n".join(str(f) for f in files)),
         )
+
+    def _on_cancelled(self) -> None:
+        self._set_busy(False)
+        self._studio.finish(False)
+        self._studio.status.setText(self._t("Stopped"))
 
     def _on_error(self, msg: str) -> None:
         self._set_busy(False)
@@ -3239,16 +3398,25 @@ class VidGrabWindow(QMainWindow):
             return
         _save_config(self._theme, self._lang)
         if self._worker is not None and self._worker.isRunning():
-            QMessageBox.information(
-                self,
-                self._t("Task in progress"),
-                self._t(
-                    "A download or processing task is still running.\n"
-                    "Please wait for it to complete before closing."
-                ),
-            )
-            event.ignore()
-            return
+            if self._worker._task == "transcribe":  # captions can simply be stopped
+                answer = QMessageBox.question(
+                    self, self._t("Task in progress"),
+                    self._t("Auto captions are still running. Stop them and quit?"))
+                if answer != QMessageBox.Yes:
+                    event.ignore()
+                    return
+                _stop_thread(self._worker)
+            else:
+                QMessageBox.information(
+                    self,
+                    self._t("Task in progress"),
+                    self._t(
+                        "A download or processing task is still running.\n"
+                        "Please wait for it to complete before closing."
+                    ),
+                )
+                event.ignore()
+                return
         if self._dl_worker is not None and self._dl_worker.isRunning():
             answer = QMessageBox.question(
                 self, self._t("Task in progress"),
@@ -3260,13 +3428,13 @@ class VidGrabWindow(QMainWindow):
             for item in self._queue:
                 if item.status == QUEUED:
                     item.status = CANCELLED
-            self._dl_worker.cancel()
-            self._dl_worker.wait(5000)
+            _stop_thread(self._dl_worker)
+        if self._hw_probe is not None:
+            _stop_thread(self._hw_probe)
         # give any in-flight info fetch a moment to finish before teardown
         self._probe_token += 1
         for worker in list(self._probe_workers):
-            if worker.isRunning():
-                worker.wait(3000)
+            _stop_thread(worker, 3000)
         self._studio.preview.stop()
         self._studio.shutdown()
         self._studio.clear_autosave()  # a normal close: nothing to recover
@@ -3459,15 +3627,25 @@ def main() -> None:
     window = VidGrabWindow()
 
     # Hidden build-verification flag: construct the full UI headlessly and
-    # report whether QtMultimedia (inline preview) is available in a packaged
-    # or source build, then exit. Used by CI to catch exclusion mistakes.
+    # report whether QtMultimedia (inline preview) and the auto-caption speech
+    # engine are available in a packaged or source build, then exit. Used by CI to catch exclusion mistakes.
     if "--selftest" in sys.argv:
-        print(f"VIDGRAB_SELFTEST multimedia={int(_QT_MULTIMEDIA_OK)}", flush=True)
+        from vidgrab.captions import engine_ok, openvino_error
+
+        why = openvino_error()
+        print(f"VIDGRAB_SELFTEST multimedia={int(_QT_MULTIMEDIA_OK)} "
+              f"captions={int(engine_ok())} openvino={int(not why)}", flush=True)
+        if why:
+            print(f"VIDGRAB_SELFTEST_ERROR openvino: {why}", flush=True)
         window.close()
         return
 
     window.show()
-    sys.exit(app.exec())
+    code = app.exec()
+    if any(thread.isRunning() for thread in _STUCK):
+        # a thread stuck in a driver call: destroying it would abort the process
+        os._exit(code)
+    sys.exit(code)
 
 
 if __name__ == "__main__":

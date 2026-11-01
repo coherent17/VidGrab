@@ -1302,3 +1302,284 @@ def test_studio_34_features(qapp, tmp_path, monkeypatch) -> None:
         assert not win.autosave_path().exists() and not st.is_dirty()
     finally:
         win.close()
+
+
+def test_studio_auto_captions(qapp, tmp_path, monkeypatch) -> None:
+    """Auto captions: the dialog -> worker -> lines on the Subtitles row (one
+    undo step), muted clips left out, montage times, and Stop."""
+    import shutil
+    import subprocess
+    import time
+
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QDialog
+
+    from vidgrab import app as appmod
+    from vidgrab.studio import SubtitleCue
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        pytest.skip("ffmpeg / ffprobe not on PATH")
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(appmod, "_models_dir", lambda: tmp_path / "models")
+    monkeypatch.setattr(appmod.QMessageBox, "question",
+                        staticmethod(lambda *_a, **_k: appmod.QMessageBox.Discard))
+    clip = tmp_path / "c.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc=size=320x180:rate=10", "-f", "lavfi", "-i", "sine", "-t", "10",
+                    str(clip)], check=True)
+    seen: dict = {}
+
+    def fake_transcribe(sources, models_dir, *, language, size, on_progress, **_kw):
+        seen.update(sources=sources, models_dir=models_dir, language=language, size=size)
+        if language == "slow":  # wait to be stopped
+            for _ in range(400):
+                on_progress("Listening for speech…", 1)
+                time.sleep(0.01)
+        return [SubtitleCue(s.offset + 1 / s.speed, s.offset + 2 / s.speed, f"line {k}")
+                for k, s in enumerate(sources)]
+
+    monkeypatch.setattr(appmod, "transcribe", fake_transcribe)
+    answers = []
+
+    def run_dialog(dlg):  # pick the language / model and press Create captions
+        lang, *_ = (w for w in dlg.findChildren(appmod.QComboBox))
+        lang.setCurrentIndex(lang.findData(answers[0]))
+        QTimer.singleShot(0, dlg.accept)
+        return QDialog.Accepted
+
+    monkeypatch.setattr(QDialog, "exec", run_dialog)
+
+    def wait_idle(st) -> None:
+        t0 = time.time()
+        while st._busy and time.time() - t0 < 10:
+            qapp.processEvents()
+            time.sleep(0.01)
+        qapp.processEvents()
+
+    win = appmod.VidGrabWindow()
+    try:
+        st = win._studio
+        st.add_clips([str(clip), str(clip), str(clip)])
+        st.set_trim(1, 2, 8)
+        st._clips[1].speed = 2.0
+        st._clips[2].muted = True
+        st._refresh_track()
+        assert [(s.start, s.end, s.speed, s.offset) for s in st.caption_sources()] == [
+            (0.0, 10.0, 1.0, 0.0), (2.0, 8.0, 2.0, 10.0)]
+        st._cues = [SubtitleCue(0.0, 1.0, "mine")]
+        st._cues_changed()
+        st._record()
+
+        answers[:] = ["zh-Hant"]
+        st.auto_captions()
+        assert st._busy and st.render_btn.text() == win._t("✕  Stop") and not st.captions_btn.isEnabled()
+        wait_idle(st)
+        assert seen["language"] == "zh-Hant" and seen["size"] == "balanced"
+        assert seen["models_dir"] == tmp_path / "models"
+        # added to the existing line, in montage time (clip 2 starts at 10 s, plays at 2x)
+        assert [(c.start, c.text) for c in st._cues] == [(0.0, "mine"), (1.0, "line 0"),
+                                                         (10.5, "line 1")]
+        assert win.setting("caption_language") == "zh-Hant"
+        assert st.render_btn.text() == win._t("✦  Render") and st.render_btn.isEnabled()
+        st.undo()
+        assert [c.text for c in st._cues] == ["mine"]
+        st.captions_ready([], False)
+        assert st.status.text() == win._t("No speech was found in the clips.")
+        assert [c.text for c in st._cues] == ["mine"]
+        st.captions_ready([SubtitleCue(3.0, 4.0, "new")], True)  # "Replace the current lines"
+        assert [c.text for c in st._cues] == ["new"]
+        st.undo()
+
+        # Stop: the Render button cancels; nothing is added
+        answers[:] = ["auto"]
+        win.set_setting("caption_language", "auto")
+        monkeypatch.setattr(appmod, "transcribe", lambda *a, **k: fake_transcribe(
+            *a, **{**k, "language": "slow"}))
+        st.auto_captions()
+        for _ in range(20):
+            qapp.processEvents()
+            time.sleep(0.01)
+        st.render_btn.click()
+        wait_idle(st)
+        assert not st._busy and [c.text for c in st._cues] == ["mine"]
+        assert st.status.text() == win._t("Stopped")
+    finally:
+        win.close()
+
+
+def test_hardware_switches(qapp, tmp_path, monkeypatch) -> None:
+    """Settings -> Hardware: two switches that persist, status lines that follow
+    the detected card, and both reach the render / captions requests."""
+    import shutil
+    import subprocess
+
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QDialog
+
+    from vidgrab import app as appmod
+    from vidgrab import captions
+    from vidgrab.gpu import CANDIDATES
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        pytest.skip("ffmpeg / ffprobe not on PATH")
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(captions, "_gpus", [])  # not detected yet
+    clip = tmp_path / "c.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc=size=320x180:rate=10", "-f", "lavfi", "-i", "sine", "-t", "4",
+                    str(clip)], check=True)
+    win = appmod.VidGrabWindow()
+    try:
+        t = win._t
+        assert win.setting("gpu_render") is True and win.setting("gpu_captions") is True
+        assert win._set_gpu_render.isChecked() and win._set_gpu_captions.isChecked()
+        assert win._gpu_render_hint.text() == t("Checking this computer…")
+        assert win._gpu_captions_hint.text() == t("Checking this computer…")
+
+        # a graphics encoder and an Intel GPU were found
+        qsv = next(e for e in CANDIDATES if e.key == "qsv")
+        intel = captions.SpeechGpu("openvino", "GPU", "Intel Arc 140T GPU")
+        captions._gpus.append([intel])
+        win._on_hardware(qsv)
+        assert "Intel Quick Sync" in win._gpu_render_hint.text()
+        assert "Intel Arc 140T GPU" in win._gpu_captions_hint.text()
+        win._on_hardware(None)
+        assert win._gpu_render_hint.text() == t(
+            "No supported graphics encoder found (NVIDIA, Intel or AMD), so videos "
+            "are rendered on the CPU.")
+
+        # what the Studio asks for follows the switches
+        st = win._studio
+        st.add_clips([str(clip)])
+        sent: list[tuple[str, dict]] = []
+        st.render_requested.disconnect()
+        st.render_requested.connect(lambda task, kw: sent.append((task, kw)))
+        monkeypatch.setattr(QDialog, "exec", lambda dlg: (QTimer.singleShot(0, dlg.accept),
+                                                          QDialog.Accepted)[1])
+        st.render()
+        st.auto_captions()
+        assert [(task, kw["hardware"] if task == "compose_video" else kw["gpu"])
+                for task, kw in sent] == [("compose_video", True), ("transcribe", True)]
+
+        win._set_gpu_render.setChecked(False)
+        win._set_gpu_captions.setChecked(False)
+        assert win.setting("gpu_render") is False and win.setting("gpu_captions") is False
+        assert "run on the CPU" in win._gpu_captions_hint.text()
+        sent.clear()
+        st.render()
+        st.auto_captions()
+        assert [(task, kw["hardware"] if task == "compose_video" else kw["gpu"])
+                for task, kw in sent] == [("compose_video", False), ("transcribe", False)]
+        # saved: a new window starts with the switches off
+        assert appmod._load_config()["gpu_render"] is False
+    finally:
+        win.close()
+
+
+def test_speech_models_storage_row(qapp, tmp_path, monkeypatch) -> None:
+    """Settings -> Storage shows the downloaded speech models and deletes them."""
+    from vidgrab import app as appmod
+
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path / "cfg")
+    models = tmp_path / "models"
+    monkeypatch.setattr(appmod, "_models_dir", lambda: models)
+    win = appmod.VidGrabWindow()
+    try:
+        win._refresh_storage()
+        assert win._models_lbl.text() == win._t("Speech models: {size}", size="0 B")
+        assert not win._models_btn.isEnabled()  # nothing to delete
+        (models / "openvino" / "fast").mkdir(parents=True)
+        (models / "openvino" / "fast" / "model.bin").write_bytes(b"x" * 3000)
+        assert win._models_lbl.text() == win._t("Speech models: {size}", size="0 B")  # not looked at yet
+        win._switch_page(appmod.PAGE_SETTINGS)  # opening Settings shows the current sizes
+        assert "KB" in win._models_lbl.text() and win._models_btn.isEnabled()
+        monkeypatch.setattr(appmod.QMessageBox, "question",
+                            staticmethod(lambda *_a, **_k: appmod.QMessageBox.No))
+        win._clear_models()
+        assert models.exists()  # declined
+        monkeypatch.setattr(appmod.QMessageBox, "question",
+                            staticmethod(lambda *_a, **_k: appmod.QMessageBox.Yes))
+        win._clear_models()
+        assert not models.exists() and not win._models_btn.isEnabled()
+    finally:
+        win.close()
+
+
+def test_hardware_probe_checks_video_and_captions(qapp, tmp_path, monkeypatch) -> None:
+    """The Settings status lines both leave "Checking this computer…": the
+    startup probe must look for the captions GPU too, not only the encoder."""
+    from vidgrab import app as appmod
+    from vidgrab import captions
+    from vidgrab.gpu import CANDIDATES
+
+    qsv = next(e for e in CANDIDATES if e.key == "qsv")
+    intel = captions.SpeechGpu("openvino", "GPU", "Intel Arc 140T GPU")
+    monkeypatch.setattr(appmod, "detect_encoder", lambda ffmpeg: qsv)
+    monkeypatch.setattr(captions, "_gpus", [])
+    monkeypatch.setattr(captions, "cuda_available", lambda: False)
+    monkeypatch.setattr(captions, "_openvino_gpu", lambda: intel)
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    win = appmod.VidGrabWindow()
+    try:
+        assert not captions.gpus_checked()
+        assert win._gpu_captions_hint.text() == win._t("Checking this computer…")
+        probe = appmod._HwProbe("ffmpeg")
+        probe.found.connect(win._on_hardware)
+        probe.run()  # what the background thread does
+        assert captions.gpus_checked()
+        assert "Intel Quick Sync" in win._gpu_render_hint.text()
+        assert "Intel Arc 140T GPU" in win._gpu_captions_hint.text()
+        assert win._t("Checking this computer…") not in (
+            win._gpu_render_hint.text(), win._gpu_captions_hint.text())
+    finally:
+        win.close()
+
+
+def test_closing_with_stuck_threads_neither_crashes_nor_hangs(qapp, tmp_path, monkeypatch) -> None:
+    """A caption job or a hardware check stuck inside a driver call must not
+    keep the window from closing, and must never be destroyed while running
+    (Qt aborts the whole process for that)."""
+    import threading
+    import time
+
+    from PySide6.QtCore import QThread
+
+    from vidgrab import app as appmod
+
+    class Stuck(QThread):
+        _task = "transcribe"
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.gate = threading.Event()
+            self.cancel_asked = False
+
+        def cancel(self) -> None:
+            self.cancel_asked = True
+
+        def run(self) -> None:
+            self.gate.wait(30)
+
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(appmod, "_STOP_GRACE_MS", 200)
+    answer = {"value": appmod.QMessageBox.No}
+    monkeypatch.setattr(appmod.QMessageBox, "question", staticmethod(lambda *_a, **_k: answer["value"]))
+    win = appmod.VidGrabWindow()
+    probe, worker = Stuck(), Stuck()
+    try:
+        probe.start()
+        worker.start()
+        win._hw_probe, win._worker = probe, worker
+        assert win.close() is False  # "Stop them and quit?" -> No: still open, nothing touched
+        assert not worker.cancel_asked and not appmod._STUCK
+        answer["value"] = appmod.QMessageBox.Yes
+        t0 = time.monotonic()
+        assert win.close() is True  # Yes: asked to stop, gave up waiting, closed anyway
+        assert time.monotonic() - t0 < 5
+        assert worker.cancel_asked and probe.isRunning() and worker.isRunning()
+        assert {id(t) for t in appmod._STUCK} == {id(probe), id(worker)}  # parked, not destroyed
+    finally:
+        for t in (probe, worker):
+            t.gate.set()
+            t.wait(5000)
+        appmod._STUCK.clear()

@@ -2,6 +2,10 @@
 yt-dlp>=2024.1.0
 pyinstaller>=6.0.0
 PySide6>=6.5.0
+# auto captions (Whisper); PyAV is left out of the build, ffmpeg decodes the audio
+faster-whisper>=1.1.0
+# ... and its Intel-GPU engine (OpenVINO); the NVIDIA one is CTranslate2's CUDA build
+openvino-genai>=2026.1
 
 # dev/test tooling (lint + tests; harmless in build envs)
 pytest>=8.0

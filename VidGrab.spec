@@ -45,10 +45,31 @@ for _name in _ffmpeg_names:
             _datas.append((_src, "ffmpeg"))
             break
 
+# --- auto captions: faster-whisper (CPU / NVIDIA) and OpenVINO (Intel GPU) ---
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
+
+_datas += collect_data_files("faster_whisper")  # assets/silero_vad*.onnx
+_binaries = collect_dynamic_libs("ctranslate2")
+# OpenVINO reads the Whisper models as IR and runs them on its CPU / GPU plugins.
+# Its libs/ folder is copied whole (frontends and plugins are found by file name
+# next to libopenvino) minus what we never use: readers for ONNX, TensorFlow Lite,
+# Paddle and GGUF models, the C API and the NPU (its compiler alone is ~100 MB).
+from PyInstaller.utils.hooks import get_package_paths
+
+_OV_SKIP = ("onnx", "paddle", "tensorflow_lite", "gguf", "npu", "openvino_c.")
+for _pkg in ("openvino", "openvino_genai", "openvino_tokenizers"):
+    _pkg_dir = Path(get_package_paths(_pkg)[1])
+    # libs/: OpenVINO's plugins and frontends; lib/: the tokenizer extension the
+    # Whisper models load by path (nothing imports it, so PyInstaller can't see it)
+    for _sub in ("libs", "lib"):
+        for _f in sorted((_pkg_dir / _sub).glob("*")):
+            if _f.is_file() and not any(skip in _f.name.lower() for skip in _OV_SKIP):
+                _binaries.append((str(_f), f"{_pkg}/{_sub}"))
+
 a = Analysis(
     [str(ROOT / "vidgrab" / "__main__.py")],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=_binaries,
     datas=_datas,
     hiddenimports=[
         "yt_dlp",
@@ -57,6 +78,7 @@ a = Analysis(
         "packaging",
         "vidgrab",
         "vidgrab.app",
+        "vidgrab.captions",
         "vidgrab.downloader",
         "vidgrab.downloads_panel",
         "vidgrab.i18n",
@@ -69,11 +91,22 @@ a = Analysis(
         "PySide6.QtGui",
         "PySide6.QtMultimedia",
         "PySide6.QtWidgets",
+        "faster_whisper",
+        "ctranslate2",
+        "onnxruntime",
+        "tokenizers",
+        "openvino",
+        "openvino_genai",
+        "openvino_tokenizers",
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
+        # PyAV bundles a second ffmpeg (~130 MB); captions decode with ours
+        "av",
+        # OpenVINO's analytics client: never bundled (see vidgrab/captions.py)
+        "openvino_telemetry",
         # PySide6 modules we don't use — keeps the bundle smaller
         "PySide6.Qt3DAnimation",
         "PySide6.Qt3DCore",

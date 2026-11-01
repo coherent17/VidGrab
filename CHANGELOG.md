@@ -1,6 +1,21 @@
 # Changelog
 
-## Unreleased
+## 4.0.0
+
+Offline AI captions that use your graphics card, plus a much bigger Studio: per-clip speed, animated and individually styled subtitles, multi-select, export presets and crash recovery.
+
+### Auto captions and graphics cards
+
+- **Auto captions**: "Auto captions…" in the Studio turns the speech in the clips into subtitle lines with Whisper, on this computer — nothing is uploaded. Pick the spoken language (or detect it; Chinese can be Traditional or Simplified) and the accuracy: **Fast**, **Balanced** or **Best** (large-v3 turbo). Lines follow the clips' trims, speed and place in the montage; muted clips are skipped. Lines break at sentences, pauses and commas, never inside a word; Chinese lines use spaces instead of commas, as subtitles usually do. Singing over music is still captioned, and Whisper's stock invented lines ("please subscribe…") are dropped. The Render button stops it while it runs; the result is one undo step
+- **Graphics cards for auto captions** — three engines, each falling back to the next if it can't load or fails: **NVIDIA** (CUDA; VidGrab downloads the CUDA 12 cuBLAS / cuDNN libraries once, about 1.3 GB, from NVIDIA's pinned official wheels, so nothing has to be installed), **Intel** graphics (integrated or Arc, through OpenVINO: the *Best* model runs there in 5 s per minute of speech against 19 s on a fast CPU), and the **CPU**. Verified end to end on an Intel Arc 140T; the NVIDIA path is tested with real library downloads and fakes but not on an NVIDIA card
+- **Captions are 5–7× faster on the CPU too**: the old setting used every core, and on laptop chips with performance and efficiency cores that made recognition several times *slower* (one minute of speech: 35 s → 9 s at Balanced). It now uses only the fast cores (read from Windows / Linux), capped at 8 threads
+- **Render on the graphics card**: the video is encoded with NVIDIA NVENC, Intel Quick Sync or AMD AMF when one works (checked by a test encode), the picture quality is the same (SSIM 0.9973 against 0.9975 on a test clip), and a render that fails on the card is redone on the CPU. About 1.5× faster at Balanced and 1.8× at High on a fast laptop CPU, 3× on one with few cores; no gain at Fast
+- **Settings → Hardware**: two switches (render on the graphics card, auto captions on the graphics card; on by default) with a status line saying what was found. **Settings → Storage** shows the downloaded speech models and deletes them
+- **Models are downloaded on demand, not bundled**, to the local cache (`%LOCALAPPDATA%\VidGrab\models` on Windows, `~/.cache/vidgrab/models` on Linux — not the roaming profile): 85 / 260 / 830 MB for Intel graphics, 150 / 490 MB / 1.6 GB for NVIDIA and the CPU
+- **Nothing hangs or crashes when hardware misbehaves**: the graphics-card check is time-limited (a stuck driver counts as "no card"); a render whose graphics encoder stops answering for two minutes is abandoned and redone on the CPU; each captions engine that fails (bad driver, out of memory, corrupt or missing model, no network) hands over to the next, ending on the CPU; a half-downloaded model or CUDA package leaves no partial files and a retry resumes after the last finished package; and quitting while a caption job or hardware check is stuck in a driver no longer aborts the app, nor does it refuse to quit. Basic integrated Intel graphics (under 64 execution units, e.g. UHD 620) are still used when the switch is on, but Settings and the captions dialog say they may be slower than the CPU, so the user decides
+- OpenVINO's analytics (it posts to Google Analytics as soon as it is imported) are switched off, and the package isn't bundled; a test fails if anything touches the network on import
+
+### Studio
 
 - **Never lose an edit: autosave and crash recovery.** The Studio keeps a recovery copy of the project while you work; if VidGrab closes without saving (a crash, a power cut), it offers to restore it at the next start
 - **Per-clip speed (0.25×–4×)**: in the Clip panel's Trim tab (0.5× / 1× / 1.5× / 2× or any value). The sound keeps its pitch, the timeline block shrinks or grows to match, transitions and subtitles line up with the sped-up clip, and the preview plays at that speed
@@ -9,7 +24,13 @@
 - **Guides**: a **Guides** button over the preview shows the centre lines and the 5 % safe area; dragged subtitles and pictures snap to them (Alt = free)
 - **Export presets**: the Project panel picks what to make — **YouTube (1080p)**, **Shorts / Reels / TikTok** (vertical, with a reminder when the video is over 60 s), **Square (1:1)**, **Same as the clips**, **GIF** or **Audio only (MP3)** — with the matching resolution and file type
 - The Clip panel is split into **Trim**, **Transition** and **Picture and sound** tabs, so it fits without scrolling
+- The Studio toolbar buttons are shorter ("＋ Media…", "♪ Music…") so the row fits in a small window
+- **Subtitles fit vertical and square videos**: their size now follows the *shorter* side of the frame (it followed the height, so text in a 9:16 video came out about twice too big), and long lines are wrapped to the frame width, in the preview and in the render alike. Chinese lines have no spaces for the renderer to break at, so a long caption used to run off both sides of a vertical video. Landscape videos are unchanged
+
+### Downloads and releases
+
 - **Downloads retry over IPv4 when the network is unreachable**: on networks (and CI runners) with IPv6 but no route for it, YouTube downloads and link previews failed with "Network is unreachable"; they now retry the same way over IPv4
+- **New demo video and user guide** (繁體中文) for 4.0: auto captions on the graphics card, speed, subtitle effects, guides, export presets and the Hardware settings; recorded on a real Intel Arc GPU
 - **Releases run the tests first**: the release workflow runs the same lint and test suite as CI (Linux and Windows) before building, so a tag can't publish untested code. The checks live in one shared workflow (`checks.yml`) used by both
 - Fixed the trim integration test, which asked for 50 s–110 s of an 8 s video (a four-part time) and so never trimmed; it was hidden because YouTube's bot-check made CI skip it
 

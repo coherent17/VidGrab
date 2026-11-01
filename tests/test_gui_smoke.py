@@ -1730,6 +1730,10 @@ def test_download_page_search_exact_format_and_job(qapp, tmp_path, monkeypatch) 
         assert win._body_stack.currentIndex() == 1  # the results replace the cards, in the page
         _wait(qapp, lambda: len(panel._rows) == 3)
         assert panel.add.isEnabled() is False
+        assert panel._back.text() == "Close results"
+        win._lang_combo.setCurrentIndex(win._lang_combo.findData("zh"))  # an open panel follows the language
+        assert panel._back.text() != "Close results" and "Results" not in panel.head.text()
+        win._lang_combo.setCurrentIndex(win._lang_combo.findData("en"))
         panel._rows[0].check.setChecked(True)
         panel._rows[2].mousePressEvent(type("E", (), {"button": lambda self: appmod.Qt.LeftButton})())
         assert panel.add.isEnabled() and "2" in panel.add.text()  # a click anywhere on a row ticks it

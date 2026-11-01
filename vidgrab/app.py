@@ -1940,7 +1940,7 @@ class VidGrabWindow(QMainWindow):
         # the video card + options, or (while a search is open) its results
         self._body_stack = QStackedWidget()
         self._body_stack.addWidget(body_page)
-        self._search_panel = SearchPanel(self._t, _thumb_cache_dir())
+        self._search_panel = SearchPanel(lambda *a, **k: self._t(*a, **k), _thumb_cache_dir())
         self._search_panel.chosen.connect(self._search_chosen)
         self._search_panel.closed.connect(self._close_search)
         self._body_stack.addWidget(self._search_panel)
@@ -3013,6 +3013,7 @@ class VidGrabWindow(QMainWindow):
         self._mp3.setText(t("Audio"))
         self._update_exact_btn()
         self._update_action_label()
+        self._search_panel.retranslate()
         self._ts_lbl.setText(t("Start:"))
         self._te_lbl.setText(t("End:"))
         self._dl_paste.setText(t("Paste"))

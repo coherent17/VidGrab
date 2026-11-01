@@ -39,7 +39,7 @@ dev = [
 ]
 
 [project.gui-scripts]
-vidgrab = "vidgrab.app:main"
+vidgrab = "vidgrab.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/coherent17/VidGrab"

@@ -700,3 +700,60 @@ def test_split_renders_both_lengths(tmp_path, layout):
         info = studio.probe_media(out)
         assert (info["width"], info["height"]) == (854, 480)
         assert info["has_audio"] and abs(info["duration"] - expect) < 0.15
+
+
+# ── audio cleanup: reduce noise per clip, even out the loudness ─────────
+
+
+def _clip_for_graph(tmp_path, denoise=False):
+    src = tmp_path / "a.mp4"
+    src.write_bytes(b"x")
+    return studio._ResolvedClip(path=src, start=0.0, duration=2.0, has_video=True, has_audio=True,
+                                width=320, height=180, denoise=denoise)
+
+
+def test_denoise_and_loudness_are_only_in_the_graph_when_asked(tmp_path):
+    out = tmp_path / "o.mp4"
+    cmd, _ = studio.build_video_command("ffmpeg", [_clip_for_graph(tmp_path)], out)
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    assert "afftdn" not in graph and "loudnorm" not in graph
+    cmd, _ = studio.build_video_command("ffmpeg", [_clip_for_graph(tmp_path, denoise=True)], out,
+                                        normalize_loudness=True)
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    assert studio.DENOISE in graph and graph.count("afftdn") == 1  # that clip only
+    assert graph.index("loudnorm") > graph.index("concat")  # on the finished mix, last
+
+
+@pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
+                    reason="ffmpeg not available")
+def test_cleanup_really_changes_the_sound(tmp_path):
+    import re
+
+    noisy = tmp_path / "noisy.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "color=c=black:s=160x90:r=25:d=8", "-f", "lavfi", "-i",
+                    "sine=f=300:d=8,volume='if(lt(mod(t,4),2),0.5,0.0)':eval=frame", "-f", "lavfi",
+                    "-i", "anoisesrc=color=pink:amplitude=0.02:d=8", "-filter_complex",
+                    "[1][2]amix=inputs=2:duration=first:normalize=0[a]", "-map", "0:v", "-map",
+                    "[a]", "-c:v", "libx264", "-c:a", "aac", "-shortest", str(noisy)], check=True)
+
+    def stat(path, args, pattern):
+        err = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", *args, "-i", str(path),
+                              "-af", pattern[0], "-vn", "-f", "null", "-"],
+                             capture_output=True, text=True, check=False).stderr
+        return float(re.findall(pattern[1], err)[-1])
+
+    def hiss(path):  # the quiet gap between the tone bursts
+        return stat(path, ["-ss", "2.3", "-t", "1.4"], ("volumedetect", r"mean_volume: (-?[\d.]+) dB"))
+
+    def lufs(path):
+        return stat(path, [], ("ebur128", r"I:\s+(-?[\d.]+) LUFS"))
+
+    plain = studio.compose_video([studio.Clip(str(noisy))], tmp_path / "plain.mp4", resolution="480p")
+    clean = studio.compose_video([studio.Clip(str(noisy), denoise=True)], tmp_path / "clean.mp4",
+                                 resolution="480p")
+    loud = studio.compose_video([studio.Clip(str(noisy))], tmp_path / "loud.mp4", resolution="480p",
+                                normalize_loudness=True)
+    assert hiss(clean) < hiss(plain) - 8  # the hiss is clearly quieter (about 16 dB here)
+    assert lufs(plain) < -20  # a quiet clip ...
+    assert abs(lufs(loud) - (-14)) < 2.5  # ... brought to about -14 LUFS

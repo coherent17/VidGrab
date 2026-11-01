@@ -1583,3 +1583,68 @@ def test_closing_with_stuck_threads_neither_crashes_nor_hangs(qapp, tmp_path, mo
             t.gate.set()
             t.wait(5000)
         appmod._STUCK.clear()
+
+
+def test_studio_two_videos_at_once(qapp, tmp_path, monkeypatch) -> None:
+    """Two videos at once: the dialog starts from the first two clips, passes
+    the layout to the worker, and the result lands on the timeline as a clip."""
+    import shutil
+    import subprocess
+    import time
+
+    from PySide6.QtWidgets import QDialog
+
+    from vidgrab import app as appmod
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        pytest.skip("ffmpeg / ffprobe not on PATH")
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(appmod.QMessageBox, "question",
+                        staticmethod(lambda *_a, **_k: appmod.QMessageBox.Discard))
+    shown: list = []
+    monkeypatch.setattr(appmod.QMessageBox, "information",
+                        staticmethod(lambda *a, **_k: shown.append(a)))
+    clips = []
+    for name, spec in (("a.mp4", "testsrc=size=320x180:rate=10"),
+                       ("b.mp4", "smptebars=size=160x240:rate=10")):
+        path = tmp_path / name
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", spec,
+                        "-f", "lavfi", "-i", "sine", "-t", "2", str(path)], check=True)
+        clips.append(str(path))
+
+    def run_dialog(dlg):
+        assert [p.text() for p in dlg.paths] == clips  # starts from the project's clips
+        dlg.swap()
+        dlg.set_layout("stack")
+        assert dlg.size.currentData() == "vertical"  # stacked videos want a tall frame
+        dlg.sound.setCurrentIndex(dlg.sound.findData("second"))
+        return QDialog.Accepted
+
+    monkeypatch.setattr(QDialog, "exec", run_dialog)
+    win = appmod.VidGrabWindow()
+    try:
+        st = win._studio
+        st.add_clips(clips)
+        seen: dict = {}
+        real = appmod.compose_split
+
+        def spy(clip_list, out, **kw):
+            seen.update(kw, clips=[c.path for c in clip_list])
+            return real(clip_list, out, **kw)
+
+        monkeypatch.setattr(appmod, "compose_split", spy)
+        st.out_dir.setText(str(tmp_path / "out"))
+        st.combine_videos()
+        t0 = time.time()
+        while st._busy and time.time() - t0 < 30:
+            qapp.processEvents()
+            time.sleep(0.01)
+        qapp.processEvents()
+        assert seen["clips"] == clips[::-1]
+        assert (seen["layout"], seen["resolution"], seen["audio"]) == ("stack", "vertical", "second")
+        assert len(st._clips) == 3 and st._clips[2].path.endswith("b + a.mp4")
+        assert (st._clips[2].info["width"], st._clips[2].info["height"]) == (1080, 1920)
+        assert not shown  # no "Saved to" box: it simply joins the timeline
+    finally:
+        win._studio.clear_autosave()
+        win.close()

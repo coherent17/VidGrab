@@ -1280,6 +1280,147 @@ def build_video_command(
     return cmd, total
 
 
+# ── two videos at once (split screen) ─────────────────────────────────────
+
+# layout -> how two videos share the frame; the first is drawn first, so in
+# "pip" the second sits on top of it
+SPLIT_LAYOUTS = ("side", "stack", "wide", "pip")
+SPLIT_AUDIO = ("both", "first", "second", "none")
+SPLIT_LENGTHS = ("longest", "shortest")
+
+
+def _down(n: float) -> int:  # rounded down to even, so a gap is never squeezed
+    return max(2, int(n) // 2 * 2)
+
+
+def split_panels(layout: str, width: int, height: int, gap: int = 0) -> list[tuple[int, int, int, int]]:
+    """(x, y, w, h) of the two videos on a *width* x *height* frame; *gap*
+    pixels of background stay between side-by-side panels. The preview in the
+    window calls this too, so both show the same picture."""
+    gap = max(0, int(gap))
+    if layout == "stack":
+        h = _down((height - gap) / 2)
+        return [(0, 0, width, h), (0, height - h, width, h)]
+    if layout == "wide":  # a big picture and a narrow one beside it
+        a = _down((width - gap) * 0.66)
+        b = _down(width - gap - a)
+        return [(0, 0, a, height), (width - b, 0, b, height)]
+    if layout == "pip":  # the second video as a small window in the corner
+        w, h = _even(width * 0.32), _even(height * 0.32)
+        margin = _even(min(width, height) * 0.03)
+        return [(0, 0, width, height), (width - w - margin, height - h - margin, w, h)]
+    w = _down((width - gap) / 2)
+    return [(0, 0, w, height), (width - w, 0, w, height)]
+
+
+def split_canvas(resolution: str) -> tuple[int, int]:
+    return RESOLUTIONS.get(resolution) or (1920, 1080)
+
+
+def build_split_command(
+    ffmpeg: str,
+    clips: list[_ResolvedClip],
+    output: Path,
+    *,
+    layout: str = "side",
+    resolution: str = "1080p",
+    fps: int = 30,
+    gap: int = 0,
+    audio: str = "both",
+    length: str = "longest",
+    quality: str = "balanced",
+    encoder: HwEncoder | None = None,
+) -> tuple[list[str], float]:
+    """ffmpeg argv + output length for two videos playing at the same time.
+    With *length* "longest" the shorter video holds its last picture."""
+    if len(clips) != 2:
+        raise ValueError("a split screen needs exactly two videos")
+    width, height = split_canvas(resolution)
+    preset, crf, abr = RENDER_QUALITY.get(quality, RENDER_QUALITY["balanced"])
+    durations = [c.out_duration for c in clips]
+    total = min(durations) if length == "shortest" else max(durations)
+    keep = {"both": (1.0, 1.0), "first": (1.0, 0.0), "second": (0.0, 1.0)}.get(audio, (0.0, 0.0))
+    cmd = [ffmpeg, "-y"]
+    for c in clips:
+        cmd += _input_args(c)
+    silence: dict[int, int] = {}
+    for i, c in enumerate(clips):
+        if not c.has_audio:
+            cmd += ["-f", "lavfi", "-t", f"{c.out_duration:.3f}",
+                    "-i", f"anullsrc=r={SAMPLE_RATE}:cl=stereo"]
+            silence[i] = len(clips) + len(silence)
+
+    panels = split_panels(layout, width, height, gap)
+    graph = [f"color=c=black:s={width}x{height}:r={fps}:d={total:.3f},format=yuv420p[base]"]
+    vprev = "[base]"
+    for i, (c, (x, y, w, h)) in enumerate(zip(clips, panels)):
+        hold = total - durations[i]
+        graph.append(
+            f"[{i}:v:0]{_frame_filter(c, w, h)},setsar=1,"
+            + (f"setpts=(PTS-STARTPTS)/{c.speed:.6g}," if c.speed != 1.0 else "")
+            + f"fps={fps},format=yuv420p,setpts=PTS-STARTPTS"
+            + (f",tpad=stop_mode=clone:stop_duration={hold:.3f}" if hold > 0.04 else "")
+            + f"[p{i}]")
+        graph.append(f"{vprev}[p{i}]overlay=x={x}:y={y}[o{i}]")
+        vprev = f"[o{i}]"
+        label = f"[{silence[i]}:a]" if i in silence else f"[{i}:a:0]"
+        tempo = f",{_atempo(c.speed)}" if c.speed != 1.0 else ""
+        graph.append(f"{_audio_norm(label, keep[i] * c.gain)}{tempo}[a{i}]")
+    graph.append("[a0][a1]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,"
+                 f"alimiter=limit=0.95,{_AUDIO_FMT},asetnsamples=n=1024:p=0[aenc]")
+    cmd += [
+        "-filter_complex", ";".join(graph),
+        "-map", vprev, "-map", "[aenc]", "-t", f"{total:.3f}",
+        *video_args(encoder, preset, crf),
+        "-c:a", "aac", "-b:a", abr,
+        "-movflags", "+faststart",
+        str(output),
+    ]
+    return cmd, total
+
+
+def compose_split(
+    clips: list[Clip],
+    output_file: str | Path,
+    *,
+    layout: str = "side",
+    resolution: str = "1080p",
+    gap: int = 0,
+    audio: str = "both",
+    length: str = "longest",
+    quality: str = "balanced",
+    hardware: bool = False,
+    on_progress: ProgressCallback | None = None,
+    on_log: LogCallback | None = None,
+    translate: TranslateFn | None = None,
+) -> Path:
+    """Play two videos at the same time in one frame (see `split_panels`)
+    and save the result as an MP4 that can be used like any other clip."""
+    tr = translate or _noop_tr
+    ffmpeg = _require_ffmpeg(translate)
+    if len(clips) != 2:
+        raise RuntimeError(tr("Choose two videos first."))
+    if layout not in SPLIT_LAYOUTS:
+        layout = "side"
+    if on_progress:
+        on_progress(tr("Reading clips…"), None)
+    resolved = _resolve(clips, need_video=True, translate=translate)
+    out = unique_path(Path(output_file).resolve())
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="vidgrab-split-") as tmp:
+        _encode(
+            lambda enc: build_split_command(
+                ffmpeg, resolved, out, layout=layout, resolution=resolution, gap=gap,
+                audio=audio, length=length, quality=quality, encoder=enc),
+            ffmpeg, Path(tmp), hardware=hardware, on_progress=on_progress,
+            on_log=on_log, translate=translate)
+    if on_log:
+        on_log(tr("Saved: {name}", name=out.name))
+    if on_progress:
+        on_progress(tr("Complete"), 100.0)
+    return out
+
+
 EXPORT_FORMATS = (".mp4", ".gif", ".mp3", ".m4a", ".wav")
 
 
@@ -1296,6 +1437,41 @@ def _export_args(kind: str, gif_width: int, gif_fps: int) -> list[str]:
     if kind == ".wav":
         return ["-vn", "-c:a", "pcm_s16le"]
     raise ValueError(f"unsupported export format {kind}")
+
+
+def _encode(
+    build,
+    ffmpeg: str,
+    work: Path,
+    *,
+    hardware: bool,
+    on_progress: ProgressCallback | None,
+    on_log: LogCallback | None,
+    translate: TranslateFn | None,
+) -> float:
+    """Run `build(encoder)` -> (argv, length): on the graphics card first when
+    *hardware* and one works, and again on the CPU if that render fails or
+    stalls. Returns the output length."""
+    tr = translate or _noop_tr
+    encoder = detect_encoder(ffmpeg) if hardware else None
+    for attempt in (encoder, None) if encoder else (None,):
+        cmd, total = build(attempt)
+        if attempt and on_log:
+            on_log(tr("Encoding on the graphics card ({name})", name=attempt.label))
+        try:
+            _run_with_progress(
+                cmd, total, cwd=work, label=tr("Rendering…"),
+                on_progress=on_progress, on_log=on_log, translate=translate,
+                stall_s=HW_STALL_S if attempt else None,
+            )
+            return total
+        except RuntimeError as exc:
+            if attempt is None:
+                raise
+            if on_log:  # a driver problem in the middle of the render: do it on the CPU
+                on_log(tr("The graphics card could not encode this ({err}); "
+                          "rendering on the CPU instead", err=str(exc).splitlines()[-1]))
+    raise RuntimeError("unreachable")  # pragma: no cover
 
 
 def compose_video(
@@ -1364,9 +1540,8 @@ def compose_video(
         # GIF / audio-only exports: render the video first, then convert it
         kind = out.suffix.lower()
         render_to = out if kind == ".mp4" else work / "render.mp4"
-        encoder = detect_encoder(ffmpeg) if hardware else None
-        for attempt in (encoder, None) if encoder else (None,):
-            cmd, total = build_video_command(
+        total = _encode(
+            lambda enc: build_video_command(
                 ffmpeg, resolved, render_to,
                 resolution=resolution,
                 subtitles_file=subs_name,
@@ -1374,23 +1549,10 @@ def compose_video(
                 music=songs,
                 images=[img for img in images or [] if img.end > img.start],
                 quality=quality,
-                encoder=attempt,
-            )
-            if attempt and on_log:
-                on_log(tr("Encoding on the graphics card ({name})", name=attempt.label))
-            try:
-                _run_with_progress(
-                    cmd, total, cwd=work, label=tr("Rendering…"),
-                    on_progress=on_progress, on_log=on_log, translate=translate,
-                    stall_s=HW_STALL_S if attempt else None,
-                )
-                break
-            except RuntimeError as exc:
-                if attempt is None:
-                    raise
-                if on_log:  # a driver problem in the middle of the render: do it on the CPU
-                    on_log(tr("The graphics card could not encode this ({err}); "
-                              "rendering on the CPU instead", err=str(exc).splitlines()[-1]))
+                encoder=enc,
+            ),
+            ffmpeg, work, hardware=hardware, on_progress=on_progress, on_log=on_log,
+            translate=translate)
         if render_to != out:
             if on_progress:
                 on_progress(tr("Converting…"), None)

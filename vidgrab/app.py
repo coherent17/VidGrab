@@ -98,7 +98,7 @@ from vidgrab.i18n import FLAGS, LANGUAGES, make_translator
 from vidgrab.jobs import DownloadJob, run_job
 from vidgrab.network import ConnectionStatus, check_internet
 from vidgrab.preview import QT_MULTIMEDIA_OK as _QT_MULTIMEDIA_OK
-from vidgrab.studio import compose_audio, compose_video
+from vidgrab.studio import compose_audio, compose_split, compose_video
 from vidgrab.studio_page import StudioPage
 
 # ── palette ────────────────────────────────────────────────────────────────
@@ -1448,6 +1448,20 @@ class _Worker(QThread):
                     subtitle_style=self._kw.get("subtitle_style"),
                     music=self._kw.get("music"),
                     images=self._kw.get("images"),
+                    quality=self._kw.get("render_quality", "balanced"),
+                    hardware=bool(self._kw.get("hardware")),
+                    on_progress=self._cb_progress,
+                    on_log=self._cb_log,
+                    translate=self._kw.get("translate"),
+                )
+            elif self._task == "combine":
+                result = compose_split(
+                    self._kw["clips"], self._kw["output_file"],
+                    layout=self._kw.get("layout", "side"),
+                    resolution=self._kw.get("resolution", "1080p"),
+                    gap=self._kw.get("gap", 0),
+                    audio=self._kw.get("audio", "both"),
+                    length=self._kw.get("length", "longest"),
                     quality=self._kw.get("render_quality", "balanced"),
                     hardware=bool(self._kw.get("hardware")),
                     on_progress=self._cb_progress,
@@ -3362,6 +3376,11 @@ class VidGrabWindow(QMainWindow):
             self._set_busy(False)
             self._studio.finish(True)
             self._studio.captions_ready(list(result), replace_lines)
+            return
+        if self._worker is not None and self._worker._task == "combine":
+            self._set_busy(False)
+            self._studio.finish(True)
+            self._studio.combined_ready(str(result))
             return
         self._set_busy(False)
         files = list(result) if isinstance(result, (tuple, list)) else [str(result)]

@@ -102,6 +102,7 @@ from vidgrab.captions import (
     speech_engines,
 )
 from vidgrab.preview import MusicBed, Segment, StudioPreview, TransitionMark, fmt_time
+from vidgrab.split_dialog import SplitDialog
 from vidgrab.studio import (
     ANIMATIONS,
     IMAGE_EXTS,
@@ -1843,7 +1844,10 @@ class StudioPage(QWidget):
         self.image_btn = self._btn("＋ Image…", self._browse_images,
                                    "Show a picture over the video from the playhead")
         self.music_btn = self._btn("♪ Music…", self._browse_music, "Add background music")
-        for b in (self.add_sub_btn, self.captions_btn, self.image_btn, self.music_btn):
+        self.combine_btn = self._btn("Two videos…", self.combine_videos,
+                                     "Play two videos at the same time, for example side by side")
+        for b in (self.add_sub_btn, self.captions_btn, self.image_btn, self.music_btn,
+                  self.combine_btn):
             bar.addWidget(b)
         bar.addStretch()
         self.total_lbl = QLabel()
@@ -3005,7 +3009,7 @@ class StudioPage(QWidget):
     def _on_mode(self) -> None:
         video = self.is_video()
         for w in (self.add_sub_btn, self.captions_btn, self.image_btn, self.music_btn,
-                  self.res_lbl, self.res,
+                  self.combine_btn, self.res_lbl, self.res,
                   self.export_cap, self.export_box):
             w.setVisible(video)
         for w in (self.xfade_lbl, self.xfade, self.afmt_lbl, self.afmt, self.abr_lbl, self.abr):
@@ -4656,6 +4660,7 @@ class StudioPage(QWidget):
         # while captions are made the Render button stops them
         self.render_btn.setEnabled(not busy or captions)
         self.captions_btn.setEnabled(not busy)
+        self.combine_btn.setEnabled(not busy)
         if busy:
             self.preview.stop()
             self.progress.setMaximum(0)
@@ -4825,6 +4830,51 @@ class StudioPage(QWidget):
             return None
         size = next(k for k, b in sizes.items() if b.isChecked())
         return lang.currentData(), size, replace_box.isChecked()
+
+    # two videos at once ------------------------------------------------------------
+
+    def combine_videos(self) -> None:
+        """Ask for two videos and a layout, then render them as one clip."""
+        if self._busy or not self.host.ffmpeg_ok():
+            return
+        first = self._sel[1] if self._sel and self._sel[0] == "clip" else 0
+        picks = [c for c in self._clips[first:first + 2]]
+        if len(picks) < 2:
+            picks = self._clips[:2]
+        initial = [(c.path, "" if not c.start else f"{c.start:g}",
+                    "" if c.end is None else f"{c.end:g}") for c in picks]
+
+        def still(path: str, at: float) -> QImage | None:
+            png = thumbnail_png(path, at, height=240) if Path(path).is_file() else None
+            return QImage.fromData(png) if png else None
+
+        dlg = SplitDialog(
+            self, self.t,
+            lambda: self.host.pick_file(self.t("Choose a video"), ("Videos", "Downloads"),
+                                        "Videos (*.mp4 *.mkv *.webm *.mov *.avi *.m4v);;All files (*)"),
+            initial, still)
+        self._split_dlg = dlg  # for tests
+        if dlg.exec() != QDialog.Accepted:
+            return
+        values = dlg.values()
+        folder = Path(self.out_dir.text().strip() or self.host.default_output_dir())
+        names = [Path(c.path).stem for c in values["clips"]]
+        name = "".join(ch for ch in " + ".join(names) if ch not in '<>:"/\\|?*').strip()
+        self._busy_job = "combine"
+        self.render_requested.emit("combine", {
+            **values,
+            "output_file": folder / f"{name[:120] or 'split screen'}.mp4",
+            "render_quality": (self.host.setting("render_quality")
+                               if hasattr(self.host, "setting") else "balanced"),
+            "hardware": bool(self.host.setting("gpu_render"))
+            if hasattr(self.host, "setting") else False,
+        })
+
+    def combined_ready(self, path: str) -> None:
+        """The two-video clip is made: it joins the timeline like any file."""
+        self.add_clips([path])
+        self.select_clip(len(self._clips) - 1)
+        self.status.setText(self.t("Added {name}", name=Path(path).name))
 
     def captions_ready(self, cues: list[SubtitleCue], replace_lines: bool) -> None:
         """Put the recognised lines on the Subtitles row (one undo step)."""

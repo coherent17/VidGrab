@@ -21,11 +21,12 @@ import tempfile
 import threading
 import time
 from array import array
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from yt_dlp.utils import parse_duration
 
+from vidgrab import effects
 from vidgrab.downloader import (
     DEFAULT_MP3_BITRATE,
     LogCallback,
@@ -117,6 +118,7 @@ class Clip:
     muted: bool = False
     speed: float = 1.0  # 0.25 .. 4: the part plays this many times as fast
     denoise: bool = False  # take the steady background hiss / hum out of the clip's sound
+    fx: dict = field(default_factory=dict)  # picture effects, see vidgrab.effects
 
     def gain(self) -> float:
         return 0.0 if self.muted else max(0.0, float(self.volume))
@@ -220,6 +222,7 @@ class ImageOverlay:
     opacity: float = 1.0
     fade: float = 0.0  # fade in / out (s)
     rotation: float = 0.0  # degrees, clockwise, around the centre
+    motion: str = "none"  # slow zoom while shown: none | zoom_in | zoom_out (Ken Burns)
 
 
 def _songs(music: Music) -> list[BackgroundMusic]:
@@ -246,6 +249,9 @@ class _ResolvedClip:
     gain: float = 1.0  # 0 = muted
     speed: float = 1.0
     denoise: bool = False
+    fx: dict = field(default_factory=dict)
+    trf: str | None = None  # stabilising data file in the render's work folder
+    lut: str | None = None  # .cube file in the render's work folder
 
     @property
     def out_duration(self) -> float:
@@ -352,6 +358,41 @@ def thumbnail_png(path: str | Path, at: float = 0.0, height: int = 72) -> bytes 
     return proc.stdout if proc.returncode == 0 and proc.stdout else None
 
 
+def effect_frame_png(path: str | Path, at: float, fx: dict, height: int = 150) -> bytes | None:
+    """One frame with the clip's picture effects applied (what the Effects tab
+    shows beside the original). Stabilising and slow motion need the whole
+    clip, so they are left out here."""
+    ffmpeg = find_ffmpeg()
+    if not ffmpeg:
+        return None
+    fx = effects.sanitize(fx)
+    lut = Path(fx["lut"]) if fx.get("lut") and Path(fx["lut"]).is_file() else None
+    chain = effects.source_chain(fx, lut_name=lut.name if lut else None)
+    key = effects.key_filter(fx)
+    scale = f"scale=-2:{height}"
+    cmd = [ffmpeg, "-v", "error", "-ss", f"{max(0.0, at):.3f}", "-i", str(path)]
+    if key:  # show it over a grey card, or the chosen picture
+        bg = fx.get("key_bg")
+        if bg and Path(bg).is_file():
+            cmd += ["-i", str(bg)]
+            back = f"[1:v]{scale},crop=trunc(iw/2)*2:{height},format=yuv420p[b]"
+        else:
+            cmd += ["-f", "lavfi", "-i", "color=c=0x303030:s=640x360"]
+            back = f"[1:v]{scale},format=yuv420p[b]"
+        graph = (f"[0:v]{chain}{key},format=yuva420p,{scale}[k];{back};"
+                 "[b][k]overlay=(W-w)/2:(H-h)/2:shortest=1,format=yuv420p")
+        cmd += ["-filter_complex", graph]
+    else:
+        cmd += ["-vf", f"{chain}{scale}"]
+    cmd += ["-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, check=False, timeout=30,
+                              cwd=str(lut.parent) if lut else None, **_no_window())
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout if proc.returncode == 0 and proc.stdout else None
+
+
 def waveform(path: str | Path, buckets: int = 600, rate: int = 2000) -> list[float]:
     """Peak level (0..1) of the audio in *buckets* equal slices of the file."""
     ffmpeg = find_ffmpeg()
@@ -451,6 +492,7 @@ def _resolve(
                 gain=min(clip.gain(), 2.0),
                 speed=min(max(float(clip.speed or 1.0), SPEED_RANGE[0]), SPEED_RANGE[1]),
                 denoise=bool(clip.denoise),
+                fx=effects.sanitize(clip.fx),
             )
         )
     return resolved
@@ -1126,11 +1168,12 @@ def _canvas(clips: list[_ResolvedClip], resolution: str) -> tuple[int, int]:
     return canvas_size(resolution, clips[0].width, clips[0].height)
 
 
-def _frame_filter(c: _ResolvedClip, width: int, height: int) -> str:
-    """Scale (+ crop) one clip onto the output canvas."""
+def _frame_filter(c: _ResolvedClip, width: int, height: int, bars: str = "black") -> str:
+    """Scale (+ crop) one clip onto the output canvas. *bars* is the colour of
+    the padding (``black@0`` keeps it see-through for a green-screen clip)."""
     if c.fit == "fit" and c.zoom == 1.0:  # the whole picture, centred, with bars
         return (f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black")
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={bars}")
     # cover (fill) or contain (fit) a box `zoom` times the canvas, then cut the
     # canvas out of it at the pan point and pad whatever is still missing
     mode = "increase" if c.fit == "fill" else "decrease"
@@ -1138,7 +1181,7 @@ def _frame_filter(c: _ResolvedClip, width: int, height: int) -> str:
     return (f"scale={zw}:{zh}:force_original_aspect_ratio={mode}:force_divisible_by=2,"
             f"crop=w='min(iw,{width})':h='min(ih,{height})':"
             f"x='(iw-ow)*{c.pan_x:.4f}':y='(ih-oh)*{c.pan_y:.4f}',"
-            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black")
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={bars}")
 
 
 def _music_bed(label: str, m: BackgroundMusic, total: float) -> str:
@@ -1173,7 +1216,11 @@ def _music_bed(label: str, m: BackgroundMusic, total: float) -> str:
 def _image_filter(img: ImageOverlay, frame_width: int) -> str:
     """Scale a picture to its width on the frame, with opacity and fades."""
     w = _even(frame_width * min(max(img.width, 0.01), 4.0))
-    chain = f"format=rgba,scale={w}:-2"
+    if img.motion in ("zoom_in", "zoom_out"):  # slow push in / pull out while it is shown
+        size = effects.kenburns_scale(w, img.start, img.end, img.motion[5:])
+        chain = f"format=rgba,scale={size}"
+    else:
+        chain = f"format=rgba,scale={w}:-2"
     if img.opacity < 1.0:
         chain += f",colorchannelmixer=aa={max(img.opacity, 0.0):.3f}"
     if img.fade > 0:
@@ -1231,6 +1278,20 @@ def build_video_command(
             silence[i] = next_input
             next_input += 1
 
+    # green-screen clips: what shows through them (a picture, or black)
+    key_inputs: dict[int, int] = {}
+    for i, c in enumerate(clips):
+        if not effects.key_filter(c.fx):
+            continue
+        bg = c.fx.get("key_bg")
+        if bg:
+            cmd += ["-loop", "1", "-framerate", str(fps), "-t", f"{c.out_duration:.3f}", "-i", str(bg)]
+        else:
+            cmd += ["-f", "lavfi", "-t", f"{c.out_duration:.3f}",
+                    "-i", f"color=c=black:s={width}x{height}:r={fps}"]
+        key_inputs[i] = next_input
+        next_input += 1
+
     # pictures: one looped still per overlay, only as long as it is needed
     image_inputs: list[int] = []
     for img in images or []:
@@ -1250,16 +1311,26 @@ def build_video_command(
 
     graph: list[str] = []
     for i, c in enumerate(clips):
-        graph.append(
-            f"[{i}:v:0]{_frame_filter(c, width, height)},setsar=1,"
-            # speed before fps, so the output still has a steady frame rate
-            + (f"setpts=(PTS-STARTPTS)/{c.speed:.6g}," if c.speed != 1.0 else "")
-            + f"fps={fps},format=yuv420p,setpts=PTS-STARTPTS"
-            # xfade needs both inputs on one timebase, and concat changes it
-            # ffmpeg 7.0's setpts forgets the frame rate, which xfade requires:
-            # restate it, then put every input on one timebase
-            f"{f',fps={fps},settb=AVTB' if any(overlaps) else ''}[v{i}]"
-        )
+        keyed = i in key_inputs
+        # speed before fps, so the output still has a steady frame rate
+        speed = f"setpts=(PTS-STARTPTS)/{c.speed:.6g}," if c.speed != 1.0 else ""
+        if c.speed < 1.0 and c.fx.get("smooth"):
+            speed += effects.smooth_filter(fps) + ","
+        # xfade needs both inputs on one timebase, and concat changes it
+        # ffmpeg 7.0's setpts forgets the frame rate, which xfade requires:
+        # restate it, then put every input on one timebase
+        tail = f",fps={fps},settb=AVTB" if any(overlaps) else ""
+        head = (f"[{i}:v:0]{effects.source_chain(c.fx, trf_name=c.trf, lut_name=c.lut)}"
+                + (effects.key_filter(c.fx) + "," if keyed else ""))
+        if keyed:  # the clip, see-through where the colour was, over its background
+            graph.append(f"{head}{_frame_filter(c, width, height, 'black@0')},setsar=1,{speed}"
+                         f"fps={fps},format=yuva420p,setpts=PTS-STARTPTS[k{i}]")
+            graph.append(f"[{key_inputs[i]}:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
+                         f"crop={width}:{height},setsar=1,fps={fps},format=yuv420p,setpts=PTS-STARTPTS[kb{i}]")
+            graph.append(f"[kb{i}][k{i}]overlay=shortest=1,format=yuv420p,setpts=PTS-STARTPTS{tail}[v{i}]")
+        else:
+            graph.append(f"{head}{_frame_filter(c, width, height)},setsar=1,{speed}"
+                         f"fps={fps},format=yuv420p,setpts=PTS-STARTPTS{tail}[v{i}]")
         if i in silence:
             graph.append(f"{_audio_norm(f'[{silence[i]}:a]')}[a{i}]")
         else:
@@ -1535,6 +1606,40 @@ def _encode(
     raise RuntimeError("unreachable")  # pragma: no cover
 
 
+def _prepare_effects(
+    clips: list[_ResolvedClip],
+    ffmpeg: str,
+    work: Path,
+    *,
+    on_progress: ProgressCallback | None,
+    on_log: LogCallback | None,
+    translate: TranslateFn | None,
+) -> list[_ResolvedClip]:
+    """Do what the effects need before the render: analyse shaky clips (one
+    pass each, written to *work*) and copy colour-look files next to the
+    render, so the filter graph only ever names files in its own folder."""
+    tr = translate or _noop_tr
+    out: list[_ResolvedClip] = []
+    for k, c in enumerate(clips):
+        if c.fx.get("lut"):
+            lut = Path(c.fx["lut"])
+            if lut.is_file():
+                shutil.copy2(lut, work / f"lut{k}.cube")
+                c = replace(c, lut=f"lut{k}.cube")
+            elif on_log:
+                on_log(tr("File not found: {src}", src=lut))
+        if c.fx.get("stabilize") and c.has_video:
+            name = f"stab{k}.trf"
+            _run_with_progress(
+                [ffmpeg, "-y", *_input_args(c), "-an", "-vf", effects.detect_filter(name),
+                 "-f", "null", "-"],
+                c.duration, cwd=work, label=tr("Steadying shaky video…"),
+                on_progress=on_progress, on_log=on_log, translate=translate)
+            c = replace(c, trf=name)
+        out.append(c)
+    return out
+
+
 def compose_video(
     clips: list[Clip],
     output_file: str | Path,
@@ -1599,6 +1704,8 @@ def compose_video(
                 (work / "fonts").mkdir(exist_ok=True)
                 shutil.copy2(font, work / "fonts" / font.name)
                 fonts_name = "fonts"
+        resolved = _prepare_effects(resolved, ffmpeg, work, on_progress=on_progress,
+                                    on_log=on_log, translate=translate)
         # GIF / audio-only exports: render the video first, then convert it
         kind = out.suffix.lower()
         render_to = out if kind == ".mp4" else work / "render.mp4"

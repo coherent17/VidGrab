@@ -91,7 +91,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab import cuda_runtime
+from vidgrab import cuda_runtime, effects
 from vidgrab.captions import DEFAULT_MODEL as DEFAULT_CAPTION_MODEL
 from vidgrab.captions import LANGUAGES as CAPTION_LANGUAGES
 from vidgrab.captions import MODELS as CAPTION_MODELS
@@ -120,6 +120,7 @@ from vidgrab.studio import (
     SubtitleStyle,
     canvas_size,
     cue_style,
+    effect_frame_png,
     format_srt,
     format_transcript,
     format_vtt,
@@ -232,6 +233,23 @@ class _ThumbTask(QRunnable):
     def run(self) -> None:
         png = thumbnail_png(self._path, self._at)
         self._relay.done.emit(self._path, self._at, QImage.fromData(png) if png else QImage())
+
+
+class _FxRelay(QObject):
+    done = Signal(int, bytes, bytes)
+
+
+class _FxTask(QRunnable):
+    """The clip's frame before and after its effects (for the Effects tab)."""
+
+    def __init__(self, relay: _FxRelay, gen: int, path: str, at: float, fx: dict) -> None:
+        super().__init__()
+        self._relay, self._gen, self._path, self._at, self._fx = relay, gen, path, at, fx
+
+    def run(self) -> None:
+        before = thumbnail_png(self._path, self._at, 150) or b""
+        after = effect_frame_png(self._path, self._at, self._fx, 150) or b""
+        self._relay.done.emit(self._gen, before, after)
 
 
 class ThumbCache(QObject):
@@ -440,6 +458,7 @@ class _MediaClip:
     muted: bool = False
     speed: float = 1.0  # 0.25 .. 4
     denoise: bool = False  # reduce steady background noise when rendering
+    fx: dict = field(default_factory=dict)  # picture effects (vidgrab.effects)
 
     @property
     def has_audio(self) -> bool:
@@ -452,7 +471,7 @@ class _MediaClip:
         """The user-editable part, as plain comparable data (undo / projects)."""
         return (self.start, self.end, self.transition, self.transition_d, self.fit,
                 self.zoom, self.pan_x, self.pan_y, self.volume, self.muted, self.speed,
-                self.denoise)
+                self.denoise, effects.edit_tuple(self.fx))
 
     def with_edit(self, edit: tuple) -> _MediaClip:
         (start, end, transition, transition_d, fit, zoom, pan_x, pan_y, volume,
@@ -460,7 +479,8 @@ class _MediaClip:
         return replace(self, start=start, end=end, transition=transition,
                        transition_d=transition_d, fit=fit, zoom=zoom, pan_x=pan_x, pan_y=pan_y,
                        volume=volume, muted=muted, speed=rest[0] if rest else 1.0,
-                       denoise=bool(rest[1]) if len(rest) > 1 else False)
+                       denoise=bool(rest[1]) if len(rest) > 1 else False,
+                       fx=dict(rest[2]) if len(rest) > 2 else {})
 
     def frame_at(self, t: float) -> QImage | None:
         if not self.thumbs:
@@ -2183,6 +2203,16 @@ class StudioPage(QWidget):
         inner, lay = self._page()
         lay.setContentsMargins(0, 6, 4, 0)
         lay.setSpacing(6)
+        lay.addWidget(self._label("TEXT STYLES", "field_cap"))
+        styles = QGridLayout()
+        styles.setSpacing(6)
+        for n, (key, label) in enumerate((("title", "Big title"), ("lower_third", "Name tag"),
+                                          ("quote", "Quote"), ("caption_box", "Caption box"))):
+            b = self._btn(label, lambda _c=False, k=key: self._apply_text_style(k),
+                          "Set this line's look, animation and place in one click")
+            styles.addWidget(b, n // 2, n % 2)
+        lay.addLayout(styles)
+        lay.addSpacing(4)
         lay.addWidget(self._label("ANIMATION", "field_cap"))
         self.cue_anim_btns: dict[str, QPushButton] = {}
         lay.addWidget(self._choice_grid(
@@ -2237,6 +2267,21 @@ class StudioPage(QWidget):
         self.track.set_selection(self._sel)
         self._fill_effects()
         self._record(kind)
+
+    def _apply_text_style(self, key: str) -> None:
+        """One-click title / name tag / quote: look, animation and place together."""
+        cue = self._cur_cue()
+        if cue is None:
+            return
+        spec = effects.TEXT_TEMPLATES[key]
+        if cue.text.strip() in ("", self.t("New subtitle")):
+            cue.text = self.t(spec["text"])
+        cue.look = dict(spec["look"])
+        cue.animation = spec["animation"]
+        cue.anchor, cue.x, cue.y = spec["anchor"], spec["x"], spec["y"]
+        self._cue_look_changed()
+        self._fill_cue_inspector()
+        self.preview.seek(cue.start + 0.01)
 
     def _set_cue_animation(self, kind: str) -> None:
         cue = self._cur_cue()
@@ -2437,7 +2482,7 @@ class StudioPage(QWidget):
             for i, b in enumerate(buttons):
                 font = QFont(b.font())
                 font.setBold(True)
-                lay.setStretch(i, QFontMetrics(font).horizontalAdvance(b.text()) + 28)
+                lay.setStretch(i, QFontMetrics(font).horizontalAdvance(b.text()) + 20)
 
     def _choice_grid(self, items: list[tuple[str, str]], columns: int, slot,
                      store: dict[str, QPushButton]) -> QWidget:
@@ -2484,7 +2529,7 @@ class StudioPage(QWidget):
         lay.addLayout(top)
         outer = lay
         tabs, self.clip_tabs, self.clip_tab_btns = self._tab_bar(
-            ("Trim", "Transition", "Sound + frame"))
+            ("Trim", "Transition", "Sound, frame", "Effects"))
         outer.addWidget(tabs)
         outer.addWidget(self.clip_tabs, stretch=1)
         page, lay = self._page()
@@ -2639,7 +2684,238 @@ class StudioPage(QWidget):
             "in the preview to choose what stays in frame.", "hint")
         lay.addWidget(self.framing_hint)
         lay.addStretch()
+        self.clip_tabs.addWidget(self._build_effects_page())
         return inner
+
+    # picture effects -------------------------------------------------------------------
+
+    FX_LOOKS = (("none", "Original"), ("cinematic", "Cinematic"), ("warm", "Warm"),
+                ("cool", "Cool"), ("bw", "Mono"), ("vivid", "Vivid"), ("vintage", "Vintage"))
+    # key, label, slider range (hundredths for most), unit shown after the number
+    FX_SLIDERS = (
+        ("brightness", "Brightness", -50, 50, ""), ("contrast", "Contrast", 50, 180, ""),
+        ("saturation", "Colour", 0, 200, ""), ("warmth", "Warmth", -100, 100, ""),
+        ("denoise", "Smooth noise", 0, 100, "%"), ("sharpen", "Sharpen", 0, 100, "%"),
+        ("key_similarity", "Strength", 2, 50, "%"),
+    )
+
+    def _build_effects_page(self) -> QWidget:
+        page, lay = self._page()
+        lay.setContentsMargins(0, 6, 4, 0)
+        lay.setSpacing(6)
+        self.fx_pool = QThreadPool(self)
+        self.fx_pool.setMaxThreadCount(1)
+        self._fx_relay = _FxRelay(self)
+        self._fx_relay.done.connect(self._fx_frames)
+        self._fx_gen = 0
+        self._fx_timer = QTimer(self)
+        self._fx_timer.setSingleShot(True)
+        self._fx_timer.setInterval(220)
+        self._fx_timer.timeout.connect(self._fx_request)
+
+        # the frame under the playhead, before and after
+        shots = QHBoxLayout()
+        shots.setSpacing(8)
+        self.fx_shots: list[QLabel] = []
+        for key in ("Before", "After"):
+            col = QVBoxLayout()
+            col.setSpacing(2)
+            col.addWidget(self._label(key, "hint"))
+            shot = QLabel()
+            shot.setObjectName("fx_shot")
+            shot.setAlignment(Qt.AlignCenter)
+            shot.setFixedHeight(84)
+            shot.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            col.addWidget(shot)
+            shots.addLayout(col, stretch=1)
+            self.fx_shots.append(shot)
+        lay.addLayout(shots)
+        lay.addWidget(self._label(
+            "Shown above and in the render, not in the player.",
+            "hint"))
+
+        lay.addWidget(self._label("LOOK", "field_cap"))
+        self.fx_look_btns: dict[str, QPushButton] = {}
+        lay.addWidget(self._choice_grid([(k, v) for k, v in self.FX_LOOKS], 4,
+                                        self._fx_set_look, self.fx_look_btns))
+
+        head = QHBoxLayout()
+        head.addWidget(self._label("ADJUST", "field_cap"))
+        head.addStretch()
+        head.addWidget(self._btn("Reset", self._fx_reset, "Take every picture effect off this clip"))
+        lay.addLayout(head)
+        self.fx_sliders: dict[str, QSlider] = {}
+        self.fx_rows: dict[str, list[QWidget]] = {}
+        for key, label, lo, hi, unit in self.FX_SLIDERS:
+            if key == "denoise":
+                lay.addWidget(self._label("CLEAN UP", "field_cap"))
+            if key == "key_similarity":
+                continue  # shown under the green-screen switch
+            lay.addLayout(self._fx_slider_row(key, label, lo, hi, unit))
+
+        lay.addWidget(self._label("FIX", "field_cap"))
+        self.fx_stab = QCheckBox()
+        self.fx_stab.setCursor(QCursor(_HAND))
+        self._tr(self.fx_stab, "Steady shaky video")
+        self._tr(self.fx_stab, "Smooths out hand-held shake. Adds a pass before the render and "
+                 "crops in slightly.", "setToolTip")
+        self.fx_stab.toggled.connect(lambda on: self._fx_set("stabilize", on))
+        lay.addWidget(self.fx_stab)
+        self.fx_smooth = QCheckBox()
+        self.fx_smooth.setCursor(QCursor(_HAND))
+        self._tr(self.fx_smooth, "Smooth slow motion")
+        self._tr(self.fx_smooth, "When this clip plays slower than normal, make up the in-between "
+                 "frames instead of repeating them. Slower to render.", "setToolTip")
+        self.fx_smooth.toggled.connect(lambda on: self._fx_set("smooth", on))
+        lay.addWidget(self.fx_smooth)
+        lut = QHBoxLayout()
+        lut.setSpacing(6)
+        self.fx_lut_btn = self._btn("Colour look file…", self._fx_pick_lut,
+                                    "Apply a .cube colour look (LUT), as made by colour-grading apps")
+        lut.addWidget(self.fx_lut_btn, stretch=1)
+        self.fx_lut_clear = self._btn("Remove", lambda: self._fx_set("lut", ""))
+        lut.addWidget(self.fx_lut_clear)
+        lay.addLayout(lut)
+
+        lay.addWidget(self._label("GREEN SCREEN", "field_cap"))
+        self.fx_key = QCheckBox()
+        self.fx_key.setCursor(QCursor(_HAND))
+        self._tr(self.fx_key, "Remove the background colour")
+        self._tr(self.fx_key, "Makes one colour see-through, so a person filmed in front of a "
+                 "green or blue sheet can stand in front of a picture.", "setToolTip")
+        self.fx_key.toggled.connect(self._fx_key_toggled)
+        lay.addWidget(self.fx_key)
+        self.fx_key_btns: dict[str, QPushButton] = {}
+        self.fx_key_box = self._choice_grid([(effects.GREEN, "Green"), ("#0000FF", "Blue")], 2,
+                                            lambda v: self._fx_set("key", v), self.fx_key_btns)
+        lay.addWidget(self.fx_key_box)
+        lay.addLayout(self._fx_slider_row("key_similarity", "Strength", 2, 50, "%"))
+        bg = QHBoxLayout()
+        bg.setSpacing(6)
+        self.fx_bg_btn = self._btn("Background picture…", self._fx_pick_bg,
+                                   "The picture shown behind the person (black if none)")
+        bg.addWidget(self.fx_bg_btn, stretch=1)
+        self.fx_bg_clear = self._btn("Remove", lambda: self._fx_set("key_bg", ""))
+        bg.addWidget(self.fx_bg_clear)
+        lay.addLayout(bg)
+        self.fx_key_widgets = [self.fx_key_box, self.fx_bg_btn, self.fx_bg_clear]
+        lay.addStretch()
+        return self._scroll(page)
+
+    def _fx_slider_row(self, key: str, label: str, lo: int, hi: int, unit: str) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        name = self._label(label)
+        name.setMinimumWidth(92)
+        row.addWidget(name)
+        slider = QSlider(Qt.Horizontal)
+        slider.setObjectName("level_slider")
+        slider.setRange(lo, hi)
+        slider.setCursor(QCursor(_HAND))
+        value = QLabel()
+        value.setObjectName("level_value")
+        value.setMinimumWidth(40)
+        value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        slider.valueChanged.connect(lambda v, k=key, lbl=value, u=unit: self._fx_slider(k, v, lbl, u))
+        row.addWidget(slider, stretch=1)
+        row.addWidget(value)
+        slider.setProperty("fx_value", value)
+        self.fx_sliders[key] = slider
+        return row
+
+    def _fx_slider(self, key: str, v: int, label: QLabel, unit: str) -> None:
+        label.setText(f"{v}{unit}" if unit else f"{v:+d}" if key in ("brightness", "warmth") else str(v))
+        if self._fx_busy:
+            return
+        # contrast / colour / strength are stored as fractions, the others too
+        self._fx_set(key, v / 100, kind=f"fx_{key}")
+
+    _fx_busy = False
+
+    def _fx_set_look(self, look: str) -> None:
+        self._fx_set("look", look)
+
+    def _fx_key_toggled(self, on: bool) -> None:
+        self._fx_set("key", effects.GREEN if on else "")
+
+    def _fx_set(self, key: str, value, kind: str = "") -> None:
+        clip = self._sel_clip()
+        if clip is None or self._fx_busy:
+            return
+        fx = dict(clip.fx)
+        fx[key] = value
+        if key == "key" and not value:
+            fx["key_bg"] = ""
+        clip.fx = effects.sanitize(fx)
+        self._fill_clip_fx()
+        self._fx_timer.start()
+        self._record(kind or "fx")
+
+    def _fx_reset(self) -> None:
+        clip = self._sel_clip()
+        if clip is not None and clip.fx:
+            clip.fx = {}
+            self._fill_clip_fx()
+            self._fx_timer.start()
+            self._record()
+
+    def _fx_pick_lut(self) -> None:
+        path = self.host.pick_file(self.t("Colour look file"), ("Documents", "Downloads"),
+                                   self.t("Colour look (*.cube)"))
+        if path:
+            self._fx_set("lut", path)
+
+    def _fx_pick_bg(self) -> None:
+        path = self.host.pick_file(self.t("Background picture"), ("Pictures", "Downloads"),
+                                   self.t("Pictures (*.png *.jpg *.jpeg *.webp *.bmp)"))
+        if path:
+            self._fx_set("key_bg", path)
+
+    def _fill_clip_fx(self) -> None:
+        clip = self._sel_clip()
+        if clip is None:
+            return
+        fx = {**effects.DEFAULT_FX, **effects.sanitize(clip.fx)}
+        self._fx_busy = True
+        try:
+            for key, slider in self.fx_sliders.items():
+                slider.setValue(round(fx[key] * 100))
+            self.fx_look_btns[fx["look"]].setChecked(True)
+            self.fx_stab.setChecked(fx["stabilize"])
+            self.fx_smooth.setChecked(fx["smooth"])
+            self.fx_key.setChecked(bool(fx["key"]))
+            for value, b in self.fx_key_btns.items():
+                b.setAutoExclusive(False)
+                b.setChecked(value == fx["key"])
+                b.setAutoExclusive(True)
+        finally:
+            self._fx_busy = False
+        on = bool(fx["key"])
+        for w in (*self.fx_key_widgets, self.fx_sliders["key_similarity"]):
+            w.setEnabled(on)
+        self.fx_lut_clear.setVisible(bool(fx["lut"]))
+        self.fx_lut_btn.setText(Path(fx["lut"]).name if fx["lut"] else self.t("Colour look file…"))
+        self.fx_bg_clear.setVisible(bool(fx["key_bg"]))
+        self.fx_bg_btn.setText(Path(fx["key_bg"]).name if fx["key_bg"] else self.t("Background picture…"))
+
+    def _fx_request(self) -> None:
+        clip = self._sel_clip()
+        if clip is None or not clip.has_video:
+            return
+        hit = self._clip_at(self.preview.position())
+        start, end = clip.span()
+        at = hit[1] if hit and hit[0] == self._sel[1] else start + (end - start) / 3
+        self._fx_gen += 1
+        self.fx_pool.start(_FxTask(self._fx_relay, self._fx_gen, clip.path, at, dict(clip.fx)))
+
+    def _fx_frames(self, gen: int, before: bytes, after: bytes) -> None:
+        if gen != self._fx_gen:
+            return
+        for shot, data in zip(self.fx_shots, (before, after)):
+            img = QImage.fromData(data) if data else QImage()
+            shot.setPixmap(QPixmap.fromImage(img).scaled(
+                max(shot.width(), 80), shot.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                if not img.isNull() else QPixmap())
 
     def _sel_clip(self) -> _MediaClip | None:
         if self._sel and self._sel[0] == "clip" and 0 <= self._sel[1] < len(self._clips):
@@ -2694,6 +2970,12 @@ class StudioPage(QWidget):
         self.clip_zoom.setValue(round(clip.zoom * 100))
         self.clip_zoom.blockSignals(False)
         self.clip_zoom_lbl.setText(f"{round(clip.zoom * 100)}%")
+        self.clip_tab_btns[3].setVisible(clip.has_video and self.is_video())
+        if not self.clip_tab_btns[3].isVisible() and self.clip_tabs.currentIndex() == 3:
+            self.clip_tabs.setCurrentIndex(0)
+            self.clip_tab_btns[0].setChecked(True)
+        self._fill_clip_fx()
+        self._fx_timer.start()
 
     def _transitions_changed(self, kind: str = "") -> None:
         pos = self.preview.position()
@@ -4166,6 +4448,11 @@ class StudioPage(QWidget):
             turn.addWidget(b)
         form.addRow(self._label("Rotation:"), turn)
         lay.addLayout(form)
+        lay.addWidget(self._label("MOVEMENT", "field_cap"))
+        self.image_motion_btns: dict[str, QPushButton] = {}
+        lay.addWidget(self._choice_grid(
+            [("none", "Still"), ("zoom_in", "Zoom in"), ("zoom_out", "Zoom out")], 3,
+            self._set_image_motion, self.image_motion_btns))
         lay.addWidget(self._label("POSITION", "field_cap"))
         pos_row = QHBoxLayout()
         pos_row.setSpacing(12)
@@ -4217,6 +4504,14 @@ class StudioPage(QWidget):
             w.blockSignals(False)
         self._sync_level_label(self.image_size)
         self._sync_level_label(self.image_opacity)
+        for kind, b in self.image_motion_btns.items():
+            b.setChecked(kind == img.motion)
+
+    def _set_image_motion(self, kind: str) -> None:
+        img = self._cur_image()
+        if img is not None:
+            img.motion = kind
+            self._image_changed()
 
     def _image_typed(self, key: str) -> None:
         img = self._cur_image()
@@ -4575,7 +4870,7 @@ class StudioPage(QWidget):
                        "transition": c.transition, "transition_duration": c.transition_d,
                        "fit": c.fit, "zoom": c.zoom, "pan_x": c.pan_x, "pan_y": c.pan_y,
                        "volume": c.volume, "muted": c.muted, "speed": c.speed,
-                       "denoise": c.denoise}
+                       "denoise": c.denoise, "fx": effects.sanitize(c.fx)}
                       for c in self._clips],
             "subtitles": [asdict(c) for c in self._cues],
             "images": [{**ref(img.path), **{k: v for k, v in asdict(img).items() if k != "path"}}
@@ -4660,7 +4955,8 @@ class StudioPage(QWidget):
                     min(2.0, max(0.0, float(ref.get("volume", 1.0)))),
                     bool(ref.get("muted", False)),
                     min(max(float(ref.get("speed", 1.0)), SPEED_RANGE[0]), SPEED_RANGE[1]),
-                    bool(ref.get("denoise", False)))))
+                    bool(ref.get("denoise", False)),
+                    effects.edit_tuple(ref.get("fx")))))
         songs: list[tuple] = []
         raw = data.get("music") or []
         if isinstance(raw, dict):  # 3.2 projects: one song, options on the song
@@ -4801,6 +5097,8 @@ class StudioPage(QWidget):
     def shutdown(self) -> None:
         """Stop background frame extraction (before the window closes)."""
         self.thumbs.shutdown()
+        self.fx_pool.clear()
+        self.fx_pool.waitForDone(3000)
 
     def finish(self, ok: bool) -> None:
         self.progress.setMaximum(100)
@@ -5030,7 +5328,8 @@ class StudioPage(QWidget):
                       transition=c.transition if video else "none",
                       transition_duration=c.transition_d,
                       fit=c.fit, zoom=c.zoom, pan_x=c.pan_x, pan_y=c.pan_y,
-                      volume=c.volume, muted=c.muted, speed=c.speed, denoise=c.denoise)
+                      volume=c.volume, muted=c.muted, speed=c.speed, denoise=c.denoise,
+                      fx=effects.sanitize(c.fx))
                  for c in self._clips]
         folder = Path(self.out_dir.text().strip() or self.host.default_output_dir())
         name = self.name.text().strip() or self.name.placeholderText()

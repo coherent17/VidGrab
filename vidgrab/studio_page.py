@@ -2888,8 +2888,15 @@ class StudioPage(QWidget):
         self.music_fade.setChecked(True)
         self.music_fade.toggled.connect(lambda _c: (self._push_music(), self._record()))
         self._tr(self.music_fade, "Fade out at the end")
+        self.music_duck = QCheckBox()
+        self.music_duck.toggled.connect(lambda _c: self._record())
+        self._tr(self.music_duck, "Lower the music while someone is speaking")
+        self._tr(self.music_duck, "The clips' own sound steers the music: it is pressed down while "
+                 "there is speech and comes back up in the pauses. Applied when you render; the "
+                 "preview does not play it.", "setToolTip")
         lay.addWidget(self.music_loop)
         lay.addWidget(self.music_fade)
+        lay.addWidget(self.music_duck)
         lay.addWidget(self._label(
             "Drag a song's handles to cut it and the block to move it. Overlap two songs "
             "and give them a fade to crossfade.", "hint"))
@@ -4280,7 +4287,7 @@ class StudioPage(QWidget):
             "images": [astuple(img) for img in self._images],
             "music": [song.edit() for song in self._songs],
             "music_opts": (self.orig_vol.value(), self.music_loop.isChecked(),
-                           self.music_fade.isChecked()),
+                           self.music_fade.isChecked(), self.music_duck.isChecked()),
             "audio_opts": (self.loud_cb.isChecked(),),
             "style": self._style_dict(),
         }
@@ -4346,10 +4353,11 @@ class StudioPage(QWidget):
                     or (kind == "music" and i >= len(self._songs)) \
                     or (kind == "image" and i >= len(self._images)):
                 self._sel = None
-            orig, loop, fade = state["music_opts"]
+            orig, loop, fade, *more = state["music_opts"]
             self.orig_vol.setValue(orig)
             self.music_loop.setChecked(loop)
             self.music_fade.setChecked(fade)
+            self.music_duck.setChecked(bool(more[0]) if more else False)
             (loud,) = state.get("audio_opts", (False,))
             self.loud_cb.setChecked(loud)
             self._apply_style_dict(state["style"])
@@ -4504,7 +4512,8 @@ class StudioPage(QWidget):
             "music": music,
             "music_options": {"original_volume": self.orig_vol.value(),
                               "loop_last": self.music_loop.isChecked(),
-                              "fade_out": self.music_fade.isChecked()},
+                              "fade_out": self.music_fade.isChecked(),
+                              "duck": self.music_duck.isChecked()},
             "normalize_loudness": self.loud_cb.isChecked(),
             "style": self._style_dict(),
         }
@@ -4607,7 +4616,7 @@ class StudioPage(QWidget):
                           max(0.0, float(m.get("offset") or 0.0)),
                           int(m.get("volume", 35)), max(0.0, float(m.get("fade") or 0.0))))
         music_opts = (int(opts.get("original_volume", 100)), bool(opts.get("loop_last", True)),
-                      bool(opts.get("fade_out", True)))
+                      bool(opts.get("fade_out", True)), bool(opts.get("duck", False)))
         fields = {f for f in SubtitleCue.__dataclass_fields__}
         cues = [astuple(SubtitleCue(**{k: v for k, v in c.items() if k in fields}))
                 for c in data.get("subtitles", []) if isinstance(c, dict)]
@@ -4963,6 +4972,7 @@ class StudioPage(QWidget):
                 loop=k == last and self.music_loop.isChecked(),
                 fade_out=self.music_fade.isChecked(),
                 start=song.start, end=song.end, offset=song.offset, fade=song.fade,
+                duck=self.music_duck.isChecked(),
             ) for k, song in enumerate(self._songs)] or None
             self.render_requested.emit("compose_video", {
                 "clips": clips,

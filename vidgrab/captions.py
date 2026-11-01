@@ -338,6 +338,7 @@ class SpeechGpu:
     engine: str  # "cuda" | "openvino"
     device: str  # the OpenVINO device name ("GPU", "GPU.1"); "cuda" for CUDA
     name: str  # shown to the user
+    basic: bool = False  # a small integrated GPU: may be slower than the CPU next to it
 
 
 def _whisper_model_class():
@@ -427,12 +428,12 @@ def _nvidia_name() -> str:
     return name or "NVIDIA GPU"
 
 
-# An integrated GPU needs this many execution units to beat the CPU it sits next
-# to: the Arc 140T has 128 and Iris Xe 80-96, while the UHD 600-series of 6th-10th
-# generation Core chips (24 EUs, no hardware int8) is likely slower than their CPU.
-# A heuristic, not a measurement; discrete cards are always used.
-MIN_IGPU_EUS = 64
-_basic_gpus: list[str] = []  # names of integrated GPUs left out for being too basic
+# An integrated GPU with fewer execution units than this is flagged `basic`: the
+# Arc 140T has 128 and Iris Xe 80-96, while the UHD 600-series of 6th-10th
+# generation Core chips (24 EUs, no hardware int8) may well be slower than the CPU
+# next to it. A heuristic, not a measurement. It is still used when the switch is
+# on (the user decides, in Settings), only described honestly.
+BASIC_IGPU_EUS = 64
 
 
 def _openvino_gpu() -> SpeechGpu | None:
@@ -453,15 +454,13 @@ def _openvino_gpu() -> SpeechGpu | None:
 
         dev = min(gpus, key=lambda d: not discrete(d))
         name = re.sub(r"\((?:R|TM)\)", "", str(core.get_property(dev, "FULL_DEVICE_NAME"))).strip()
+        basic = False
         if not discrete(dev):
             try:
-                units = int(core.get_property(dev, "GPU_EXECUTION_UNITS_COUNT"))
+                basic = int(core.get_property(dev, "GPU_EXECUTION_UNITS_COUNT")) < BASIC_IGPU_EUS
             except Exception:  # noqa: BLE001 - unknown size: give it the benefit of the doubt
-                units = MIN_IGPU_EUS
-            if units < MIN_IGPU_EUS:
-                _basic_gpus.append(name)
-                return None
-        return SpeechGpu("openvino", dev, name)
+                basic = False
+        return SpeechGpu("openvino", dev, name, basic)
     except Exception:  # noqa: BLE001
         return None
 
@@ -533,13 +532,14 @@ def speech_device(gpu: bool, models_dir: str | Path | None = None) -> tuple[str,
             fetch = ("{name} found. The first time, auto captions download the NVIDIA CUDA "
                      "libraries ({size}); if that fails, they run on the CPU instead.")
             return fetch, {"name": found[0].name, "size": cuda_runtime.download_size_label()}
+        if found[0].basic:
+            basic = ("{name} found. It is basic graphics, so it may be slower than the CPU: if "
+                     "auto captions are slow, turn this switch off. If it ever fails, they run "
+                     "on the CPU instead.")
+            return basic, {"name": found[0].name}
         ready = ("Ready: {name}. Auto captions run on it; if it ever fails, they run on "
                  "the CPU instead.")
         return ready, {"name": found[0].name}
-    if gpu and _basic_gpus:
-        basic = ("{name} is too basic to speed up speech recognition (the CPU is faster), so "
-                 "auto captions run on the CPU ({n} threads).")
-        return basic, {"name": _basic_gpus[0], "n": threads}
     if gpu:
         none = ("No supported graphics card found for speech recognition (Intel graphics, or "
                 "NVIDIA with CUDA 12), so auto captions run on the CPU ({n} threads).")

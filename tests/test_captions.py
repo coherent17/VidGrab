@@ -332,7 +332,6 @@ def fresh_detection(monkeypatch):
     monkeypatch.setattr(captions, "_gpus", [])
     monkeypatch.setattr(captions, "_detector", [])
     monkeypatch.setattr(captions, "_gave_up", [])
-    monkeypatch.setattr(captions, "_basic_gpus", [])
     monkeypatch.setattr(captions, "cuda_available", lambda: False)
 
 
@@ -374,24 +373,25 @@ def _fake_openvino(monkeypatch, *, kind: str, units, name: str = "Intel(R) UHD G
     monkeypatch.setitem(sys.modules, "openvino", SimpleNamespace(Core=Core))
 
 
-@pytest.mark.parametrize(("kind", "units", "used"), [
-    ("INTEGRATED", 24, False),   # UHD 620 (6th-10th gen): slower than the CPU
-    ("INTEGRATED", 128, True),   # Arc 140T
-    ("INTEGRATED", 96, True),    # Iris Xe
-    ("INTEGRATED", None, True),  # size unknown: benefit of the doubt
-    ("DISCRETE", 32, True),      # a discrete card is always worth it
+@pytest.mark.parametrize(("kind", "units", "basic"), [
+    ("INTEGRATED", 24, True),    # UHD 620 (6th-10th gen): kept, but flagged
+    ("INTEGRATED", 128, False),  # Arc 140T
+    ("INTEGRATED", 96, False),   # Iris Xe
+    ("INTEGRATED", None, False),  # size unknown: not flagged
+    ("DISCRETE", 32, False),     # a discrete card is never flagged
 ])
-def test_basic_integrated_graphics_are_left_to_the_cpu(monkeypatch, fresh_detection,
-                                                       kind, units, used) -> None:
+def test_basic_integrated_graphics_are_kept_and_described(monkeypatch, fresh_detection,
+                                                          kind, units, basic) -> None:
     _fake_openvino(monkeypatch, kind=kind, units=units)
     gpu = captions._openvino_gpu()
-    assert (gpu is not None) == used
-    if not used:
-        assert captions._basic_gpus == ["Intel UHD Graphics 620"]
-        monkeypatch.setattr(captions, "gpus_checked", lambda: True)
-        monkeypatch.setattr(captions, "detect_gpus", lambda timeout=20.0: [])
-        key, fill = captions.speech_device(True)
-        assert key.startswith("{name} is too basic") and fill["name"] == "Intel UHD Graphics 620"
+    assert gpu is not None and gpu.basic is basic  # never left out: the user decides
+    assert gpu.name == "Intel UHD Graphics 620"
+    monkeypatch.setattr(captions, "gpus_checked", lambda: True)
+    monkeypatch.setattr(captions, "detect_gpus", lambda timeout=20.0: [gpu])
+    assert captions.speech_engines(True) == ["openvino", "cpu"]  # it is used
+    key, fill = captions.speech_device(True)
+    assert key.startswith("{name} found. It is basic graphics") == basic
+    assert key.startswith("Ready: {name}") == (not basic) and fill == {"name": gpu.name}
 
 
 def test_model_download_failures_are_friendly_and_leave_no_half_files(monkeypatch, tmp_path) -> None:

@@ -94,7 +94,13 @@ from vidgrab import cuda_runtime
 from vidgrab.captions import DEFAULT_MODEL as DEFAULT_CAPTION_MODEL
 from vidgrab.captions import LANGUAGES as CAPTION_LANGUAGES
 from vidgrab.captions import MODELS as CAPTION_MODELS
-from vidgrab.captions import CaptionSource, model_info, model_ready, speech_engines
+from vidgrab.captions import (
+    CaptionSource,
+    detect_gpus,
+    model_info,
+    model_ready,
+    speech_engines,
+)
 from vidgrab.preview import MusicBed, Segment, StudioPreview, TransitionMark, fmt_time
 from vidgrab.studio import (
     ANIMATIONS,
@@ -4765,6 +4771,8 @@ class StudioPage(QWidget):
         # the model's format and size depend on the engine that will run it
         # (the window is waiting: don't stay on a driver that is slow to answer)
         engine = speech_engines(bool(setting("gpu_captions")), models_dir, timeout=3.0)[0]
+        basic_gpu = engine == "openvino" and any(
+            g.basic for g in detect_gpus(3.0) if g.engine == "openvino")
         needs_cuda = (engine == "cuda" and models_dir is not None
                       and not cuda_runtime.runtime_ready(models_dir))
 
@@ -4776,6 +4784,9 @@ class StudioPage(QWidget):
             if needs_cuda:
                 note += " " + t("Also downloads the NVIDIA CUDA libraries ({size}), once.",
                                 size=cuda_runtime.download_size_label())
+            if basic_gpu:
+                note += " " + t("Your graphics are basic and may be slower than the CPU; if so, "
+                                "turn off the graphics-card switch in Settings → Hardware.")
             hint.setText(note)
 
         for key, label in (("fast", t("Fast")), ("balanced", t("Balanced")), ("best", t("Best"))):

@@ -1938,3 +1938,25 @@ def test_shutdown_reports_a_search_that_will_not_stop(qapp, tmp_path) -> None:
         panel.stop()
         _discard(qapp, panel)
     assert pick_dialogs.shutdown_threads(200) == []
+
+
+def test_font_choice_in_settings(qapp, tmp_path, monkeypatch) -> None:
+    """Inter is the default UI font; "System default" takes it out of the chain."""
+    from vidgrab import app as appmod
+
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    win = appmod.VidGrabWindow()
+    try:
+        assert win.setting("ui_font") == "inter" and win._font_combo.currentData() == "inter"
+        assert '"Inter"' in win.styleSheet()
+        assert appmod._font_families("zh")[0] == "Inter"  # Latin letters from Inter in Chinese too
+        win._font_combo.setCurrentIndex(win._font_combo.findData("system"))
+        win._on_font_change()
+        assert appmod._load_config()["ui_font"] == "system"
+        assert '"Inter"' not in win.styleSheet()
+        win._font_combo.setCurrentIndex(win._font_combo.findData("inter"))
+        win._on_font_change()
+        assert '"Inter"' in win.styleSheet()
+    finally:
+        win._studio.clear_autosave()
+        win.close()

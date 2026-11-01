@@ -2482,7 +2482,7 @@ class StudioPage(QWidget):
             for i, b in enumerate(buttons):
                 font = QFont(b.font())
                 font.setBold(True)
-                lay.setStretch(i, QFontMetrics(font).horizontalAdvance(b.text()) + 28)
+                lay.setStretch(i, QFontMetrics(font).horizontalAdvance(b.text()) + 20)
 
     def _choice_grid(self, items: list[tuple[str, str]], columns: int, slot,
                      store: dict[str, QPushButton]) -> QWidget:
@@ -2529,7 +2529,7 @@ class StudioPage(QWidget):
         lay.addLayout(top)
         outer = lay
         tabs, self.clip_tabs, self.clip_tab_btns = self._tab_bar(
-            ("Trim", "Transition", "Sound + frame", "Effects"))
+            ("Trim", "Transition", "Sound, frame", "Effects"))
         outer.addWidget(tabs)
         outer.addWidget(self.clip_tabs, stretch=1)
         page, lay = self._page()

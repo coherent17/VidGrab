@@ -1514,6 +1514,7 @@ class _Worker(QThread):
                     images=self._kw.get("images"),
                     quality=self._kw.get("render_quality", "balanced"),
                     hardware=bool(self._kw.get("hardware")),
+                    normalize_loudness=bool(self._kw.get("normalize_loudness")),
                     on_progress=self._cb_progress,
                     on_log=self._cb_log,
                     translate=self._kw.get("translate"),

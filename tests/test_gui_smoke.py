@@ -1940,6 +1940,63 @@ def test_shutdown_reports_a_search_that_will_not_stop(qapp, tmp_path) -> None:
     assert pick_dialogs.shutdown_threads(200) == []
 
 
+def test_studio_audio_cleanup_options(qapp, tmp_path, monkeypatch) -> None:
+    """Reduce background noise (per clip) and Even out the loudness (per project):
+    undoable, saved in the project, and sent to the render."""
+    import shutil
+    import subprocess
+
+    from vidgrab import app as appmod
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        pytest.skip("ffmpeg / ffprobe not on PATH")
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(appmod.QMessageBox, "question",
+                        staticmethod(lambda *_a, **_k: appmod.QMessageBox.Discard))
+    clip = tmp_path / "c.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc=size=160x90:rate=10", "-f", "lavfi", "-i", "sine", "-t", "2",
+                    str(clip)], check=True)
+    win = appmod.VidGrabWindow()
+    try:
+        st = win._studio
+        st.add_clips([str(clip), str(clip)])
+        st.select_clip(0)
+        assert st.clip_denoise.isEnabled() and not st.clip_denoise.isChecked()
+        st.clip_denoise.setChecked(True)
+        assert [c.denoise for c in st._clips] == [True, False]  # only the selected clip
+        st.undo()
+        assert [c.denoise for c in st._clips] == [False, False]
+        st.redo()
+        assert st._clips[0].denoise
+        st.loud_cb.setChecked(True)
+        # saved in the project file, and read back
+        saved = st.project_data()
+        assert saved["normalize_loudness"] is True and saved["clips"][0]["denoise"] is True
+        assert saved["clips"][1]["denoise"] is False
+        path = tmp_path / "p.vgproj"
+        path.write_text(__import__("json").dumps(saved))
+        st.new_project()
+        assert not st.loud_cb.isChecked() and not st._clips
+        assert st.open_project(str(path))
+        assert st.loud_cb.isChecked() and [c.denoise for c in st._clips] == [True, False]
+        # the render request carries both
+        sent = {}
+        st.render_requested.disconnect()  # (the window would start a real render)
+        st.render_requested.connect(lambda task, kw: sent.update(task=task, **kw))
+        st.host.ffmpeg_ok = lambda: True
+        st.render()
+        assert sent["normalize_loudness"] is True and sent["clips"][0].denoise is True
+        assert sent["clips"][1].denoise is False
+        # a muted clip has nothing to clean
+        st.select_clip(1)
+        st.clip_mute.setChecked(True)
+        assert not st.clip_denoise.isEnabled()
+    finally:
+        win._studio.clear_autosave()
+        win.close()
+
+
 def test_font_choice_in_settings(qapp, tmp_path, monkeypatch) -> None:
     """A font is picked in Settings and put first in the chain; "System default" takes
     every bundled one out of it; each name is listed in its own typeface."""

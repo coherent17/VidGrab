@@ -439,3 +439,13 @@ def test_model_download_failures_are_friendly_and_leave_no_half_files(monkeypatc
     assert not list(tmp_path.rglob("*.part")) and not captions.model_ready(tmp_path, "fast")
     captions.ensure_model(tmp_path, "fast", engine="cpu")  # and a retry completes
     assert captions.model_ready(tmp_path, "fast")
+
+
+def test_installed_tells_a_pip_install_without_the_extra(monkeypatch):
+    import importlib.util
+
+    assert captions.installed()  # this environment has the add-on
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec",
+                        lambda name, *a: None if name == "faster_whisper" else real(name, *a))
+    assert not captions.installed()

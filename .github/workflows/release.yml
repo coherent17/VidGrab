@@ -36,8 +36,32 @@ jobs:
     needs: checks
     uses: ./.github/workflows/build-linux.yml
 
+  build-macos:
+    needs: checks
+    uses: ./.github/workflows/build-macos.yml
+
+  # the pip package. Off until the repository variable PYPI_PUBLISH is "true" and
+  # PyPI has a trusted publisher for this repository (workflow: release.yml,
+  # environment: pypi) -- nothing here needs a token.
+  publish-pypi:
+    needs: checks
+    if: vars.PYPI_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          python -m pip install --upgrade pip build
+          python -m build
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
   release:
-    needs: [build, build-linux]
+    needs: [build, build-linux, build-macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -54,12 +78,20 @@ jobs:
           name: VidGrab-linux
           path: release-linux
 
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: VidGrab-macos-*
+          path: release-macos
+          merge-multiple: true
+
       - name: Prepare release assets
         run: |
           mv release/VidGrab.exe "release/VidGrab-windows-x64.exe"
           mv release-linux/VidGrab "release/VidGrab-linux-x64"
           mv release-linux/VidGrab-linux.tar.xz "release/VidGrab-linux-x64.tar.xz"
           chmod +x "release/VidGrab-linux-x64"
+          mv release-macos/*.zip release/
           # demo video + user guide ship with every release
           cp docs/VidGrab-demo.mp4 release/
           cp docs/VidGrab-user-guide-zh-TW.pdf release/
@@ -84,8 +116,13 @@ jobs:
           |----------|------|
           | Windows 10/11 (x64) | `VidGrab-windows-x64.exe` — double-click to run |
           | Linux (x64, glibc ≥ 2.35) | `VidGrab-linux-x64` — `chmod +x` then run (or the `.tar.xz`) |
+          | macOS 12+, Apple silicon | `VidGrab-macos-arm64.zip` — unzip, then right-click `VidGrab.app` → Open the first time |
+          | macOS 12+, Intel | `VidGrab-macos-x64.zip` — same |
+          | Any (Python 3.10+) | `pip install vidgrab-studio` (add `[captions]` for auto captions) |
 
-          Both are single, self-contained executables with ffmpeg / ffprobe embedded — nothing else to install.
+          The Windows and Linux files are single, self-contained executables with ffmpeg / ffprobe embedded — nothing else to install.
+          The macOS app is not signed, so macOS asks you to confirm the first launch (right-click → Open, or
+          `xattr -dr com.apple.quarantine VidGrab.app`); it downloads ffmpeg once, with your OK, on first use.
           Verify downloads with `SHA256SUMS.txt`.
 
           ### 示範影片與使用手冊 (Demo & user guide)

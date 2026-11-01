@@ -82,7 +82,8 @@ def test_ensure_runtime_skips_when_installed_and_fails_cleanly(tmp_path, monkeyp
         cr.ensure_runtime(tmp_path)
 
 
-def test_unpacks_the_windows_layout_and_pins_cover_both_platforms() -> None:
+def test_unpacks_the_windows_layout_and_pins_cover_both_platforms(monkeypatch) -> None:
+    monkeypatch.setattr(cr, "platform_key", lambda: "linux")  # (a Mac has no CUDA libraries)
     assert set(cr.PINS) == {"linux", "win"}
     for plat, pins in cr.PINS.items():
         assert len(pins) == 2 and all(len(p[2]) == 64 and p[1].startswith("https://") for p in pins)

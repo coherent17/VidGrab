@@ -1810,3 +1810,48 @@ def test_ytdlp_update_in_settings(qapp, tmp_path, monkeypatch) -> None:
     finally:
         win._studio.clear_autosave()
         win.close()
+
+
+def test_missing_ffmpeg_is_offered_once_and_fetched(qapp, tmp_path, monkeypatch) -> None:
+    """The macOS app and a pip install have no ffmpeg: the app asks, downloads
+    with progress, and the Studio / Download page carry on."""
+    from vidgrab import app as appmod
+
+    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    win = appmod.VidGrabWindow()
+    try:
+        state = {"ffmpeg": None, "asked": 0, "errors": []}
+        monkeypatch.setattr(appmod, "find_ffmpeg", lambda: state["ffmpeg"])
+        monkeypatch.setattr(appmod.ffmpeg_fetch, "platform_key", lambda: "mac-arm64")
+
+        def ask(*_a, **_k):
+            state["asked"] += 1
+            return state["answer"]
+
+        monkeypatch.setattr(appmod.QMessageBox, "question", staticmethod(ask))
+        monkeypatch.setattr(appmod.QMessageBox, "critical",
+                            staticmethod(lambda _p, _t, msg: state["errors"].append(msg)))
+
+        state["answer"] = appmod.QMessageBox.No  # declined: nothing is downloaded
+        assert win._offer_ffmpeg() is False and state["asked"] == 1 and not state["errors"]
+
+        def broken(progress=None):
+            raise RuntimeError("the download fell over")
+
+        monkeypatch.setattr(appmod.ffmpeg_fetch, "ensure", broken)
+        state["answer"] = appmod.QMessageBox.Yes
+        assert win._offer_ffmpeg() is False
+        assert state["errors"] and "fell over" in state["errors"][0]
+
+        def fetch(progress=None):
+            progress(50, 100)
+            state["ffmpeg"] = "/cache/ffmpeg"
+            return "/cache/ffmpeg"
+
+        monkeypatch.setattr(appmod.ffmpeg_fetch, "ensure", fetch)
+        assert win._offer_ffmpeg() is True
+        asked = state["asked"]
+        assert win.ffmpeg_ok() is True and state["asked"] == asked  # present now: no more asking
+    finally:
+        win._studio.clear_autosave()
+        win.close()

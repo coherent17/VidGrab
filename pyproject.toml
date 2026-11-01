@@ -1,0 +1,74 @@
+[build-system]
+requires = ["hatchling>=1.27", "hatch-fancy-pypi-readme>=24.1"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vidgrab-studio"
+dynamic = ["version", "readme"]
+description = "Download videos from YouTube and many other sites, then edit them in a Studio with subtitles, music and AI captions — all on your own computer."
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "coherent17" }]
+keywords = ["youtube", "yt-dlp", "video", "downloader", "editor", "subtitles", "whisper", "ffmpeg", "pyside6"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Video",
+]
+dependencies = [
+    "yt-dlp>=2024.1.0",
+    "PySide6>=6.5.0",
+]
+
+[project.optional-dependencies]
+# auto captions: Whisper on the CPU / NVIDIA, and OpenVINO for Intel graphics
+captions = [
+    "faster-whisper>=1.1.0",
+    "openvino-genai>=2026.1; sys_platform != 'darwin'",
+]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.9.0",
+    "pyinstaller>=6.0.0",
+]
+
+[project.gui-scripts]
+vidgrab = "vidgrab.app:main"
+
+[project.urls]
+Homepage = "https://github.com/coherent17/VidGrab"
+Source = "https://github.com/coherent17/VidGrab"
+Changelog = "https://github.com/coherent17/VidGrab/blob/main/CHANGELOG.md"
+Issues = "https://github.com/coherent17/VidGrab/issues"
+
+[tool.hatch.version]
+path = "vidgrab/_version.py"
+
+# README on PyPI: its pictures live in the repository, so point them there
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '(src="|\]\()(docs/)'
+replacement = '\1https://raw.githubusercontent.com/coherent17/VidGrab/main/\2'
+
+[tool.hatch.build.targets.wheel]
+packages = ["vidgrab"]
+
+# the icons / CJK font and the ffmpeg pin live outside the package in a checkout
+[tool.hatch.build.targets.wheel.force-include]
+"assets" = "vidgrab/assets"
+"ffmpeg/pin.json" = "vidgrab/ffmpeg_pin.json"
+
+[tool.hatch.build.targets.sdist]
+include = ["/vidgrab", "/assets", "/ffmpeg/pin.json", "/tests", "/scripts", "/docs/icon.png",
+           "/README.md", "/LICENSE", "/CHANGELOG.md", "/pytest.ini"]

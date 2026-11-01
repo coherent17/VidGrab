@@ -101,6 +101,9 @@ from vidgrab.captions import (
     model_ready,
     speech_engines,
 )
+from vidgrab.captions import (
+    installed as captions_installed,
+)
 from vidgrab.preview import MusicBed, Segment, StudioPreview, TransitionMark, fmt_time
 from vidgrab.split_dialog import SplitDialog
 from vidgrab.studio import (
@@ -4705,6 +4708,11 @@ class StudioPage(QWidget):
     def auto_captions(self) -> None:
         """Ask how to listen, then turn the speech in the clips into lines."""
         if self._busy:
+            return
+        if not captions_installed():  # a pip install without the speech add-on
+            QMessageBox.information(self, self.t("Auto captions"), self.t(
+                "Auto captions need the speech add-on, which this installation doesn't "
+                "have. Install it with:\n\npip install \"vidgrab-studio[captions]\""))
             return
         if not self._clips:
             QMessageBox.warning(self, self.t("No clips"), self.t("Add at least one clip first."))

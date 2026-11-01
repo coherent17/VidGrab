@@ -52,6 +52,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -66,12 +67,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab import __version__, ytdlp_update
+from vidgrab import __version__, ffmpeg_fetch, ytdlp_update
 from vidgrab.captions import detect_gpus, speech_device, transcribe
 from vidgrab.downloader import (
     AUDIO_FORMATS,
     NAME_TEMPLATES,
     DownloadCancelled,
+    asset_roots,
     configure_network,
     default_output_dir,
     download,
@@ -80,7 +82,6 @@ from vidgrab.downloader import (
     fetch_dislikes,
     find_ffmpeg,
     get_app_dir,
-    get_bundle_dir,
     probe,
     search,
 )
@@ -1250,14 +1251,23 @@ def _chevron_path(color: str, *, down: bool) -> str:
 # ── brand icon ─────────────────────────────────────────────────────────────
 
 
+def _asset(*parts: str) -> Path:
+    """An asset file: in the bundle, the checkout or the installed package."""
+    for root in asset_roots():
+        p = root.joinpath("assets", *parts)
+        if p.is_file():
+            return p
+    return get_app_dir().joinpath("assets", *parts)
+
+
 def _icon_path() -> Path:
-    return get_app_dir() / "assets" / "icon.png"
+    return _asset("icon.png")
 
 
 def _flag_icon(lang_code: str) -> QIcon:
     """Bundled color flag icon for a language code (PNG, not emoji)."""
     cc = FLAGS.get(lang_code, "us")
-    p = get_app_dir() / "assets" / "flags" / f"{cc}.png"
+    p = _asset("flags", f"{cc}.png")
     if p.is_file():
         return QIcon(str(p))
     return QIcon()
@@ -1375,6 +1385,25 @@ class _HwProbe(QThread):
         encoder = detect_encoder(self._ffmpeg) if self._ffmpeg else None
         detect_gpus()  # the captions engines too (starts OpenVINO's GPU plugin); cached for later
         self.found.emit(encoder)
+
+
+class _FfmpegThread(QThread):
+    """Download the pinned ffmpeg into the user's cache (see ffmpeg_fetch)."""
+
+    progress = Signal(int)  # percent, -1 = unknown
+    done = Signal(str)
+    failed = Signal(str)
+
+    def run(self) -> None:
+        def report(got: int, total: int) -> None:
+            if self.isInterruptionRequested():
+                raise RuntimeError("cancelled")
+            self.progress.emit(int(got * 100 / total) if total else -1)
+
+        try:
+            self.done.emit(ffmpeg_fetch.ensure(report))
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
 
 
 class _YtdlpThread(QThread):
@@ -1699,6 +1728,9 @@ class VidGrabWindow(QMainWindow):
         self._card_titles: list[tuple[QLabel, str]] = []
         self._probe_data: dict | None = None
         self._ytdlp_thread: _YtdlpThread | None = None
+        self._ffmpeg_thread: _FfmpegThread | None = None
+        # only the packaged app updates yt-dlp itself; a pip install leaves it to pip
+        self._can_update_ytdlp = ytdlp_update.can_self_update()
         self._ytdlp_info: dict | None = None  # last check(): current / latest / newer
         self._ytdlp_msg = ""
 
@@ -1723,7 +1755,9 @@ class VidGrabWindow(QMainWindow):
         if QApplication.platformName() != "offscreen":  # not in tests / scripts
             QTimer.singleShot(600, self._offer_recovery)
             QTimer.singleShot(1200, self.probe_hardware)
-            if self.setting("ytdlp_check"):  # one quiet request to pypi.org
+            if not find_ffmpeg():  # the macOS app / a pip install: fetch it once
+                QTimer.singleShot(900, self._offer_ffmpeg)
+            if self.setting("ytdlp_check") and self._can_update_ytdlp:  # one quiet request to pypi.org
                 QTimer.singleShot(4000, lambda: self._start_ytdlp("check", quiet=True))
 
     # ── ui construction ────────────────────────────────────────────────
@@ -1759,7 +1793,7 @@ class VidGrabWindow(QMainWindow):
 
         self._statusbar = QStatusBar()
         self.setStatusBar(self._statusbar)
-        self._net_lbl = QLabel(f"\u25cf {self._t('checking\u2026')}")
+        self._net_lbl = QLabel("\u25cf " + self._t("checking\u2026"))
         self._net_lbl.setFixedHeight(22)
         self._net_lbl.setAlignment(Qt.AlignCenter)
         self._label_pill(self._net_lbl, "#f59e0b")
@@ -2438,6 +2472,13 @@ class VidGrabWindow(QMainWindow):
         self._trw(yhint, "yt-dlp is the part that talks to YouTube and other sites; it needs "
                          "updating when a site changes. A new version is used after a restart.")
         yl.addWidget(yhint)
+        self._ytdlp_hint = yhint
+        self._ytdlp_pip = QLabel()
+        self._ytdlp_pip.setObjectName("hint")
+        self._ytdlp_pip.setWordWrap(True)
+        self._trw(self._ytdlp_pip, "VidGrab was installed with pip. Update yt-dlp the same way: "
+                                   "pip install -U yt-dlp")
+        yl.addWidget(self._ytdlp_pip)
         dl_r.addWidget(g8)
         dl_r.addStretch()
         return page
@@ -2558,6 +2599,10 @@ class VidGrabWindow(QMainWindow):
         else:
             self._ytdlp_btn.setText(t("Check for updates"))
         self._ytdlp_btn.setEnabled(not busy)
+        # a pip install is updated by pip: no second updater next to it
+        for w in (self._ytdlp_btn, self._set_ytdlp_auto, self._ytdlp_hint):
+            w.setVisible(self._can_update_ytdlp)
+        self._ytdlp_pip.setVisible(not self._can_update_ytdlp)
         self._ytdlp_reset.setVisible(bool(pending) or own)
         if not self._ytdlp_msg:
             self._ytdlp_status.setText(
@@ -3016,7 +3061,7 @@ class VidGrabWindow(QMainWindow):
             self._net_lbl.setText(f"\u25cb {t('Offline')}")
             self._label_pill(self._net_lbl, "#ef4444")
         else:
-            self._net_lbl.setText(f"\u25cf {t('checking\u2026')}")
+            self._net_lbl.setText("\u25cf " + t("checking\u2026"))
             self._label_pill(self._net_lbl, "#f59e0b")
         self._refresh_btn()
 
@@ -3410,8 +3455,48 @@ class VidGrabWindow(QMainWindow):
         else:
             path.unlink(missing_ok=True)
 
-    def ffmpeg_ok(self) -> bool:
+    def _offer_ffmpeg(self) -> bool:
+        """No ffmpeg on this computer (the macOS app and a pip install don't carry
+        one): offer to download the pinned build once. True if there is one now."""
         if find_ffmpeg():
+            return True
+        t = self._t
+        if ffmpeg_fetch.platform_key() is None:
+            return False
+        answer = QMessageBox.question(
+            self, t("ffmpeg required"),
+            t("VidGrab needs ffmpeg to work with video and audio, and this computer doesn't "
+              "have it.\n\nDownload it now? It is a one-time download of a few tens of "
+              "megabytes, checked against a known checksum."))
+        if answer != QMessageBox.Yes:
+            return False
+        dlg = QProgressDialog(t("Downloading ffmpeg…"), t("Cancel"), 0, 100, self)
+        dlg.setWindowTitle(t("ffmpeg required"))
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        thread = _FfmpegThread()
+        result: dict = {}
+        thread.progress.connect(lambda pct: (dlg.setMaximum(100 if pct >= 0 else 0),
+                                             dlg.setValue(max(pct, 0))))
+        thread.done.connect(lambda path: (result.update(path=path), dlg.accept()))
+        thread.failed.connect(lambda msg: (result.update(error=msg), dlg.accept()))
+        dlg.canceled.connect(thread.requestInterruption)
+        self._ffmpeg_thread = thread
+        thread.start()
+        dlg.exec()
+        thread.wait(15000)
+        dlg.close()
+        if "error" in result and result["error"] != "cancelled":
+            self._append_log(f"ffmpeg download failed: {result['error']}")
+            QMessageBox.critical(self, t("ffmpeg required"),
+                                 t("Could not get ffmpeg: {err}", err=result["error"]))
+        self._update_ffmpeg_status()
+        return bool(find_ffmpeg())
+
+    def ffmpeg_ok(self) -> bool:
+        if find_ffmpeg() or self._offer_ffmpeg():
             return True
         QMessageBox.critical(
             self, self._t("ffmpeg required"),
@@ -3540,7 +3625,7 @@ class VidGrabWindow(QMainWindow):
                 self._t("You appear to be offline.\nVidGrab needs a live connection."),
             )
             return
-        if not find_ffmpeg():
+        if not find_ffmpeg() and not self._offer_ffmpeg():
             QMessageBox.critical(
                 self,
                 self._t("ffmpeg required"),
@@ -3894,6 +3979,8 @@ class VidGrabWindow(QMainWindow):
             _stop_thread(self._hw_probe)
         if self._ytdlp_thread is not None:
             _stop_thread(self._ytdlp_thread, 3000)
+        if self._ffmpeg_thread is not None:
+            _stop_thread(self._ffmpeg_thread, 3000)
         self._search_panel.stop()
         # give any in-flight info fetch a moment to finish before teardown
         self._probe_token += 1
@@ -4069,7 +4156,7 @@ def _register_bundled_fonts() -> None:
     from PySide6.QtGui import QFontDatabase
 
     checked: set[str] = set()
-    for root in (get_bundle_dir(), get_app_dir()):
+    for root in reversed(asset_roots()):
         for fname in _BUNDLED_FONTS:
             p = root / "assets" / fname
             if str(p) in checked:

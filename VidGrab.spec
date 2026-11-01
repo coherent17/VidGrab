@@ -1,10 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for VidGrab (Windows + Linux).
+"""PyInstaller spec for VidGrab (Windows + Linux + macOS).
 
 ffmpeg is embedded from a platform folder (`ffmpeg/win/ffmpeg.exe` on
 Windows, `ffmpeg/linux/ffmpeg` on Linux, legacy `ffmpeg/` as fallback)
 and extracted to sys._MEIPASS/ffmpeg at runtime. Assets (icon, CJK font,
 flags) are bundled too.
+
+macOS builds a VidGrab.app (one folder, not one file: a one-file binary would
+unpack itself at every launch and can't be signed) and does *not* embed ffmpeg:
+the only static build with libass is not redistributable, so the app downloads
+the pinned one on first run (vidgrab/ffmpeg_fetch.py).
 """
 
 import os
@@ -38,7 +43,7 @@ else:
     _ffmpeg_names = ("ffmpeg", "ffprobe")
     _platform_subdir = "linux"
 
-for _name in _ffmpeg_names:
+for _name in () if sys.platform == "darwin" else _ffmpeg_names:
     for _sub in (_platform_subdir, ""):
         _src = str(ROOT / "ffmpeg" / _sub / _name) if _sub else str(ROOT / "ffmpeg" / _name)
         if os.path.isfile(_src):
@@ -58,7 +63,10 @@ from PyInstaller.utils.hooks import get_package_paths
 
 _OV_SKIP = ("onnx", "paddle", "tensorflow_lite", "gguf", "npu", "openvino_c.")
 for _pkg in ("openvino", "openvino_genai", "openvino_tokenizers"):
-    _pkg_dir = Path(get_package_paths(_pkg)[1])
+    try:
+        _pkg_dir = Path(get_package_paths(_pkg)[1])
+    except Exception:  # not installed: macOS builds leave OpenVINO out (it serves Intel graphics)
+        continue
     # libs/: OpenVINO's plugins and frontends; lib/: the tokenizer extension the
     # Whisper models load by path (nothing imports it, so PyInstaller can't see it)
     for _sub in ("libs", "lib"):
@@ -149,26 +157,63 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    [],
-    name="VidGrab",
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
-    console=False,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-    icon=_win_icon if (sys.platform == "win32" and os.path.isfile(_win_icon)) else None,
-    version=str(ROOT / "version_info.txt") if sys.platform == "win32" else None,
-)
+if sys.platform == "darwin":
+    # a folder app: the .app bundle holds the interpreter, libraries and assets
+    exe = EXE(
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,
+        name="VidGrab",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        console=False,
+        argv_emulation=False,
+        target_arch=None,  # the runner's own architecture (arm64 or x86_64)
+        codesign_identity=None,
+        entitlements_file=None,
+    )
+    coll = COLLECT(exe, a.binaries, a.zipfiles, a.datas, strip=False, upx=False, name="VidGrab")
+    _icns = str(ROOT / "assets" / "icon.icns")  # made by the build (iconutil) from icon.png
+    _version = {}
+    exec((ROOT / "vidgrab" / "_version.py").read_text(encoding="utf-8"), _version)
+    app = BUNDLE(
+        coll,
+        name="VidGrab.app",
+        icon=_icns if os.path.isfile(_icns) else None,
+        bundle_identifier="io.github.coherent17.vidgrab",
+        version=_version["__version__"],
+        info_plist={
+            "CFBundleName": "VidGrab",
+            "CFBundleDisplayName": "VidGrab",
+            "CFBundleShortVersionString": _version["__version__"],
+            "NSHighResolutionCapable": True,
+            "LSMinimumSystemVersion": "12.0",
+        },
+    )
+else:
+    exe = EXE(
+        pyz,
+        a.scripts,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        [],
+        name="VidGrab",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=True,
+        upx_exclude=[],
+        runtime_tmpdir=None,
+        console=False,
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+        icon=_win_icon if (sys.platform == "win32" and os.path.isfile(_win_icon)) else None,
+        version=str(ROOT / "version_info.txt") if sys.platform == "win32" else None,
+    )

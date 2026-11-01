@@ -33,9 +33,8 @@ from vidgrab.downloader import (
     TranslateFn,
     _noop_tr,
     _parse_trim,
+    asset_roots,
     find_ffmpeg,
-    get_app_dir,
-    get_bundle_dir,
 )
 from vidgrab.gpu import HwEncoder, detect_encoder, video_args
 
@@ -786,6 +785,20 @@ def system_fonts() -> dict[str, Path]:
                 if path.suffix.lower() in (".ttf", ".otf", ".ttc") and path.is_file():
                     found.setdefault(family, path)
         return found
+    if sys.platform == "darwin":  # no fontconfig: read the font folders (file name = family)
+        for folder in (Path("/System/Library/Fonts"), Path("/System/Library/Fonts/Supplemental"),
+                       Path("/Library/Fonts"), Path.home() / "Library" / "Fonts"):
+            try:
+                files = sorted(folder.iterdir())
+            except OSError:
+                continue
+            for path in files:
+                family = path.stem
+                if path.suffix.lower() not in (".ttf", ".otf") or re.search(
+                        r"\b(Bold|Italic|Light|Black|Thin|Medium|Semibold|Oblique)\b", family, re.IGNORECASE):
+                    continue
+                found.setdefault(family, path)
+        return found
     fc_list = shutil.which("fc-list")
     if not fc_list:
         return found
@@ -824,7 +837,7 @@ def font_file(family: str) -> Path | None:
 
 
 def _subtitle_font() -> Path | None:
-    for root in (get_app_dir(), get_bundle_dir()):
+    for root in asset_roots():
         p = root / "assets" / SUBTITLE_FONT_FILE
         if p.is_file():
             return p

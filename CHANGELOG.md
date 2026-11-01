@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 3.4.0
+
+Offline AI captions that use your graphics card, plus a much bigger Studio: per-clip speed, animated and individually styled subtitles, multi-select, export presets and crash recovery.
+
+### Auto captions and graphics cards
 
 - **Auto captions**: "Auto captions…" in the Studio turns the speech in the clips into subtitle lines with Whisper, on this computer — nothing is uploaded. Pick the spoken language (or detect it; Chinese can be Traditional or Simplified) and the accuracy: **Fast**, **Balanced** or **Best** (large-v3 turbo). Lines follow the clips' trims, speed and place in the montage; muted clips are skipped. Lines break at sentences, pauses and commas, never inside a word; Chinese lines use spaces instead of commas, as subtitles usually do. Singing over music is still captioned, and Whisper's stock invented lines ("please subscribe…") are dropped. The Render button stops it while it runs; the result is one undo step
 - **Graphics cards for auto captions** — three engines, each falling back to the next if it can't load or fails: **NVIDIA** (CUDA; VidGrab downloads the CUDA 12 cuBLAS / cuDNN libraries once, about 1.3 GB, from NVIDIA's pinned official wheels, so nothing has to be installed), **Intel** graphics (integrated or Arc, through OpenVINO: the *Best* model runs there in 5 s per minute of speech against 19 s on a fast CPU), and the **CPU**. Verified end to end on an Intel Arc 140T; the NVIDIA path is tested with real library downloads and fakes but not on an NVIDIA card
@@ -10,7 +14,9 @@
 - **Models are downloaded on demand, not bundled**, to the local cache (`%LOCALAPPDATA%\VidGrab\models` on Windows, `~/.cache/vidgrab/models` on Linux — not the roaming profile): 85 / 260 / 830 MB for Intel graphics, 150 / 490 MB / 1.6 GB for NVIDIA and the CPU
 - **Nothing hangs or crashes when hardware misbehaves**: the graphics-card check is time-limited (a stuck driver counts as "no card"); a render whose graphics encoder stops answering for two minutes is abandoned and redone on the CPU; each captions engine that fails (bad driver, out of memory, corrupt or missing model, no network) hands over to the next, ending on the CPU; a half-downloaded model or CUDA package leaves no partial files and a retry resumes after the last finished package; and quitting while a caption job or hardware check is stuck in a driver no longer aborts the app, nor does it refuse to quit. Basic integrated Intel graphics (under 64 execution units, e.g. UHD 620) are still used when the switch is on, but Settings and the captions dialog say they may be slower than the CPU, so the user decides
 - OpenVINO's analytics (it posts to Google Analytics as soon as it is imported) are switched off, and the package isn't bundled; a test fails if anything touches the network on import
-- The Studio toolbar buttons are shorter ("＋ Media…", "♪ Music…") so the row fits in a small window
+
+### Studio
+
 - **Never lose an edit: autosave and crash recovery.** The Studio keeps a recovery copy of the project while you work; if VidGrab closes without saving (a crash, a power cut), it offers to restore it at the next start
 - **Per-clip speed (0.25×–4×)**: in the Clip panel's Trim tab (0.5× / 1× / 1.5× / 2× or any value). The sound keeps its pitch, the timeline block shrinks or grows to match, transitions and subtitles line up with the sped-up clip, and the preview plays at that speed
 - **Subtitle effects and per-line looks**: a new **Effects** tab per line with entry animations (**Pop**, **Slide up**, **Typewriter**, **Karaoke**) and **Give this line its own look** (its own text colour, background, size and bold); the shared style moved to an **All lines** tab. The preview draws the animations as they will render
@@ -18,6 +24,10 @@
 - **Guides**: a **Guides** button over the preview shows the centre lines and the 5 % safe area; dragged subtitles and pictures snap to them (Alt = free)
 - **Export presets**: the Project panel picks what to make — **YouTube (1080p)**, **Shorts / Reels / TikTok** (vertical, with a reminder when the video is over 60 s), **Square (1:1)**, **Same as the clips**, **GIF** or **Audio only (MP3)** — with the matching resolution and file type
 - The Clip panel is split into **Trim**, **Transition** and **Picture and sound** tabs, so it fits without scrolling
+- The Studio toolbar buttons are shorter ("＋ Media…", "♪ Music…") so the row fits in a small window
+
+### Downloads and releases
+
 - **Downloads retry over IPv4 when the network is unreachable**: on networks (and CI runners) with IPv6 but no route for it, YouTube downloads and link previews failed with "Network is unreachable"; they now retry the same way over IPv4
 - **Releases run the tests first**: the release workflow runs the same lint and test suite as CI (Linux and Windows) before building, so a tag can't publish untested code. The checks live in one shared workflow (`checks.yml`) used by both
 - Fixed the trim integration test, which asked for 50 s–110 s of an 8 s video (a four-part time) and so never trimmed; it was hidden because YouTube's bot-check made CI skip it

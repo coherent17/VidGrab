@@ -8,6 +8,7 @@ on:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,6 +30,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     # macOS is new here and could only be tried on GitHub's runners: report it,
     # but don't block a release on it until it has proven stable
     continue-on-error: ${{ matrix.os == 'macos-latest' }}
@@ -94,6 +96,7 @@ jobs:
           - { os: windows-latest, python: "3.12" }
           - { os: macos-latest, python: "3.12" }
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     continue-on-error: ${{ matrix.os == 'macos-latest' }}
     steps:
       - uses: actions/checkout@v4

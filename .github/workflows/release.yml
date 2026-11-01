@@ -35,6 +35,8 @@ jobs:
   build-linux:
     needs: checks
     uses: ./.github/workflows/build-linux.yml
+    with:
+      archive: true
 
   build-macos:
     needs: checks

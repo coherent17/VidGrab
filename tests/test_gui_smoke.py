@@ -1859,3 +1859,82 @@ def test_missing_ffmpeg_is_offered_once_and_fetched(qapp, tmp_path, monkeypatch)
     finally:
         win._studio.clear_autosave()
         win.close()
+
+
+def _discard(qapp, widget) -> None:
+    """Destroy a top-level widget now. One that is merely dropped lives on (Qt
+    connections keep it referenced) until the interpreter exits, and PySide6 6.12
+    crashes when it is destroyed after the QApplication."""
+    from PySide6.QtCore import QEvent
+    from PySide6.QtWidgets import QApplication
+
+    widget.deleteLater()
+    qapp.processEvents()
+    QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    qapp.processEvents()
+
+
+def test_pressing_enter_again_never_destroys_a_running_search(qapp, tmp_path) -> None:
+    """A search still waiting on the network when the next one starts used to be
+    thrown away after a 5 s wait: Qt aborts the whole app when a running QThread
+    is destroyed. Now Enter never blocks, the old answer is ignored, and the
+    thread is kept until it finishes."""
+    import threading
+    import time
+
+    from vidgrab import pick_dialogs
+
+    release = threading.Event()
+    started: list[str] = []
+
+    def slow_search(query: str) -> list[dict]:
+        started.append(query)
+        release.wait(20)  # "the network"
+        return [{"id": query, "title": f"result of {query}", "uploader": "", "duration": 1,
+                 "views": 1, "url": f"https://example.invalid/{query}", "thumbnail": ""}]
+
+    panel = pick_dialogs.SearchPanel(lambda s, **k: s.format(**k) if k else s, tmp_path)
+    try:
+        for n in range(1, 6):
+            t0 = time.time()
+            panel.start(f"query {n}", slow_search)
+            assert time.time() - t0 < 1.0, "Enter must not wait for the previous search"
+            _wait(qapp, lambda n=n: len(started) == n, 5)
+        assert len(pick_dialogs._LIVE) == 5  # all of them are held, not destroyed
+        release.set()
+        _wait(qapp, lambda: not pick_dialogs._LIVE, 10)
+        assert not pick_dialogs._LIVE
+        # only the newest search shows its answer
+        assert [r.url for r in panel._rows] == ["https://example.invalid/query 5"]
+        # and a finished thread is let go, not kept (objects kept until exit crash Qt while it shuts down)
+        panel.stop()
+        _wait(qapp, lambda: True, 0.3)
+        import gc
+        gc.collect()
+        assert not [o for o in gc.get_objects()
+                    if isinstance(o, (pick_dialogs._SearchThread, pick_dialogs._ThumbThread))]
+    finally:
+        release.set()
+        panel.stop()
+        _wait(qapp, lambda: not pick_dialogs._LIVE, 10)
+        _discard(qapp, panel)
+
+
+def test_shutdown_reports_a_search_that_will_not_stop(qapp, tmp_path) -> None:
+    import threading
+
+    from vidgrab import pick_dialogs
+
+    release = threading.Event()
+    panel = pick_dialogs.SearchPanel(lambda s, **k: s.format(**k) if k else s, tmp_path)
+    panel.start("stuck", lambda q: (release.wait(20), [])[1])
+    _wait(qapp, lambda: any(t.isRunning() for t in pick_dialogs._LIVE), 5)
+    try:
+        stuck = pick_dialogs.shutdown_threads(200)
+        assert len(stuck) == 1  # the caller keeps it alive instead of letting Qt abort
+    finally:
+        release.set()
+        _wait(qapp, lambda: not pick_dialogs._LIVE, 10)
+        panel.stop()
+        _discard(qapp, panel)
+    assert pick_dialogs.shutdown_threads(200) == []

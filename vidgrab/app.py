@@ -102,7 +102,7 @@ from vidgrab.gpu import detect_encoder
 from vidgrab.i18n import FLAGS, LANGUAGES, make_translator
 from vidgrab.jobs import DownloadJob, run_job
 from vidgrab.network import ConnectionStatus, check_internet
-from vidgrab.pick_dialogs import FormatDialog, SearchPanel
+from vidgrab.pick_dialogs import FormatDialog, SearchPanel, shutdown_threads
 from vidgrab.preview import QT_MULTIMEDIA_OK as _QT_MULTIMEDIA_OK
 from vidgrab.studio import compose_audio, compose_split, compose_video
 from vidgrab.studio_page import StudioPage
@@ -3487,7 +3487,8 @@ class VidGrabWindow(QMainWindow):
         self._ffmpeg_thread = thread
         thread.start()
         dlg.exec()
-        thread.wait(15000)
+        if not thread.wait(15000) and thread not in _STUCK:
+            _STUCK.append(thread)  # never destroy a running QThread
         dlg.close()
         if "error" in result and result["error"] != "cancelled":
             self._append_log(f"ffmpeg download failed: {result['error']}")
@@ -3983,6 +3984,8 @@ class VidGrabWindow(QMainWindow):
         if self._ffmpeg_thread is not None:
             _stop_thread(self._ffmpeg_thread, 3000)
         self._search_panel.stop()
+        # a search that is still waiting on the network must not be destroyed with the window
+        _STUCK.extend(t for t in shutdown_threads(3000) if t not in _STUCK)
         # give any in-flight info fetch a moment to finish before teardown
         self._probe_token += 1
         for worker in list(self._probe_workers):

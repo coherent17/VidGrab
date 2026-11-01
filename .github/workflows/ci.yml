@@ -3,7 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
   pull_request:
+    paths-ignore: ["**.md", "docs/**"]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -49,10 +51,11 @@ jobs:
           VIDGRAB_INTEGRATION: "1"
           QT_QPA_PLATFORM: "offscreen"
 
+  # The builds run beside the checks (they only produce artifacts here, nothing is
+  # published), so a pull request takes as long as the slower of the two. The release
+  # workflow still builds only after the checks have passed.
   build-windows:
-    needs: checks
     uses: ./.github/workflows/build-windows.yml
 
   build-linux:
-    needs: checks
     uses: ./.github/workflows/build-linux.yml

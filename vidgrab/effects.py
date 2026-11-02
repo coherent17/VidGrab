@@ -20,6 +20,20 @@ LOOKS: dict[str, str] = {
     "vintage": "curves=preset=vintage,eq=saturation=0.9",
 }
 
+# the same looks as numbers, for the live preview (`fx_preview`), which has no ffmpeg:
+# balance = (shadows, mids, highlights) RGB offsets as in colorbalance; the rest as in eq
+LOOK_GRADES: dict[str, dict] = {
+    "none": {},
+    "cinematic": {"shadows": (-0.08, 0, 0.1), "highs": (0.1, 0, -0.08), "contrast": 1.12, "sat": 1.08},
+    "warm": {"shadows": (0.08, 0, -0.1), "mids": (0.05, 0, -0.05), "sat": 1.05},
+    "cool": {"shadows": (-0.08, 0, 0.1), "mids": (0, 0, 0.05), "sat": 0.97},
+    "bw": {"sat": 0.0, "contrast": 1.1},
+    "vivid": {"contrast": 1.1, "sat": 1.45},
+    # ffmpeg's curves=preset=vintage, per channel
+    "vintage": {"curves": [[(0, 0.11), (0.42, 0.51), (1, 0.95)], [(0, 0), (0.5, 0.48), (1, 1)],
+                           [(0, 0.22), (0.49, 0.44), (1, 0.8)]], "sat": 0.9},
+}
+
 # slider ranges: (default, low, high)
 RANGES: dict[str, tuple[float, float, float]] = {
     "brightness": (0.0, -0.5, 0.5),

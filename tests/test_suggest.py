@@ -197,3 +197,32 @@ def test_keyboard_choice_searches_once_closes_the_list_and_it_comes_back(qapp, t
         for page in (w._library, w._tools, w._subs):
             page.shutdown()
         w.close()
+
+
+@pytestmark_gui
+def test_a_closed_combo_list_or_menu_repaints_the_window(qapp, monkeypatch) -> None:
+    from PySide6.QtWidgets import QComboBox, QMenu, QWidget
+
+    from vidgrab import app as m
+
+    m._install_wheel_guard()
+    painted = []
+    monkeypatch.setattr(m._WheelGuard, "_repaint", staticmethod(lambda: painted.append(1)))
+    host = QWidget()
+    combo = QComboBox(host)
+    combo.addItems(["a", "b"])
+    host.show()
+    combo.showPopup()
+    qapp.processEvents()
+    combo.hidePopup()
+    menu = QMenu(host)
+    menu.addAction("x")
+    menu.popup(host.mapToGlobal(host.rect().center()))
+    qapp.processEvents()
+    menu.hide()
+    end = time.time() + 0.4
+    while time.time() < end:
+        qapp.processEvents()
+        time.sleep(0.01)
+    assert len(painted) >= 4  # two timers for each closed list
+    host.close()

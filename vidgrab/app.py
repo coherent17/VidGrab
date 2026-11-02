@@ -53,6 +53,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressDialog,
@@ -1730,15 +1731,29 @@ class _FadeStack(QStackedWidget):
 
 class _WheelGuard(QObject):
     """The mouse wheel never changes a dropdown, number box or slider — it
-    scrolls the panel underneath instead (no accidental edits while scrolling)."""
+    scrolls the panel underneath instead (no accidental edits while scrolling).
+    It also repaints the window once a drop-down list or menu has closed: on WSLg a
+    closed pop-up can stay drawn over the page."""
 
     _KINDS = (QComboBox, QAbstractSpinBox, QSlider)
 
     def eventFilter(self, obj, event) -> bool:
-        if event.type() == QEvent.Wheel and isinstance(obj, self._KINDS):
+        kind = event.type()
+        if kind == QEvent.Wheel and isinstance(obj, self._KINDS):
             event.ignore()  # handled here, but unaccepted: Qt passes it to the parent
             return True
+        if kind == QEvent.Hide and isinstance(obj, QWidget) and obj.isWindow() \
+                and (isinstance(obj, QMenu) or obj.metaObject().className() == "QComboBoxPrivateContainer"):
+            QTimer.singleShot(0, self._repaint)
+            QTimer.singleShot(120, self._repaint)
         return False
+
+    @staticmethod
+    def _repaint() -> None:
+        win = QApplication.activeWindow()
+        if win is not None:
+            win.update()
+            win.repaint()
 
 
 _wheel_guard: _WheelGuard | None = None

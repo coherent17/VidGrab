@@ -936,6 +936,7 @@ DEFAULT_SETTINGS: dict = {
     "proxy": "",  # e.g. http://host:8080 or socks5://host:1080
     "retries": 10,  # attempts for a failing download piece
     "skip_downloaded": False,  # playlists: leave out videos downloaded before
+    "sponsorblock": False,  # cut sponsor / self-promo parts out of downloads
     "ytdlp_check": True,  # look for a newer yt-dlp when the app starts
     "ui_font": "jakarta",  # a key of UI_FONTS (bundled), or "system" (the computer's own font)
 }
@@ -2431,6 +2432,14 @@ class VidGrabWindow(QMainWindow):
         self._set_skip.toggled.connect(lambda on: self.set_setting("skip_downloaded", on))
         self._trw(self._set_skip, "Playlists: skip videos I already downloaded")
         nl.addWidget(self._set_skip)
+        self._set_sponsor = QCheckBox()
+        self._set_sponsor.setCursor(QCursor(_HAND))
+        self._set_sponsor.setChecked(bool(self.setting("sponsorblock")))
+        self._set_sponsor.toggled.connect(self._sponsor_changed)
+        self._trw(self._set_sponsor, "Cut out sponsor and self-promotion parts (SponsorBlock)")
+        self._trw(self._set_sponsor, "Uses the community list at sponsor.ajay.app. "
+                                     "Videos nobody has marked are left as they are.", "setToolTip")
+        nl.addWidget(self._set_sponsor)
         arow = QHBoxLayout()
         self._archive_lbl = QLabel()
         self._archive_lbl.setObjectName("hint")
@@ -2570,7 +2579,12 @@ class VidGrabWindow(QMainWindow):
         configure_network(rate_limit=int(self.setting("rate_limit") or 0),
                           proxy=self.setting("proxy") or "",
                           retries=int(self.setting("retries") or 10),
-                          archive=self._archive_path())
+                          archive=self._archive_path(),
+                          sponsorblock=bool(self.setting("sponsorblock")))
+
+    def _sponsor_changed(self, on: bool) -> None:
+        self.set_setting("sponsorblock", bool(on))
+        self._apply_network()
 
     def _network_changed(self) -> None:
         self.set_setting("rate_limit", int(self._set_rate.currentData() or 0))

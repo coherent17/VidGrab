@@ -75,19 +75,34 @@ class Network:
     proxy: str = ""
     retries: int = 10
     archive: Path | None = None  # yt-dlp download archive (playlists skip what it lists)
+    sponsorblock: bool = False  # cut sponsor / self-promo / "like and subscribe" parts out
 
 
 NETWORK = Network()
 
 
 def configure_network(*, rate_limit: int | None = None, proxy: str = "", retries: int = 10,
-                      archive: str | Path | None = None) -> None:
+                      archive: str | Path | None = None, sponsorblock: bool = False) -> None:
     """Set the speed limit, proxy, retry count and download archive used by
     every later probe / download."""
     NETWORK.rate_limit = rate_limit if rate_limit and rate_limit > 0 else None
     NETWORK.proxy = (proxy or "").strip()
     NETWORK.retries = max(0, int(retries))
     NETWORK.archive = Path(archive) if archive else None
+    NETWORK.sponsorblock = bool(sponsorblock)
+
+
+SPONSORBLOCK_CATEGORIES = ["sponsor", "selfpromo", "interaction"]
+
+
+def _sponsorblock_pps() -> list[dict]:
+    """yt-dlp post-processors that look the video up on sponsor.ajay.app and
+    cut the listed parts out (a video nobody has marked is left as it is)."""
+    return [
+        {"key": "SponsorBlock", "categories": SPONSORBLOCK_CATEGORIES, "when": "after_filter"},
+        {"key": "ModifyChapters", "remove_sponsor_segments": SPONSORBLOCK_CATEGORIES,
+         "force_keyframes": False},
+    ]
 
 
 def _net_opts(*, archive: bool = False) -> dict:
@@ -603,12 +618,14 @@ def _ytdl_options(
     if download_sections:
         common["download_sections"] = download_sections
 
+    cut = _sponsorblock_pps() if NETWORK.sponsorblock and not live else []
     if fmt == "mp3":
         codec, _ext, _encoder, lossy = audio_format(audio_fmt)
         extract: dict = {"key": "FFmpegExtractAudio", "preferredcodec": codec}
         if lossy:  # FLAC / WAV have no bitrate
             extract["preferredquality"] = quality or DEFAULT_MP3_BITRATE
-        return {**common, "format": format_id or "bestaudio/best", "postprocessors": [extract]}
+        return {**common, "format": format_id or "bestaudio/best",
+                "postprocessors": [*cut, extract]}
     height = None
     if quality:
         try:
@@ -633,6 +650,7 @@ def _ytdl_options(
         # still wins, so 1440p / 4K (VP9 / AV1 only) stay available.
         "format_sort": ["proto:https", "res", "vcodec:h264"],
         "merge_output_format": "mp4",
+        **({"postprocessors": cut} if cut else {}),
     }
 
 

@@ -13,7 +13,7 @@ def test_every_topic_has_both_languages_and_a_known_section() -> None:
     assert len(ids) == len(set(ids))
     for tid, sec, page, title, body in help_content.TOPICS:
         assert sec in help_content.SECTIONS, tid
-        assert page in (None, 0, 1, 2), tid
+        assert page in (None, "download", "studio", "settings", "library", "tools", "subscriptions"), tid
         for lang in ("en", "zh"):
             assert title[lang].strip() and body[lang].strip(), (tid, lang)
         assert body["en"].count("<ol>") == body["en"].count("</ol>")

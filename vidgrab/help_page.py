@@ -24,18 +24,14 @@ from PySide6.QtWidgets import (
 )
 
 from vidgrab import help_content
+from vidgrab.ui_kit import rgba
 
 _ID = Qt.UserRole
-_PAGE_NAMES = {0: "Download", 1: "Studio", 2: "Settings"}
+_PAGE_NAMES = {"download": "Download", "studio": "Studio", "settings": "Settings", "library": "Library",
+               "tools": "Tools", "subscriptions": "Subscriptions"}
 # section -> (icon kind, palette key of its colour)
 _LOOK = {"start": ("clipboard", "ACCENT_HI"), "download": ("download", "ACCENT2"),
          "studio": ("film", "ACCENT"), "captions": ("captions", "AMBER"), "faq": ("help", "ACCENT2_HI")}
-
-
-def _rgba(color: str, alpha: float) -> str:
-    """A stylesheet colour with transparency (Qt reads #RRGGBBAA as #AARRGGBB)."""
-    c = QColor(color)
-    return f"rgba({c.red()},{c.green()},{c.blue()},{int(alpha * 255)})"
 
 
 class _Tile(QFrame):
@@ -76,15 +72,15 @@ class _Tile(QFrame):
 
 class HelpPage(QWidget):
     """*t* translates UI strings, *lang* gives the current language, *go* opens
-    a page by index, *about* shows the About box and *icon* draws an icon."""
+    a page by name, *about* shows the About box and *icon* draws an icon."""
 
     def __init__(self, t: Callable[[str], str], lang: Callable[[], str],
-                 go: Callable[[int], None], about: Callable[[], None],
+                 go: Callable[[str], None], about: Callable[[], None],
                  icon: Callable[[str, str, int], object]) -> None:
         super().__init__()
         self._t, self._lang, self._go, self._icon = t, lang, go, icon
         self._palette: dict[str, str] = {}
-        self._page: int | None = None
+        self._page: str | None = None
         self._section: str | None = None
         self._topics = {tid: (sec, page, title, body)
                         for tid, sec, page, title, body in help_content.TOPICS}
@@ -221,8 +217,8 @@ class HelpPage(QWidget):
         self._palette = p = palette
         self.hero.setStyleSheet(
             "QFrame#help_hero { border-radius:16px; border:1px solid " + p["BORDER_HI"] + ";"
-            f" background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {_rgba(p['ACCENT'], .38)},"
-            f" stop:0.6 {p['SURFACE_HI']}, stop:1 {_rgba(p['ACCENT2'], .26)}); }}")
+            f" background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {rgba(p['ACCENT'], .38)},"
+            f" stop:0.6 {p['SURFACE_HI']}, stop:1 {rgba(p['ACCENT2'], .26)}); }}")
         self.hero_title.setStyleSheet(f"font-size:30px; font-weight:800; color:{p['TEXT']}; background:transparent;")
         self.hero_sub.setStyleSheet(f"font-size:14px; color:{p['TEXT_DIM']}; background:transparent;")
         head = (f"font-size:11px; font-weight:800; letter-spacing:1.5px; color:{p['TEXT_MUTED']};"
@@ -239,7 +235,7 @@ class HelpPage(QWidget):
             c = QColor(self._color(sec) if sec != "about" else p["ACCENT"])
             kind = _LOOK[sec][0] if sec != "about" else "help"
             tile.badge.setPixmap(self._icon(kind, c.name(), 24).pixmap(24, 24))
-            tile.badge.setStyleSheet(f"background:{_rgba(c.name(), .18)}; border-radius:14px;")
+            tile.badge.setStyleSheet(f"background:{rgba(c.name(), .18)}; border-radius:14px;")
         for b, _tid in self.chips:
             b.setStyleSheet(
                 f"QPushButton#help_chip {{ background:{p['SURFACE']}; color:{p['TEXT_DIM']};"
@@ -396,7 +392,7 @@ class HelpPage(QWidget):
         sec, page, title, body = self._topics[tid]
         color = self._color(sec) if self._palette else "#7c5cff"
         self.chip.setText(help_content.SECTIONS[sec][lang].upper())
-        self.chip.setStyleSheet(f"color:{color}; background:{_rgba(color, .16)}; border-radius:9px; padding:3px 12px;"
+        self.chip.setStyleSheet(f"color:{color}; background:{rgba(color, .16)}; border-radius:9px; padding:3px 12px;"
                                 " font-size:11px; font-weight:800; letter-spacing:1.2px;")
         self.chip.show()
         self.title.setText(title[lang])

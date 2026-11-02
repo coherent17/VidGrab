@@ -1,7 +1,7 @@
 """Qt-free text of the Help page: how-to guides and a FAQ, in both UI languages.
 
 Each topic is ``(id, section, page, {lang: title}, {lang: html})``. *page* is
-the page (0 Download, 1 Studio, 2 Settings) the "Open it" button jumps to, or
+the page ("download", "studio", "settings", …) the "Open it" button jumps to, or
 None. Bodies use only <p>, <ol>, <ul>, <li>, <b> and <i>."""
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ BLURBS: dict[str, dict[str, str]] = {
 # shown as chips on the Help home
 FEATURED = ["first_video", "studio_basics", "shorts", "captions_auto", "faq_shortcuts"]
 
-TOPICS: list[tuple[str, str, int | None, dict[str, str], dict[str, str]]] = [
+TOPICS: list[tuple[str, str, str | None, dict[str, str], dict[str, str]]] = [
     ("welcome", "start", None,
      {"en": "What VidGrab does", "zh": "VidGrab 可以做什麼"},
      {"en": "<p>VidGrab has three pages, chosen in the bar on the left.</p>"
@@ -41,7 +41,7 @@ TOPICS: list[tuple[str, str, int | None, dict[str, str], dict[str, str]]] = [
             "<li><b>Studio</b>：簡易的影片剪輯器，可接合片段、加入字幕、音樂與圖片，再輸出成一個檔案。</li>"
             "<li><b>設定</b>：外觀、語言、下載預設值與硬體選項。</li></ul>"
             "<p>隨時按 <b>F1</b> 即可回到這個說明頁。</p>"}),
-    ("first_video", "start", 0,
+    ("first_video", "start", "download",
      {"en": "Your first download", "zh": "第一次下載"},
      {"en": "<ol><li>Copy a video link and press <b>Paste</b> (or Ctrl+V).</li>"
             "<li>Pick <b>MP4</b> for video or <b>MP3</b> for audio, and a quality.</li>"
@@ -53,7 +53,7 @@ TOPICS: list[tuple[str, str, int | None, dict[str, str], dict[str, str]]] = [
             "<li>選擇 <b>MP4</b>（影片）或 <b>MP3</b>（音訊），以及畫質。</li>"
             "<li>按<b>下載</b>。檔案會出現在下方的下載清單，可直接開啟或傳送到 Studio。</li></ol>"
             "<p>輸入文字而不是連結時，按鈕會變成<b>搜尋</b>，列出可勾選的 YouTube 結果。</p>"}),
-    ("playlists", "download", 0,
+    ("playlists", "download", "download",
      {"en": "Playlists, channels and many links", "zh": "播放清單、頻道與多個連結"},
      {"en": "<p>Paste a playlist or channel link and VidGrab downloads every video in it. You can also put "
             "several links in the box, one per line.</p>"
@@ -64,7 +64,7 @@ TOPICS: list[tuple[str, str, int | None, dict[str, str], dict[str, str]]] = [
       "zh": "<p>貼上播放清單或頻道連結，VidGrab 會下載其中所有影片。也可以在輸入框放入多個連結，每行一個。</p>"
             "<p>貼上旁邊的<b>匯入…</b>可從文字檔讀取連結（每行一個；以 <b>#</b> 開頭的行會略過，重複的會刪除）。</p>"
             "<p>在 設定 → 下載 開啟「略過已下載」，下次只會抓新的影片。</p>"}),
-    ("trim_speed", "download", 0,
+    ("trim_speed", "download", "download",
      {"en": "Trim, speed and flip while downloading", "zh": "下載時裁切、變速與翻轉"},
      {"en": "<p>In the options card, <b>Trim</b> takes a start and end such as <b>1:30</b> or <b>90</b>. "
             "<b>Speed</b> changes how fast it plays, and <b>Flip</b> mirrors it.</p>"
@@ -73,14 +73,14 @@ TOPICS: list[tuple[str, str, int | None, dict[str, str], dict[str, str]]] = [
       "zh": "<p>在選項卡片中，<b>裁切</b>可輸入開始與結束時間，例如 <b>1:30</b> 或 <b>90</b>。"
             "<b>速度</b>調整播放快慢，<b>翻轉</b>可做鏡像。</p>"
             "<p>VidGrab 一律先下載完整影片，再在你的電腦上剪裁，因為 YouTube 常拒絕只下載一部分。</p>"}),
-    ("sponsors", "download", 2,
+    ("sponsors", "download", "settings",
      {"en": "Skip sponsor segments (SponsorBlock)", "zh": "跳過業配片段（SponsorBlock）"},
      {"en": "<p>In Settings → Downloads, turn on <b>Cut sponsor segments</b>. Sponsor reads, self-promotion "
             "and “like and subscribe” reminders that the community has marked are cut out of the file. "
             "It is off by default, and live streams are left alone.</p>",
       "zh": "<p>在 設定 → 下載 開啟<b>剪除業配片段</b>。社群標記的業配、自我宣傳與「訂閱按讚」提醒會從檔案中剪掉。"
             "預設關閉，直播不會處理。</p>"}),
-    ("login", "download", 2,
+    ("login", "download", "settings",
      {"en": "Age-restricted or members-only videos", "zh": "年齡限制或會員限定影片"},
      {"en": "<p>In Settings → Downloads, choose <b>Use login of</b> and pick the browser where you are signed "
             "in to YouTube. VidGrab reads that login for the download; nothing is sent anywhere else.</p>"
@@ -88,7 +88,7 @@ TOPICS: list[tuple[str, str, int | None, dict[str, str], dict[str, str]]] = [
       "zh": "<p>在 設定 → 下載 選擇<b>使用其登入狀態</b>，並選擇你已登入 YouTube 的瀏覽器。"
             "VidGrab 只用它來下載，不會傳到其他地方。</p>"
             "<p>若顯示讀取登入失敗，請先關閉該瀏覽器再試一次。</p>"}),
-    ("studio_basics", "studio", 1,
+    ("studio_basics", "studio", "studio",
      {"en": "Build a video in the Studio", "zh": "在 Studio 製作影片"},
      {"en": "<ol><li>Add clips with <b>Add</b>, or press <b>Send to Studio</b> on a finished download. "
             "You can also drop files on the window.</li>"
@@ -102,7 +102,7 @@ TOPICS: list[tuple[str, str, int | None, dict[str, str], dict[str, str]]] = [
             "<li>移動播放頭並按<b>分割</b>，把片段切成兩段。</li>"
             "<li>在專案面板選擇尺寸與畫質，再按<b>輸出</b>。</li></ol>"
             "<p>所有操作都可以用 Ctrl+Z 復原。儲存專案以便日後繼續；VidGrab 也會保留復原檔，當機後會詢問是否還原。</p>"}),
-    ("shorts", "studio", 1,
+    ("shorts", "studio", "studio",
      {"en": "Make a vertical Short", "zh": "製作直式短影片"},
      {"en": "<ol><li>Pick the <b>Shorts / vertical</b> size in the project panel.</li>"
             "<li>Select the clip and, in its frame settings, choose <b>Fill</b> so the picture covers the "
@@ -116,14 +116,14 @@ TOPICS: list[tuple[str, str, int | None, dict[str, str], dict[str, str]]] = [
             "<li>按<b>追蹤人臉</b>，裁切範圍會跟著說話的人移動。第一次使用時會先詢問，再下載 1.2 MB 的人臉偵測模型。</li>"
             "<li>加入字幕（見「自動字幕」）後輸出。</li></ol>"
             "<p>追蹤人臉只會跟隨最主要的一張臉，之後仍可手動拖曳畫面。</p>"}),
-    ("silences", "studio", 1,
+    ("silences", "studio", "studio",
      {"en": "Cut out the pauses", "zh": "剪掉停頓"},
      {"en": "<p>Select a clip, open the <b>Trim</b> tab and press <b>Remove silences…</b>. Choose how quiet "
             "counts as a pause, review the preview strip, and apply. A little breathing room is kept around "
             "speech, and the whole thing is one undo step.</p>",
       "zh": "<p>選取片段，開啟<b>裁切</b>分頁並按<b>移除靜音…</b>。選擇多安靜才算停頓，確認預覽後套用。"
             "說話前後會保留一點空隙，整個動作只算一次復原。</p>"}),
-    ("music", "studio", 1,
+    ("music", "studio", "studio",
      {"en": "Background music and volume", "zh": "背景音樂與音量"},
      {"en": "<p>Press <b>Music…</b> or double-click the Music row to add a song. Each song has its own start, "
             "end, volume and fade, and you can add several; only the last one loops to fill the video.</p>"
@@ -131,7 +131,7 @@ TOPICS: list[tuple[str, str, int | None, dict[str, str], dict[str, str]]] = [
       "zh": "<p>按<b>音樂…</b>或在音樂列雙擊即可新增歌曲。每首歌都有自己的起訖、音量與淡入淡出，可加入多首；"
             "只有最後一首會循環到影片結束。</p>"
             "<p>輸出格式選<b>僅音訊（MP3）</b>即可製作音樂串燒。</p>"}),
-    ("captions_auto", "captions", 1,
+    ("captions_auto", "captions", "studio",
      {"en": "Automatic captions", "zh": "自動字幕"},
      {"en": "<ol><li>Press <b>Auto captions…</b> in the Studio.</li>"
             "<li>Choose the language and model size. The first run downloads the model (the dialog says how "
@@ -145,7 +145,7 @@ TOPICS: list[tuple[str, str, int | None, dict[str, str], dict[str, str]]] = [
             "<li>選擇<b>字幕樣式</b>，例如<i>逐字亮起</i>，會在說到每個字時亮起。</li>"
             "<li>按<b>建立字幕</b>。字幕會出現在字幕列，點選即可修改文字。</li></ol>"
             "<p>有顯示卡時速度會快很多，可在 設定 → Studio 關閉。</p>"}),
-    ("captions_style", "captions", 1,
+    ("captions_style", "captions", "studio",
      {"en": "Subtitle look and animation", "zh": "字幕外觀與動畫"},
      {"en": "<p>Select a subtitle and use its panel to change the font size, colour, box and position, "
             "or drag it right on the preview. <b>Own look</b> gives one line a different style from the rest.</p>"
@@ -155,7 +155,7 @@ TOPICS: list[tuple[str, str, int | None, dict[str, str], dict[str, str]]] = [
             "<b>獨立外觀</b>可以讓單行字幕與其他行不同。</p>"
             "<p>動畫清單包含淡入淡出、彈出、滑入、打字機、卡拉 OK 與逐字亮起。"
             "現成的文字樣式（標題、下三分之一、引言）會自動擺好位置。</p>"}),
-    ("effects", "captions", 1,
+    ("effects", "captions", "studio",
      {"en": "Colour looks, stabilise and green screen", "zh": "調色、防震與綠幕"},
      {"en": "<p>Select a clip and open its <b>Effects</b> tab.</p>"
             "<ul><li><b>Look</b>: one-click colour styles, plus sliders or your own .cube file.</li>"
@@ -175,7 +175,7 @@ TOPICS: list[tuple[str, str, int | None, dict[str, str], dict[str, str]]] = [
             "Studio work.</p>",
       "zh": "<p>Windows 與 Linux 版本已內建 ffmpeg。若你是用 pip 或在 macOS 安裝，VidGrab 會詢問是否下載一次 ffmpeg，"
             "同意後裁切、MP3 與 Studio 都能正常使用。</p>"}),
-    ("faq_403", "faq", 2,
+    ("faq_403", "faq", "settings",
      {"en": "A download fails or is only 360p", "zh": "下載失敗或只有 360p"},
      {"en": "<p>YouTube changes often. In Settings → Downloads press <b>Update yt-dlp</b>; the new version "
             "applies the next time you start VidGrab. Using a different network or turning off a VPN also "
@@ -184,7 +184,7 @@ TOPICS: list[tuple[str, str, int | None, dict[str, str], dict[str, str]]] = [
       "zh": "<p>YouTube 經常改版。到 設定 → 下載 按<b>更新 yt-dlp</b>，下次啟動時生效。"
             "遇到「403」或「不是機器人」訊息時，換個網路或關閉 VPN 也有幫助。</p>"
             "<p>需要帳號的影片請見「年齡限制或會員限定影片」。</p>"}),
-    ("faq_slow", "faq", 2,
+    ("faq_slow", "faq", "settings",
      {"en": "Rendering or captions are slow", "zh": "輸出或字幕很慢"},
      {"en": "<p>Settings → Studio has two switches that use your graphics card for rendering and for captions. "
             "Both fall back to the processor by themselves if the card fails. A smaller caption model and "

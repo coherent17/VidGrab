@@ -34,7 +34,7 @@ def test_window_constructs_and_destroys(qapp, monkeypatch) -> None:
     win = appmod.VidGrabWindow()
     try:
         assert win.windowTitle() == "VidGrab"
-        assert win._stack.count() == 4  # Download, Studio, Settings, Help
+        assert win._stack.count() == 7  # Download, Studio, Library, Tools, Subscriptions, Settings, Help
         assert win._stack.currentIndex() == appmod.PAGE_DOWNLOAD
         assert not win._bottom.isHidden()
         win._switch_page(appmod.PAGE_STUDIO)

@@ -27,6 +27,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QColor,
     QCursor,
+    QDesktopServices,
     QFont,
     QIcon,
     QPainter,
@@ -106,11 +107,14 @@ from vidgrab.gpu import detect_encoder
 from vidgrab.help_page import HelpPage
 from vidgrab.i18n import FLAGS, LANGUAGES, make_translator
 from vidgrab.jobs import DownloadJob, run_job
+from vidgrab.library_page import LibraryPage
 from vidgrab.network import ConnectionStatus, check_internet
 from vidgrab.pick_dialogs import FormatDialog, SearchPanel, shutdown_threads
 from vidgrab.preview import QT_MULTIMEDIA_OK as _QT_MULTIMEDIA_OK
 from vidgrab.studio import compose_audio, compose_split, compose_video
 from vidgrab.studio_page import StudioPage
+from vidgrab.subscriptions_page import SubscriptionsPage
+from vidgrab.tools_page import ToolsPage
 
 # ── palette ────────────────────────────────────────────────────────────────
 #
@@ -1107,6 +1111,17 @@ def _icon(kind: str, color: str = "#8b93ab", size: int = 18) -> QIcon:
             x2 = cx + (r + 2) * math.cos(rad)
             y2 = cy + (r + 2) * math.sin(rad)
             p.drawLine(int(x1), int(y1), int(x2), int(y2))
+    elif kind == "tools":  # sliders: two lines with a knob each
+        for y, x in ((m // 3, m // 3), (2 * m // 3, 2 * m // 3 + 1)):
+            p.drawLine(3, y, m - 3, y)
+            p.setBrush(QColor(color))
+            p.drawEllipse(x - 2, y - 2, 5, 5)
+    elif kind == "rss":  # a feed: dot and two waves
+        p.setBrush(QColor(color))
+        p.drawEllipse(3, m - 6, 4, 4)
+        p.setBrush(Qt.NoBrush)
+        p.drawArc(3 - m // 2, m // 2, m, m, 0, 90 * 16)
+        p.drawArc(3 - m + 3, 3, m * 2 - 6, m * 2 - 6, 0, 90 * 16)
     elif kind == "help":
         p.drawEllipse(2, 2, m - 4, m - 4)
         f = p.font()
@@ -1584,6 +1599,9 @@ class _Worker(QThread):
 _NAV_ITEMS: list[tuple[str, str]] = [
     ("download", "Download"),
     ("film", "Studio"),
+    ("folder", "Library"),
+    ("tools", "Tools"),
+    ("rss", "Channels"),
     ("gear", "Settings"),
     ("help", "Help"),
 ]
@@ -1592,11 +1610,15 @@ _NAV_ITEMS: list[tuple[str, str]] = [
 _PAGE_HEADERS: list[tuple[str, str]] = [
     ("Download", "Grab videos, playlists and music from YouTube and other sites"),
     ("Studio", "Join clips, add subtitles and background music"),
+    ("Library", "Everything you have downloaded and made"),
+    ("Tools", "Shrink, convert, GIF, thumbnails and audio in one click"),
+    ("Subscriptions", "Follow channels and grab their new videos"),
     ("Settings", "Appearance, language and app info"),
     ("Help", "How to use each feature, and answers to common questions"),
 ]
 
-PAGE_DOWNLOAD, PAGE_STUDIO, PAGE_SETTINGS, PAGE_HELP = range(4)
+(PAGE_DOWNLOAD, PAGE_STUDIO, PAGE_LIBRARY, PAGE_TOOLS, PAGE_SUBS, PAGE_SETTINGS,
+ PAGE_HELP) = range(7)
 
 _THUMB_SIZE = QSize(320, 180)
 
@@ -1668,6 +1690,9 @@ class _Sidebar(QWidget):
                     {
                         "download": "tooltip_page_download",
                         "film": "tooltip_page_studio",
+                        "folder": "tooltip_page_library",
+                        "tools": "tooltip_page_tools",
+                        "rss": "tooltip_page_subscriptions",
                         "gear": "tooltip_page_settings",
                         "help": "tooltip_page_help",
                     }[kind]
@@ -1736,6 +1761,7 @@ class VidGrabWindow(QMainWindow):
         self._t = make_translator(self._lang)
         self._busy = False
         self._internet_online: bool | None = None
+        self._subs_loaded = False
         self._worker: _Worker | None = None  # Studio render
         self._hw_encoder: object = False  # False = not checked yet, None = none works
         self._hw_probe: _HwProbe | None = None
@@ -1807,8 +1833,14 @@ class VidGrabWindow(QMainWindow):
             lambda: self._worker.cancel() if self._worker is not None else None)
         self._studio.apply_theme(self._theme, _PALETTES[self._theme], _CARD_ACCENTS[self._theme])
         self._stack.addWidget(self._studio)
+        self._library = LibraryPage(self)
+        self._tools = ToolsPage(self)
+        self._subs = SubscriptionsPage(self, _config_dir() / "subscriptions.json")
+        for page in (self._library, self._tools, self._subs):
+            page.apply_theme(_PALETTES[self._theme])
+            self._stack.addWidget(page)
         self._stack.addWidget(self._build_settings_form())
-        self._help = HelpPage(lambda k: self._t(k), lambda: self._lang, self._sidebar.select, self._show_about, _icon)
+        self._help = HelpPage(lambda k: self._t(k), lambda: self._lang, self._go_page, self._show_about, _icon)
         self._help.apply_theme(_PALETTES[self._theme])
         self._stack.addWidget(self._help)
         content.addWidget(self._stack, stretch=4)
@@ -2985,6 +3017,11 @@ class VidGrabWindow(QMainWindow):
         self._bottom.setVisible(idx == PAGE_DOWNLOAD)
         if idx == PAGE_DOWNLOAD:
             self._update_action_label()
+        if idx == PAGE_LIBRARY:
+            self._library.refresh()
+        elif idx == PAGE_SUBS and not self._subs_loaded:
+            self._subs_loaded = True
+            self._subs.refresh_all()
         if idx == PAGE_SETTINGS:  # sizes change while you work (a model was downloaded, a cache grew)
             self._refresh_storage()
             self._refresh_hardware()
@@ -3023,6 +3060,8 @@ class VidGrabWindow(QMainWindow):
             )
         if hasattr(self, "_help"):
             self._help.apply_theme(_PALETTES[self._theme])
+            for page in (self._library, self._tools, self._subs):
+                page.apply_theme(_PALETTES[self._theme])
 
     def _toggle_theme(self) -> None:
         self._set_theme("light" if self._theme == "dark" else "dark")
@@ -3073,6 +3112,8 @@ class VidGrabWindow(QMainWindow):
         self._update_page_header()
         self._studio.retranslate()
         self._help.retranslate()
+        for page in (self._library, self._tools, self._subs):
+            page.retranslate()
         # download page
         self._dl_source_title.setText(t("SOURCE"))
         self._dl_options_title.setText(t("OPTIONS"))
@@ -3500,6 +3541,37 @@ class VidGrabWindow(QMainWindow):
 
     def icon(self, kind: str, color: str, size: int = 18) -> QIcon:
         return _icon(kind, color, size)
+
+    # ── host interface of Library / Tools / Subscriptions ──────────────
+
+    def _go_page(self, name: str) -> None:
+        """Open a page by name (the Help page's buttons use this)."""
+        self._sidebar.select({"download": PAGE_DOWNLOAD, "studio": PAGE_STUDIO, "library": PAGE_LIBRARY,
+                              "tools": PAGE_TOOLS, "subscriptions": PAGE_SUBS,
+                              "settings": PAGE_SETTINGS}[name])
+
+    def open_path(self, path: str) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def reveal(self, path: str) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).parent)))
+
+    def send_to_studio(self, paths: list[str]) -> None:
+        if paths:
+            self._studio.add_clips(paths)
+            self._sidebar.select(PAGE_STUDIO)
+
+    def open_tool(self, path: str) -> None:
+        self._tools.set_file(path)
+        self._sidebar.select(PAGE_TOOLS)
+
+    def online(self) -> bool:
+        return self._internet_online is not False
+
+    def download_links(self, urls: list[str]) -> None:
+        self._url.setText(" ".join(urls))
+        self._sidebar.select(PAGE_DOWNLOAD)
+        self._start_download()
 
     def log(self, msg: str) -> None:
         self._append_log(msg)
@@ -4094,6 +4166,8 @@ class VidGrabWindow(QMainWindow):
             _stop_thread(worker, 3000)
         self._studio.preview.stop()
         self._studio.shutdown()
+        for page in (self._library, self._tools, self._subs):
+            page.shutdown()
         self._studio.clear_autosave()  # a normal close: nothing to recover
         event.accept()
 

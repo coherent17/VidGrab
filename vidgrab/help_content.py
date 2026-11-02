@@ -5,6 +5,8 @@ the page ("download", "studio", "settings", …) the "Open it" button jumps to, 
 None. Bodies use only <p>, <ol>, <ul>, <li>, <b> and <i>."""
 from __future__ import annotations
 
+from vidgrab.fuzzy import FuzzyIndex
+
 SECTIONS: dict[str, dict[str, str]] = {
     "start": {"en": "Getting started", "zh": "開始使用"},
     "download": {"en": "Download", "zh": "下載"},
@@ -317,13 +319,26 @@ def text_of(html: str) -> str:
     return "".join(out).lower()
 
 
+_INDEX: dict[str, FuzzyIndex] = {}
+
+
+def index(lang: str) -> FuzzyIndex:
+    """The fuzzy index of one language (built once): a title weighs three times a body."""
+    if lang not in _INDEX:
+        ix = FuzzyIndex()
+        for tid, _sec, _page, title, body in TOPICS:
+            ix.add(tid, title[lang], (title[lang], 3.0), (text_of(body[lang]), 1.0))
+        _INDEX[lang] = ix
+    return _INDEX[lang]
+
+
 def search(query: str, lang: str) -> list[str]:
-    """Ids of the topics whose title or text contains every word of *query*
-    (in order of the list; all of them for an empty query)."""
-    words = query.lower().split()
-    hits = []
-    for tid, _sec, _page, title, body in TOPICS:
-        hay = title[lang].lower() + " " + text_of(body[lang])
-        if all(w in hay for w in words):
-            hits.append(tid)
-    return hits
+    """Ids of the topics that match *query*, best match first (typos, half-typed
+    words and Chinese included); every topic, in list order, for an empty query."""
+    if not query.strip():
+        return [t[0] for t in TOPICS]
+    return [str(k) for k, _score in index(lang).search(query, limit=len(TOPICS))]
+
+
+def did_you_mean(query: str, lang: str) -> str | None:
+    return index(lang).did_you_mean(query)

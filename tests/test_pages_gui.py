@@ -222,3 +222,37 @@ def test_ctrl_v_pastes_into_the_focused_box_not_the_download_link(win, qapp) -> 
     w._sidebar.select(m.PAGE_SETTINGS)
     w._paste_url()
     assert w._url.text() == "keep me"  # other pages leave the link box alone
+
+
+def test_fuzzy_search_in_help_library_and_download_box(win, qapp) -> None:
+    from vidgrab.downloads_panel import DONE, DownloadItem
+    from vidgrab.jobs import DownloadJob
+
+    w, m, _media = win
+    # Library: a typo still finds the file, the popup offers the best names
+    w._sidebar.select(m.PAGE_LIBRARY)
+    w._library.search.setText("cilp on")
+    assert w._library.list.count() == 1 and w._library.list.item(0).text().startswith("clip one")
+    w._library.search.setText("sogn")
+    assert w._library.list.count() == 1 and w._library.list.item(0).text().startswith("song")
+    w._library.search.setText("qqqqqq")
+    assert w._library.list.count() == 0
+    # Help: ranked, with a "did you mean" when nothing matches
+    h = w._help
+    h.home_search.setText("captoins")
+    assert h.current_id() == "captions_auto" and h.topic_list.item(0).text() == "BEST MATCHES"
+    h.search.setText("shrnk")
+    assert h.current_id() == "tools_shrink"
+    h.search.setText("zzzzqqq")
+    assert h.current_id() is None
+    # the download box: earlier searches and downloaded titles
+    w._remember_search("lofi hip hop radio")
+    w._remember_search("Lofi Hip Hop Radio")  # the same one: kept once
+    assert w.setting("recent_searches") == ["Lofi Hip Hop Radio"]
+    item = DownloadItem(job=DownloadJob(url="https://y/1", output_dir="/tmp", fmt="mp4"), title="Hip hop beats mix",
+                        status=DONE)
+    w._queue.append(item)
+    assert w._url_suggestions("hip hopp")[:2] == ["Lofi Hip Hop Radio", "Hip hop beats mix"] or \
+        set(w._url_suggestions("hip hopp")) == {"Lofi Hip Hop Radio", "Hip hop beats mix"}
+    assert w._url_suggestions("https://youtube.com/watch?v=x") == [] and w._url_suggestions("a") == []
+    w._queue.remove(item)

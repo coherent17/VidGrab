@@ -81,3 +81,14 @@ def test_library_scan_and_filter(tmp_path) -> None:
     assert [e.name for e in library.filter_entries(entries, "audio")] == ["b song"]
     assert [e.name for e in library.filter_entries(entries, "all", "SONG b")] == ["b song"]
     assert library.scan(tmp_path / "nope") == []
+
+
+def test_library_finder_is_fuzzy_and_ranked(tmp_path) -> None:
+    for name in ("Interview with Ada.mp4", "Mountain hike.mp4", "Lo-fi beats.mp3", "adaptive notes.png"):
+        (tmp_path / name).write_bytes(b"x")
+    f = library.Finder(library.scan(tmp_path))
+    assert [e.name for e in f.filter("all", "intervew")] == ["Interview with Ada"]  # a dropped letter
+    assert f.filter("all", "ada")[0].name == "Interview with Ada"  # the whole word beats a longer one
+    assert [e.name for e in f.filter("audio", "beat")] == ["Lo-fi beats"]
+    assert f.suggest("moun")[0] == "Mountain hike" and f.did_you_mean("mountin") == "mountain"
+    assert len(f.filter("all", "")) == 4

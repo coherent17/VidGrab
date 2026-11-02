@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 from vidgrab import library
 from vidgrab.downloads_panel import human_size
 from vidgrab.studio_page import ThumbCache
-from vidgrab.ui_kit import Chips, chip_css
+from vidgrab.ui_kit import Chips, attach_suggestions, chip_css
 
 _PATH = Qt.UserRole
 _KIND_ICON = {"video": "film", "audio": "music", "image": "captions"}
@@ -50,6 +50,7 @@ class LibraryPage(QWidget):
         self.host = host
         self._palette: dict[str, str] = {}
         self._entries: list[library.Entry] = []
+        self._finder = library.Finder([])
         self._thumbs = ThumbCache(self)
         self._thumbs.updated.connect(self._paint_thumbs)
 
@@ -64,6 +65,7 @@ class LibraryPage(QWidget):
         self.search.setMinimumWidth(240)
         self.search.setMaximumWidth(380)
         self.search.textChanged.connect(self._fill)
+        attach_suggestions(self.search, lambda text: self._finder.suggest(text))
         top.addWidget(self.search)
         self.chips = Chips(list(library.KINDS))
         self.chips.changed.connect(lambda _k: self._fill())
@@ -144,6 +146,7 @@ class LibraryPage(QWidget):
     def refresh(self) -> None:
         folder = self.host.default_output_dir()
         self._entries = library.scan(folder)
+        self._finder = library.Finder(self._entries)
         self.folder_lbl.setText(str(folder))
         self._fill()
 
@@ -164,7 +167,7 @@ class LibraryPage(QWidget):
 
     def _fill(self, *_a) -> None:
         t = self.host.t
-        shown = library.filter_entries(self._entries, self.chips.current(), self.search.text())
+        shown = self._finder.filter(self.chips.current(), self.search.text())
         keep = {i.data(_PATH) for i in self.list.selectedItems()}
         self.list.clear()
         for e in shown:
@@ -179,8 +182,10 @@ class LibraryPage(QWidget):
                 item.setSelected(True)
         self.empty.setVisible(not shown)
         self.list.setVisible(bool(shown))
+        fix = self._finder.did_you_mean(self.search.text()) if self._entries and not shown else None
         self.empty.setText(t("Nothing here yet. Downloads and renders you make will show up in this list.")
-                           if not self._entries else t("No file matches."))
+                           if not self._entries else
+                           t("No file matches.") + (f"  {t('Did you mean')} “{fix}”?" if fix else ""))
         self.count_lbl.setText(t("{n} files", n=len(shown)))
         self._paint_thumbs()
         self._selection()

@@ -1,9 +1,11 @@
 """Small shared widgets / styles for the newer pages (Library, Tools, Subscriptions, Help)."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from collections.abc import Callable
+
+from PySide6.QtCore import QStringListModel, Qt, Signal
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QHBoxLayout, QPushButton, QWidget
+from PySide6.QtWidgets import QCompleter, QHBoxLayout, QLineEdit, QPushButton, QWidget
 
 
 def rgba(color: str, alpha: float) -> str:
@@ -51,3 +53,20 @@ class Chips(QWidget):
 
     def set_current(self, key: str) -> None:
         self.buttons[key].setChecked(True)
+
+
+def attach_suggestions(box: QLineEdit, provider: Callable[[str], list[str]], *, min_chars: int = 2) -> QCompleter:
+    """Drop-down best matches under a line edit. *provider(text)* returns the
+    labels in the order to show (already ranked: the popup does not filter them)."""
+    model = QStringListModel(box)
+    completer = QCompleter(model, box)
+    completer.setCompletionMode(QCompleter.UnfilteredPopupCompletion)
+    completer.setCaseSensitivity(Qt.CaseInsensitive)
+    completer.setMaxVisibleItems(8)
+    box.setCompleter(completer)
+
+    def refresh(text: str) -> None:
+        model.setStringList(provider(text) if len(text.strip()) >= min_chars else [])
+
+    box.textEdited.connect(refresh)
+    return completer

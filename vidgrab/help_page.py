@@ -7,7 +7,7 @@ import html
 from collections.abc import Callable
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from vidgrab import help_content
-from vidgrab.ui_kit import rgba
+from vidgrab.ui_kit import attach_suggestions, rgba
 
 _ID = Qt.UserRole
 _PAGE_NAMES = {"download": "Download", "studio": "Studio", "settings": "Settings", "library": "Library",
@@ -101,6 +101,7 @@ class HelpPage(QWidget):
         box.setClearButtonEnabled(True)
         box.setMinimumHeight(40)
         box.textChanged.connect(self._searched)
+        attach_suggestions(box, lambda text: help_content.index(self._lang()).suggest(text, 6))
         return box
 
     def _build_home(self) -> QWidget:
@@ -197,7 +198,8 @@ class HelpPage(QWidget):
         right.addWidget(self.chip, alignment=Qt.AlignLeft)
         right.addWidget(self.title)
         self.body = QTextBrowser()
-        self.body.setOpenExternalLinks(True)
+        self.body.setOpenLinks(False)
+        self.body.anchorClicked.connect(self._link)
         self.body.setFrameShape(QTextBrowser.NoFrame)
         right.addWidget(self.body, stretch=1)
         foot = QHBoxLayout()
@@ -328,18 +330,19 @@ class HelpPage(QWidget):
     def _fill(self, *_a, keep: str | None = None) -> None:
         lang = self._lang()
         query = self.search.text()
-        hits = set(help_content.search(query, lang))
+        ranked = help_content.search(query, lang)
         keep = keep or self.current_id()
         self.topic_list.blockSignals(True)
         self.topic_list.clear()
         first = chosen = None
-        for sec, names in help_content.SECTIONS.items():
-            if self._section and not query.strip() and sec != self._section:
-                continue
-            rows = [tid for tid, s, *_ in help_content.TOPICS if s == sec and tid in hits]
-            if not rows:
-                continue
-            head = QListWidgetItem(names[lang].upper())
+        if query.strip():  # the best match first, in one group
+            groups = [(self._t("BEST MATCHES"), "more", ranked)] if ranked else []
+        else:
+            groups = [(names[lang].upper(), sec, [t[0] for t in help_content.TOPICS if t[1] == sec])
+                      for sec, names in help_content.SECTIONS.items()
+                      if not self._section or sec == self._section]
+        for heading, sec, rows in groups:
+            head = QListWidgetItem(heading)
             head.setFlags(Qt.NoItemFlags)
             f = head.font()
             f.setBold(True)
@@ -360,6 +363,13 @@ class HelpPage(QWidget):
         if chosen is not None:
             self.topic_list.setCurrentItem(chosen)
         self._show(self.topic_list.currentItem())
+
+    def _link(self, url) -> None:
+        text = url.toString()
+        if text.startswith("fix:"):
+            self.search.setText(text[4:])
+        elif text.startswith(("http://", "https://")):
+            QDesktopServices.openUrl(url)
 
     def _steps(self, body: str) -> str:
         """<ol> as numbered cards (a QTextBrowser has no CSS counters)."""
@@ -386,8 +396,12 @@ class HelpPage(QWidget):
             self.chip.setText("")
             self.chip.hide()
             self.title.setText(self._t("Nothing found"))
-            self.body.setHtml("<p>" + html.escape(
-                self._t("Try a different word, such as “captions” or “download”.")) + "</p>")
+            fix = help_content.did_you_mean(self.search.text(), lang)
+            hint = html.escape(self._t("Try a different word, such as “captions” or “download”."))
+            if fix and help_content.search(fix, lang):
+                hint = (html.escape(self._t("Did you mean")) + f' <a href="fix:{html.escape(fix)}">'
+                        f"{html.escape(fix)}</a>?")
+            self.body.setHtml("<p>" + hint + "</p>")
             self._page = None
             self.open_btn.hide()
             return

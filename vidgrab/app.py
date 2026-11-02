@@ -105,6 +105,7 @@ from vidgrab.downloads_panel import (
     load_history,
     save_history,
 )
+from vidgrab.fuzzy import FuzzyIndex
 from vidgrab.gpu import detect_encoder
 from vidgrab.help_page import HelpPage
 from vidgrab.i18n import FLAGS, LANGUAGES, make_translator
@@ -117,6 +118,7 @@ from vidgrab.studio import compose_audio, compose_split, compose_video
 from vidgrab.studio_page import StudioPage
 from vidgrab.subscriptions_page import SubscriptionsPage
 from vidgrab.tools_page import ToolsPage
+from vidgrab.ui_kit import attach_suggestions
 
 # ── palette ────────────────────────────────────────────────────────────────
 #
@@ -950,6 +952,7 @@ DEFAULT_SETTINGS: dict = {
     "caption_style": "highlight",  # how auto captions come on screen (studio.ANIMATIONS)
     "sponsorblock": False,  # cut sponsor / self-promo parts out of downloads
     "cookies_browser": "",  # borrow this browser's login ("" = none)
+    "recent_searches": [],  # what was typed into the link box to search YouTube, newest first
     "ytdlp_check": True,  # look for a newer yt-dlp when the app starts
     "ui_font": "jakarta",  # a key of UI_FONTS (bundled), or "system" (the computer's own font)
 }
@@ -1964,6 +1967,7 @@ class VidGrabWindow(QMainWindow):
         self._url.setPlaceholderText("Paste a link, or type to search YouTube…")
         self._url.setClearButtonEnabled(True)
         self._url.returnPressed.connect(self._start_action)
+        attach_suggestions(self._url, self._url_suggestions)
         bl.addWidget(self._url, stretch=1)
         pb = QPushButton("Paste")
         pb.setObjectName("secondary")
@@ -3500,12 +3504,30 @@ class VidGrabWindow(QMainWindow):
             self._exact_pick = dlg.chosen()
             self._sync_audio_options()
 
+    def _url_suggestions(self, text: str) -> list[str]:
+        """Best matches for words typed in the link box: earlier searches and the
+        titles of what was downloaded (never for a link)."""
+        if _looks_like_url(text) or "://" in text:
+            return []
+        ix = FuzzyIndex()
+        for q in self.setting("recent_searches") or []:
+            ix.add(q, q, (q, 2.0))
+        for item in self._queue:
+            if item.status == DONE and item.title:
+                ix.add(item.title, item.title, (item.title, 1.0))
+        return ix.suggest(text, 8)
+
+    def _remember_search(self, query: str) -> None:
+        keep = [q for q in (self.setting("recent_searches") or []) if q.casefold() != query.casefold()]
+        self.set_setting("recent_searches", [query, *keep][:30])
+
     def _search_flow(self, query: str) -> None:
         """Words in the link box: show YouTube's results to tick, then fill the box with them."""
         if self._internet_online is not True:
             QMessageBox.warning(self, self._t("No internet"), self._t(
                 "You appear to be offline.\nVidGrab needs a live connection."))
             return
+        self._remember_search(query.strip())
         self._body_stack.setCurrentIndex(1)
         self._search_panel.start(query, lambda q: search(q, 12, translate=self._t))
 

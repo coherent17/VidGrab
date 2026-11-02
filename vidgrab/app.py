@@ -84,6 +84,7 @@ from vidgrab.downloader import (
     fetch_dislikes,
     find_ffmpeg,
     get_app_dir,
+    parse_link_list,
     probe,
     search,
 )
@@ -1922,6 +1923,14 @@ class VidGrabWindow(QMainWindow):
         pb.clicked.connect(self._paste_url)
         bl.addWidget(pb)
         self._dl_paste = pb
+        ib = QPushButton("Import…")
+        ib.setObjectName("secondary")
+        ib.setFixedHeight(44)
+        ib.setMinimumWidth(96)
+        ib.setCursor(QCursor(_HAND))
+        ib.clicked.connect(self._import_links)
+        bl.addWidget(ib)
+        self._dl_import = ib
         self._action = QPushButton("⬇  Download")
         self._action.setObjectName("primary")
         self._action.setProperty("compact", True)
@@ -3071,6 +3080,8 @@ class VidGrabWindow(QMainWindow):
         self._ts_lbl.setText(t("Start:"))
         self._te_lbl.setText(t("End:"))
         self._dl_paste.setText(t("Paste"))
+        self._dl_import.setText(t("Import…"))
+        self._dl_import.setToolTip(t("Load a text file with one link per line"))
         self._dl_browse.setText(t("Browse\u2026"))
         self._dl_paste.setToolTip(t("tooltip_paste"))
         self._dl_browse.setToolTip(t("tooltip_browse_out"))
@@ -3140,6 +3151,23 @@ class VidGrabWindow(QMainWindow):
         if text:
             links = re.findall(r"https?://\S+", text)
             self._url.setText(" ".join(links) if len(links) > 1 else text.strip())
+
+    def _import_links(self) -> None:
+        """Fill the link box from a text file with one link per line."""
+        path = self.pick_file(self._t("Choose a list of links"), ("Documents", "Downloads"),
+                              self._t("Text files (*.txt *.csv *.md)") + ";;" + self._t("All files (*)"))
+        if not path:
+            return
+        try:
+            links = parse_link_list(Path(path).read_text(encoding="utf-8", errors="replace"))
+        except OSError as exc:
+            QMessageBox.warning(self, self._t("Import…"), str(exc))
+            return
+        if not links:
+            QMessageBox.information(self, self._t("Import…"),
+                                    self._t("No links found in that file."))
+            return
+        self._url.setText(" ".join(links))
 
     # ── URL auto-detect / info card ───────────────────────────────────────
 

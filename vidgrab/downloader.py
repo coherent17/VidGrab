@@ -132,6 +132,18 @@ def _net_opts(*, archive: bool = False) -> dict:
     return opts
 
 
+def parse_link_list(text: str) -> list[str]:
+    """The links in a pasted / loaded list, in order, each once. Lines starting
+    with # are comments; trailing commas and brackets are not part of a link."""
+    seen: dict[str, None] = {}
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        for link in re.findall(r"https?://[^\s\"'<>,;]+", line):
+            seen.setdefault(link.rstrip(".,;)]}"), None)
+    return list(seen)
+
+
 def display_text(text: str | None) -> str:
     """A title as the window can draw it. YouTube titles carry emoji and
     "fancy" letters (𝒑𝒍𝒂𝒚𝒍𝒊𝒔𝒕) that the app's fonts have no glyphs for — they would show

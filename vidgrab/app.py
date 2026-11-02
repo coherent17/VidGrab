@@ -54,6 +54,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QProgressDialog,
     QPushButton,
     QScrollArea,
@@ -63,13 +64,14 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QStatusBar,
     QSystemTrayIcon,
+    QTextEdit,
     QToolButton,
     QTreeView,
     QVBoxLayout,
     QWidget,
 )
 
-from vidgrab import __version__, ffmpeg_fetch, ytdlp_update
+from vidgrab import __version__, ffmpeg_fetch, opener, ytdlp_update
 from vidgrab.captions import detect_gpus, speech_device, transcribe
 from vidgrab.downloader import (
     AUDIO_FORMATS,
@@ -3204,13 +3206,24 @@ class VidGrabWindow(QMainWindow):
     # ── clipboard / file dialogs ───────────────────────────────────────
 
     def _paste_url(self) -> None:
-        if self._stack.currentIndex() == PAGE_STUDIO:  # Ctrl+V there pastes Studio items
-            self._studio.paste()
+        """Ctrl+V. A text box with the focus (the Channels link, a search box…) pastes
+        for itself; the Download page's link box and the Studio take it otherwise."""
+        focus = QApplication.focusWidget()
+        if isinstance(focus, QLineEdit | QPlainTextEdit | QTextEdit) and focus is not self._url \
+                and not focus.isReadOnly():
+            focus.paste()
             return
-        text = QApplication.clipboard().text()
-        if text:
-            links = re.findall(r"https?://\S+", text)
-            self._url.setText(" ".join(links) if len(links) > 1 else text.strip())
+        page = self._stack.currentIndex()
+        if page == PAGE_STUDIO:  # Ctrl+V there pastes Studio items
+            self._studio.paste()
+        elif page == PAGE_SUBS:
+            self._subs.url.setText(QApplication.clipboard().text().strip())
+            self._subs.url.setFocus()
+        elif page == PAGE_DOWNLOAD:
+            text = QApplication.clipboard().text()
+            if text:
+                links = re.findall(r"https?://\S+", text)
+                self._url.setText(" ".join(links) if len(links) > 1 else text.strip())
 
     def _import_links(self) -> None:
         """Fill the link box from a text file with one link per line."""
@@ -3550,11 +3563,13 @@ class VidGrabWindow(QMainWindow):
                               "tools": PAGE_TOOLS, "subscriptions": PAGE_SUBS,
                               "settings": PAGE_SETTINGS}[name])
 
-    def open_path(self, path: str) -> None:
-        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+    def open_path(self, path: str, reveal: bool = False) -> None:
+        if not opener.open_path(path, reveal):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).parent if reveal else path)))
+            self._statusbar.showMessage(self._t("Could not open: {path}", path=path), 8000)
 
     def reveal(self, path: str) -> None:
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).parent)))
+        self.open_path(path, reveal=True)
 
     def send_to_studio(self, paths: list[str]) -> None:
         if paths:

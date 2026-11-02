@@ -175,3 +175,50 @@ def test_help_buttons_reach_the_new_pages(win) -> None:
     for name, page in (("library", m.PAGE_LIBRARY), ("tools", m.PAGE_TOOLS), ("subscriptions", m.PAGE_SUBS)):
         w._go_page(name)
         assert w._stack.currentIndex() == page
+
+
+def test_subscriptions_guides_the_user_and_does_not_retry_forever(win, qapp, monkeypatch) -> None:
+    from vidgrab import subscriptions as sb
+
+    w, _m, _media = win
+    s = w._subs
+    calls = []
+
+    def boom(url, limit=15):
+        calls.append(url)
+        raise RuntimeError("HTTP 404")
+
+    monkeypatch.setattr(sb, "fetch", boom)
+    assert "Paste a channel" in s.status.text() or "How it works" in s.status.text()
+    s.add_btn.click()  # empty box
+    assert "https://" in s.status.text() and not s.subs
+    s.url.setText("https://www.youtube.com/watch?v=abc")
+    s.add_btn.click()
+    assert "one video" in s.status.text() and not s.subs
+    s.url.setText("https://www.youtube.com/@x")
+    s.add_btn.click()
+    assert _wait(qapp, lambda: "HTTP 404" in s.status.text())
+    qapp.processEvents()
+    assert len(calls) == 1  # no automatic retry loop
+    s.url.setText("https://www.youtube.com/@x")
+    s.add_btn.click()
+    assert "already" in s.status.text()
+    s.refresh_current()
+    assert _wait(qapp, lambda: len(calls) == 2)
+
+
+def test_ctrl_v_pastes_into_the_focused_box_not_the_download_link(win, qapp) -> None:
+    w, m, _media = win
+    w.show()
+    w._sidebar.select(m.PAGE_SUBS)
+    w._url.setText("keep me")
+    qapp.clipboard().setText("https://www.youtube.com/@pasted")
+    w._subs.url.setFocus()
+    qapp.processEvents()
+    w._paste_url()
+    assert w._subs.url.text() == "https://www.youtube.com/@pasted" and w._url.text() == "keep me"
+    w._subs.url.clearFocus()
+    w._subs.url.clear()
+    w._sidebar.select(m.PAGE_SETTINGS)
+    w._paste_url()
+    assert w._url.text() == "keep me"  # other pages leave the link box alone

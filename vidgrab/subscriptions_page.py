@@ -56,6 +56,8 @@ class SubscriptionsPage(QWidget):
         self.subs = sb.load(path)
         self._feeds: dict[str, list[sb.FeedItem]] = {}
         self._fresh: dict[str, set[str]] = {}
+        self._loading: set[str] = set()
+        self._errors: dict[str, str] = {}  # last failure per feed (no automatic retry)
         self._palette: dict[str, str] = {}
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(2)
@@ -180,10 +182,20 @@ class SubscriptionsPage(QWidget):
         return next((s for s in self.subs if item and s.url == item.data(_SUB)), None)
 
     def _add(self) -> None:
-        sub = sb.add(self.subs, self.url.text())
-        self.url.clear()
-        if sub is None:
+        t = self.host.t
+        text = self.url.text().strip()
+        if not text.lower().startswith(("http://", "https://")):
+            self.status.setText(t("Paste a channel or playlist link first (it starts with https://)."))
+            self.url.setFocus()
             return
+        if sb.is_single_video(text):
+            self.status.setText(t("That is one video. Paste a channel or playlist link to follow it."))
+            return
+        sub = sb.add(self.subs, text)
+        if sub is None:
+            self.status.setText(t("You already follow this one."))
+            return
+        self.url.clear()
         sb.save(self._path, self.subs)
         self._fill_subs(keep=sub.url)
         self.refresh_current()
@@ -199,26 +211,34 @@ class SubscriptionsPage(QWidget):
 
     def refresh_current(self) -> None:
         sub = self._current()
-        if sub is None:
+        if sub is not None:
+            self._load(sub)
+
+    def _load(self, sub: sb.Subscription) -> None:
+        if sub.url in self._loading:
             return
         if not self.host.online():
             self.status.setText(self.host.t("You appear to be offline."))
             return
+        self._loading.add(sub.url)
+        self._errors.pop(sub.url, None)
         self.status.setText(self.host.t("Looking for new videos…"))
         self._pool.start(_FetchTask(self._relay, sub.url))
 
     def refresh_all(self) -> None:
         if self.host.online():
             for s in self.subs:
-                self._pool.start(_FetchTask(self._relay, s.url))
+                self._load(s)
 
     def _fetched(self, url: str, title: str, items: list, err: str) -> None:
+        self._loading.discard(url)
         sub = next((s for s in self.subs if s.url == url), None)
         if sub is None:
             return
         if err:
+            self._errors[url] = err
             if (cur := self._current()) and cur.url == url:
-                self.status.setText(self.host.t("Could not load this feed: {err}", err=err))
+                self._show()
             return
         sub.title = title or sub.title
         self._feeds[url] = items
@@ -239,10 +259,15 @@ class SubscriptionsPage(QWidget):
             w.setEnabled(sub is not None)
         self.remove_btn.setEnabled(sub is not None)
         if sub is None:
+            self.status.setText(t("How it works: 1. Paste a channel or playlist link on the left. "
+                                  "2. Press Follow. 3. Tick videos and press Download ticked."))
             return
         items = self._feeds.get(sub.url)
         if items is None:
-            self.status.setText(t("Press Refresh to load the newest videos."))
+            if sub.url in self._errors:
+                self.status.setText(t("Could not load this feed: {err}", err=self._errors[sub.url]))
+            else:
+                self._load(sub)
             return
         fresh = self._fresh.get(sub.url, set())
         self.status.setText(t("{n} videos, {new} new", n=len(items), new=len(fresh)))

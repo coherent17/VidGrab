@@ -62,6 +62,12 @@ def add(subs: list[Subscription], url: str, title: str = "") -> Subscription | N
     return sub
 
 
+def is_single_video(url: str) -> bool:
+    """A link to one video (not a channel or playlist), which has no feed."""
+    u = url.lower()
+    return ("watch?v=" in u and "list=" not in u) or "youtu.be/" in u or "/shorts/" in u
+
+
 def feed_url(url: str) -> str:
     """A channel's home page lists tabs, not videos: point it at its Videos tab."""
     u = url.strip().rstrip("/")

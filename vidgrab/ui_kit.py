@@ -113,7 +113,17 @@ def attach_suggestions(box: QLineEdit, provider: Callable[[str], list[str]], *, 
         state["quiet"] = True
         if remote is not None:
             timer.stop()
-        completer.popup().hide()
+        popup = completer.popup()
+        popup.hide()
+
+        def settle() -> None:  # a remote desktop (WSLg) can keep painting a closed pop-up
+            popup.hide()
+            top = box.window()
+            top.update()
+            top.repaint()
+
+        QTimer.singleShot(0, settle)
+        QTimer.singleShot(120, settle)
 
     def refresh(text: str) -> None:
         state["quiet"] = False

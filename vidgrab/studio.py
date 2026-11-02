@@ -1237,9 +1237,13 @@ def _frame_filter(c: _ResolvedClip, width: int, height: int, bars: str = "black"
     # canvas out of it at the pan point and pad whatever is still missing
     mode = "increase" if c.fit == "fill" else "decrease"
     zw, zh = _even(width * c.zoom), _even(height * c.zoom)
+    x, y = f"(iw-ow)*{c.pan_x:.4f}", f"(ih-oh)*{c.pan_y:.4f}"
+    follow = c.fx.get("follow")
+    if follow:  # auto-reframe: the crop window centres on the face as the clip plays
+        x = f"clip(({effects.focus_expr(follow, c.start, 1)})*iw-ow/2,0,iw-ow)"
+        y = f"clip(({effects.focus_expr(follow, c.start, 2)})*ih-oh/2,0,ih-oh)"
     return (f"scale={zw}:{zh}:force_original_aspect_ratio={mode}:force_divisible_by=2,"
-            f"crop=w='min(iw,{width})':h='min(ih,{height})':"
-            f"x='(iw-ow)*{c.pan_x:.4f}':y='(ih-oh)*{c.pan_y:.4f}',"
+            f"crop=w='min(iw,{width})':h='min(ih,{height})':x='{x}':y='{y}',"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={bars}")
 
 

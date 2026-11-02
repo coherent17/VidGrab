@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab import fx_preview
+from vidgrab import effects, fx_preview
 from vidgrab.studio import (
     ANIM_IN,
     SUBTITLE_FONT_NAME,
@@ -153,13 +153,17 @@ BLENDED = ("fade", "dissolve", "wipeleft", "slideleft", "circleopen", "zoomin")
 
 
 def frame_geometry(fw: float, fh: float, rect: QRectF, fit: str, zoom: float,
-                   pan_x: float, pan_y: float) -> tuple[QRectF, QRectF]:
+                   pan_x: float, pan_y: float,
+                   focus: tuple[float, float] | None = None) -> tuple[QRectF, QRectF]:
     """(source rect inside the frame, target rect on the canvas) — the same
     scale / crop / pad steps `studio._frame_filter` gives ffmpeg."""
     cover = fit == "fill"
     scale = (max if cover else min)(rect.width() / fw, rect.height() / fh) * max(zoom, 1.0)
     sw, sh = fw * scale, fh * scale
     cw, ch = min(sw, rect.width()), min(sh, rect.height())
+    if focus is not None:  # auto-reframe: centre the window on the face (as the render does)
+        pan_x = min(max((focus[0] * sw - cw / 2) / (sw - cw), 0.0), 1.0) if sw > cw else pan_x
+        pan_y = min(max((focus[1] * sh - ch / 2) / (sh - ch), 0.0), 1.0) if sh > ch else pan_y
     cx, cy = (sw - cw) * pan_x, (sh - ch) * pan_y
     source = QRectF(cx / scale, cy / scale, cw / scale, ch / scale)
     target = QRectF(rect.center().x() - cw / 2, rect.center().y() - ch / 2, cw, ch)
@@ -226,6 +230,7 @@ class VideoCanvas(QWidget):
         self._colors = {"bg": "#05060f", "accent": "#7c5cff", "muted": "#7b80aa"}
         self._time = 0.0
         self._framing = ("fit", 1.0, 0.5, 0.5)
+        self._focus: tuple[float, float] | None = None  # auto-reframe: where the face is now
         self._pannable = False
         self._pan_drag: tuple[QPointF, float, float] | None = None
         self._dip: tuple[str, float] | None = None  # colour, opacity
@@ -403,6 +408,11 @@ class VideoCanvas(QWidget):
                 return row, "move"
         return None
 
+    def set_focus(self, focus: tuple[float, float] | None) -> None:
+        if focus != self._focus:
+            self._focus = focus
+            self.update()
+
     def set_framing(self, fit: str, zoom: float, pan_x: float, pan_y: float) -> None:
         self._framing = (fit, zoom, pan_x, pan_y)
         self.update()
@@ -549,7 +559,7 @@ class VideoCanvas(QWidget):
                 self._paint_transition(p, rect)
             else:
                 source, target = frame_geometry(self._frame.width(), self._frame.height(), rect,
-                                                *self._framing)
+                                                *self._framing, focus=self._focus)
                 p.drawImage(target, self._frame, source)
             if self._pannable and (self._pan_drag is not None or self.underMouse()):
                 p.setPen(QPen(QColor(self._colors["accent"]), 1.5, Qt.DashLine))
@@ -1357,6 +1367,12 @@ class StudioPreview(QWidget):
         return np.frombuffer(pic.constBits(), np.uint8).reshape(h, pic.bytesPerLine())[:, : w * 3] \
             .reshape(h, w, 3)
 
+    def _follow(self, seg: Segment | None) -> None:
+        """Auto-reframe: aim the crop at the face where the showing frame is."""
+        keys = seg.fx.get("follow") if seg is not None else None
+        self.canvas.set_focus(
+            effects.focus_at(keys, self.player.position() / 1000) if keys else None)
+
     def refresh_effects(self, segments: list[Segment]) -> None:
         """The effects of the clips changed (a slider moved): take them over and
         redraw the frame that is showing, without reloading anything."""
@@ -1364,6 +1380,7 @@ class StudioPreview(QWidget):
             if old.path == new.path:
                 old.fx, old.key_bg = new.fx, new.key_bg
         seg = self._segments[self._seg_idx] if 0 <= self._seg_idx < len(self._segments) else None
+        self._follow(seg)
         if (seg is not None and self._raw_main is not None and seg.has_video
                 and self._raw_seg == self._seg_idx):
             img = self._fx_image(self._raw_main, seg.fx, seg.key_bg)
@@ -1411,6 +1428,7 @@ class StudioPreview(QWidget):
             return  # a new file's first frame, before the jump: keep the last picture
         img = frame.toImage()
         if not img.isNull():
+            self._follow(seg)
             self._raw_main, self._raw_seg = img, self._seg_idx
             img = self._fx_image(img, seg.fx, seg.key_bg)
             self._main_img = img

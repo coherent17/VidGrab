@@ -287,9 +287,11 @@ TOPICS: list[tuple[str, str, str | None, dict[str, str], dict[str, str]]] = [
      {"en": "<p>Captions are made on your computer; no audio is uploaded. Your settings, history and "
             "recovery file are stored in the app's config folder. VidGrab contacts the network only to "
             "download, to fetch models or ffmpeg when you agree, and for a quiet yt-dlp version check "
-            "that you can turn off in Settings.</p>",
+            "that you can turn off in Settings. While you type words in the Download box, YouTube's own "
+            "suggestions are fetched (only the words, never links); that is a switch in Settings → Downloads.</p>",
       "zh": "<p>字幕在你的電腦上產生，不會上傳任何音訊。設定、歷史紀錄與復原檔存放在應用程式的設定資料夾。"
-            "VidGrab 只會在下載、經你同意下載模型或 ffmpeg，以及安靜地檢查 yt-dlp 版本時連線，檢查可在設定中關閉。</p>"}),
+            "VidGrab 只會在下載、經你同意下載模型或 ffmpeg，以及安靜地檢查 yt-dlp 版本時連線，檢查可在設定中關閉。"
+            "在下載欄輸入文字時，會取得 YouTube 的搜尋建議（只傳送文字，絕不傳送連結），可在 設定 → 下載 關閉。</p>"}),
     ("faq_shortcuts", "faq", None,
      {"en": "Keyboard shortcuts", "zh": "鍵盤快速鍵"},
      {"en": "<ul><li><b>F1</b> Help</li><li><b>Ctrl+V</b> paste a link (or Studio items)</li>"

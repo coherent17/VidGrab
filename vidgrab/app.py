@@ -71,12 +71,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab import __version__, ffmpeg_fetch, opener, ytdlp_update
+from vidgrab import __version__, ffmpeg_fetch, opener, suggest, ytdlp_update
 from vidgrab.captions import detect_gpus, speech_device, transcribe
 from vidgrab.downloader import (
     AUDIO_FORMATS,
     BROWSERS,
     NAME_TEMPLATES,
+    NETWORK,
     DownloadCancelled,
     asset_roots,
     configure_cookies,
@@ -952,6 +953,7 @@ DEFAULT_SETTINGS: dict = {
     "caption_style": "highlight",  # how auto captions come on screen (studio.ANIMATIONS)
     "sponsorblock": False,  # cut sponsor / self-promo parts out of downloads
     "cookies_browser": "",  # borrow this browser's login ("" = none)
+    "online_suggest": True,  # offer YouTube's own search suggestions while typing in the link box
     "recent_searches": [],  # what was typed into the link box to search YouTube, newest first
     "ytdlp_check": True,  # look for a newer yt-dlp when the app starts
     "ui_font": "jakarta",  # a key of UI_FONTS (bundled), or "system" (the computer's own font)
@@ -1967,7 +1969,8 @@ class VidGrabWindow(QMainWindow):
         self._url.setPlaceholderText("Paste a link, or type to search YouTube…")
         self._url.setClearButtonEnabled(True)
         self._url.returnPressed.connect(self._start_action)
-        attach_suggestions(self._url, self._url_suggestions)
+        attach_suggestions(self._url, self._url_suggestions, remote=self._online_suggestions, on_pick=self._pick_suggestion,
+                           merge=suggest.merge)
         bl.addWidget(self._url, stretch=1)
         pb = QPushButton("Paste")
         pb.setObjectName("secondary")
@@ -2505,6 +2508,14 @@ class VidGrabWindow(QMainWindow):
         self._set_skip.toggled.connect(lambda on: self.set_setting("skip_downloaded", on))
         self._trw(self._set_skip, "Playlists: skip videos I already downloaded")
         nl.addWidget(self._set_skip)
+        self._set_suggest = QCheckBox()
+        self._set_suggest.setCursor(QCursor(_HAND))
+        self._set_suggest.setChecked(bool(self.setting("online_suggest")))
+        self._set_suggest.toggled.connect(lambda on: self.set_setting("online_suggest", bool(on)))
+        self._trw(self._set_suggest, "Suggest searches while I type (asks YouTube)")
+        self._trw(self._set_suggest, "Sends the words you type in the link box to YouTube's suggestion "
+                                     "service, as its own search box does. Links are never sent.", "setToolTip")
+        nl.addWidget(self._set_suggest)
         self._set_sponsor = QCheckBox()
         self._set_sponsor.setCursor(QCursor(_HAND))
         self._set_sponsor.setChecked(bool(self.setting("sponsorblock")))
@@ -3516,6 +3527,19 @@ class VidGrabWindow(QMainWindow):
             if item.status == DONE and item.title:
                 ix.add(item.title, item.title, (item.title, 1.0))
         return ix.suggest(text, 8)
+
+    def _online_suggestions(self, text: str) -> list[str]:
+        """YouTube's suggestions for the words typed (runs on a worker thread)."""
+        if not self.setting("online_suggest") or _looks_like_url(text) or "://" in text \
+                or self._internet_online is False:
+            return []
+        return suggest.youtube_suggestions(text, proxy=NETWORK.proxy,
+                                           lang="zh-TW" if self._lang == "zh" else "en")
+
+    def _pick_suggestion(self, text: str) -> None:
+        """A suggestion was chosen: it is the search, no Enter needed."""
+        self._url.setText(text)
+        self._start_action()
 
     def _remember_search(self, query: str) -> None:
         keep = [q for q in (self.setting("recent_searches") or []) if q.casefold() != query.casefold()]

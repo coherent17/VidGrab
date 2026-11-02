@@ -3,7 +3,15 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QStringListModel, Qt, Signal
+from PySide6.QtCore import (
+    QObject,
+    QRunnable,
+    QStringListModel,
+    Qt,
+    QThreadPool,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QCompleter, QHBoxLayout, QLineEdit, QPushButton, QWidget
 
@@ -55,9 +63,34 @@ class Chips(QWidget):
         self.buttons[key].setChecked(True)
 
 
-def attach_suggestions(box: QLineEdit, provider: Callable[[str], list[str]], *, min_chars: int = 2) -> QCompleter:
-    """Drop-down best matches under a line edit. *provider(text)* returns the
-    labels in the order to show (already ranked: the popup does not filter them)."""
+class _Relay(QObject):
+    done = Signal(str, list)  # the text it was asked for, the suggestions
+
+
+class _Fetch(QRunnable):
+    def __init__(self, relay: _Relay, text: str, fn: Callable[[str], list[str]]) -> None:
+        super().__init__()
+        self._relay, self._text, self._fn = relay, text, fn
+
+    def run(self) -> None:
+        try:
+            self._relay.done.emit(self._text, self._fn(self._text))
+        except Exception:  # noqa: BLE001 - suggestions are a nicety, never an error
+            self._relay.done.emit(self._text, [])
+
+
+def attach_suggestions(box: QLineEdit, provider: Callable[[str], list[str]], *, min_chars: int = 2,
+                       remote: Callable[[str], list[str]] | None = None,
+                       on_pick: Callable[[str], None] | None = None,
+                       merge: Callable[[list[str], list[str]], list[str]] | None = None,
+                       delay_ms: int = 250) -> QCompleter:
+    """Drop-down best matches under a line edit, open while typing.
+
+    *provider(text)* gives the labels at once, ranked (the popup does not filter
+    them). *remote(text)* — slow, e.g. a web request — runs on a worker thread after
+    a pause of *delay_ms* and its answer is merged in with *merge(local, remote)*
+    when it still matches what is typed. *on_pick(text)* runs when a suggestion is
+    chosen (click, or Enter on a highlighted one)."""
     model = QStringListModel(box)
     completer = QCompleter(model, box)
     completer.setCompletionMode(QCompleter.UnfilteredPopupCompletion)
@@ -65,15 +98,40 @@ def attach_suggestions(box: QLineEdit, provider: Callable[[str], list[str]], *, 
     completer.setMaxVisibleItems(8)
     box.setCompleter(completer)
     completer.popup().setStyleSheet("QListView::item { padding: 7px 12px; }")
+    state = {"local": []}
 
-    def refresh(text: str) -> None:
-        items = provider(text) if len(text.strip()) >= min_chars else []
+    def show(items: list[str]) -> None:
         model.setStringList(items)
         if items and box.hasFocus():
-            completer.setCompletionPrefix(text)
+            completer.setCompletionPrefix(box.text())
             completer.complete()  # open it now, not on the next key
         elif completer.popup() is not None:
             completer.popup().hide()
 
+    def refresh(text: str) -> None:
+        wanted = len(text.strip()) >= min_chars
+        state["local"] = provider(text) if wanted else []
+        show(state["local"])
+        if remote is not None:
+            timer.stop()
+            if wanted:
+                timer.start()
+
     box.textEdited.connect(refresh)
+    if remote is not None:
+        pool = QThreadPool(box)
+        pool.setMaxThreadCount(2)
+        relay = _Relay(box)
+        timer = QTimer(box)
+        timer.setSingleShot(True)
+        timer.setInterval(delay_ms)
+        timer.timeout.connect(lambda: pool.start(_Fetch(relay, box.text(), remote)))
+
+        def arrived(text: str, items: list) -> None:
+            if text == box.text() and items:  # still what is typed
+                show((merge or (lambda a, b: [*a, *b]))(state["local"], items))
+
+        relay.done.connect(arrived)
+    if on_pick is not None:
+        completer.activated[str].connect(on_pick)
     return completer

@@ -1,0 +1,109 @@
+from __future__ import annotations
+
+import json
+import os
+import time
+
+import pytest
+
+from vidgrab import suggest
+
+
+class _Resp:
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+
+    def read(self) -> bytes:
+        return self.body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a) -> None: ...
+
+
+def test_youtube_suggestions_parse_and_never_raise(monkeypatch) -> None:
+    seen = []
+
+    class FakeOpener:
+        def open(self, req, timeout=None):
+            seen.append(req.full_url)
+            return _Resp(json.dumps(["lofi", ["lofi", "lofi girl", 3, "lofi jazz"], []]).encode())
+
+    monkeypatch.setattr(suggest.urllib.request, "build_opener", lambda *a: FakeOpener())
+    out = suggest.youtube_suggestions("lofi", lang="en")
+    assert out == ["lofi", "lofi girl", "lofi jazz"] and "q=lofi" in seen[0] and "ds=yt" in seen[0]
+    assert suggest.youtube_suggestions("  ") == []
+
+    class Broken:
+        def open(self, req, timeout=None):
+            raise OSError("offline")
+
+    monkeypatch.setattr(suggest.urllib.request, "build_opener", lambda *a: Broken())
+    assert suggest.youtube_suggestions("lofi") == []
+
+    class Junk:
+        def open(self, req, timeout=None):
+            return _Resp(b"<html>")
+
+    monkeypatch.setattr(suggest.urllib.request, "build_opener", lambda *a: Junk())
+    assert suggest.youtube_suggestions("lofi") == []
+
+
+def test_merge_puts_your_own_searches_first_without_repeats() -> None:
+    assert suggest.merge(["Lofi Girl", "lofi cafe"], ["lofi girl", "lofi jazz", "lofi cafe"], 3) == \
+        ["Lofi Girl", "lofi cafe", "lofi jazz"]
+
+
+pytestmark_gui = pytest.mark.skipif(os.environ.get("SMOKE_GUI") != "1", reason="set SMOKE_GUI=1 to enable")
+
+
+@pytest.fixture(scope="module")
+def qapp():
+    from PySide6.QtWidgets import QApplication
+
+    yield QApplication.instance() or QApplication([])
+
+
+@pytestmark_gui
+def test_download_box_shows_youtube_suggestions_while_typing_and_a_pick_searches(qapp, tmp_path, monkeypatch) -> None:
+    from vidgrab import app as m
+
+    monkeypatch.setattr(m, "_config_dir", lambda: tmp_path)
+    asked = []
+    monkeypatch.setattr(suggest, "youtube_suggestions",
+                        lambda q, **kw: asked.append(q) or [f"{q} girl", f"{q} jazz", f"{q} music"])
+    w = m.VidGrabWindow()
+    try:
+        w.show()
+        w._sidebar.select(m.PAGE_DOWNLOAD)
+        box = w._url
+        box.setFocus()
+        qapp.processEvents()
+        box.setText("lofi")
+        box.textEdited.emit("lofi")
+        popup = box.completer().popup()
+        end = time.time() + 5
+        while time.time() < end and not (popup.isVisible() and popup.model().rowCount() == 3):
+            qapp.processEvents()
+            time.sleep(0.02)
+        assert asked == ["lofi"]
+        assert popup.isVisible() and [popup.model().index(i, 0).data() for i in range(3)] == \
+            ["lofi girl", "lofi jazz", "lofi music"]
+        # picking one is the search: no Enter
+        started = []
+        monkeypatch.setattr(w, "_start_action", lambda: started.append(box.text()))
+        box.completer().activated[str].emit("lofi jazz")
+        assert box.text() == "lofi jazz" and started == ["lofi jazz"]
+        # a link is never sent, and the switch turns it all off
+        asked.clear()
+        assert w._online_suggestions("https://youtube.com/watch?v=x") == [] and not asked
+        w.set_setting("online_suggest", False)
+        assert w._online_suggestions("lofi") == [] and not asked
+        assert w._set_suggest is not None
+    finally:
+        w._studio.clear_autosave()
+        w._studio.shutdown()
+        for page in (w._library, w._tools, w._subs):
+            page.shutdown()
+        w.close()

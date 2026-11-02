@@ -17,8 +17,9 @@ def test_every_topic_has_both_languages_and_a_known_section() -> None:
         for lang in ("en", "zh"):
             assert title[lang].strip() and body[lang].strip(), (tid, lang)
         assert body["en"].count("<ol>") == body["en"].count("</ol>")
-    for names in help_content.SECTIONS.values():
-        assert set(names) == {"en", "zh"}
+    for sec, names in help_content.SECTIONS.items():
+        assert set(names) == {"en", "zh"} == set(help_content.BLURBS[sec])
+    assert set(help_content.FEATURED) <= set(ids)
 
 
 def test_search_finds_words_in_titles_and_text() -> None:
@@ -49,19 +50,26 @@ def test_help_page_in_the_window(qapp, tmp_path, monkeypatch) -> None:
         w._sidebar.select(m.PAGE_HELP)
         assert w._stack.currentIndex() == m.PAGE_HELP
         h = w._help
-        assert h.current_id() == help_content.TOPICS[0][0] and h.title.text()
-        h.search.setText("silence")
-        assert h.current_id() == "silences"
+        assert h.stack.currentIndex() == 0 and set(h.tiles) == set(help_content.SECTIONS)
+        h.tiles["studio"].clicked.emit()  # a section opens its guides
+        assert h.stack.currentIndex() == 1 and h.topic_list.count() > 1 and h.title.text()
+        h.back_btn.click()
+        assert h.stack.currentIndex() == 0
+        h.home_search.setText("silence")  # typing on the home goes to the results
+        assert h.stack.currentIndex() == 1 and h.current_id() == "silences"
         h.open_btn.click()  # the guide is about the Studio
         assert w._stack.currentIndex() == m.PAGE_STUDIO
         h.search.setText("zzzzqqq")
         assert h.current_id() is None and not h.open_btn.isVisible()
-        h.search.clear()
+        h.show_home()
+        assert h.search.text() == "" and h.stack.currentIndex() == 0
+        h.chips[0][0].click()
+        assert h.current_id() == help_content.FEATURED[0]
         w._lang = "zh"
         w._t = m.make_translator("zh")
         w._apply_language()
-        assert h.topic_list.item(0).text() == help_content.SECTIONS["start"]["zh"].upper()
         h.open_topic("silences")
+        assert h.topic_list.item(0).text() == help_content.SECTIONS["studio"]["zh"].upper()
         assert h.title.text() == help_content.TOPICS[[t[0] for t in help_content.TOPICS].index("silences")][3]["zh"]
     finally:
         w._studio.shutdown()

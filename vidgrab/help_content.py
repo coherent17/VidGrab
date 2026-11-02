@@ -13,6 +13,18 @@ SECTIONS: dict[str, dict[str, str]] = {
     "faq": {"en": "Questions and fixes", "zh": "常見問題"},
 }
 
+# one line under each section's tile on the Help home
+BLURBS: dict[str, dict[str, str]] = {
+    "start": {"en": "A two-minute tour and your first download", "zh": "兩分鐘導覽與第一次下載"},
+    "download": {"en": "Playlists, trimming, sponsors and logins", "zh": "播放清單、裁切、業配與登入"},
+    "studio": {"en": "Build videos, Shorts, music and cuts", "zh": "剪輯影片、短影片、音樂與剪裁"},
+    "captions": {"en": "Auto captions, styles and picture effects", "zh": "自動字幕、樣式與畫面特效"},
+    "faq": {"en": "Fixes, privacy and keyboard shortcuts", "zh": "問題排解、隱私與快速鍵"},
+}
+
+# shown as chips on the Help home
+FEATURED = ["first_video", "studio_basics", "shorts", "captions_auto", "faq_shortcuts"]
+
 TOPICS: list[tuple[str, str, int | None, dict[str, str], dict[str, str]]] = [
     ("welcome", "start", None,
      {"en": "What VidGrab does", "zh": "VidGrab 可以做什麼"},

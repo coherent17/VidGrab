@@ -1808,7 +1808,7 @@ class VidGrabWindow(QMainWindow):
         self._studio.apply_theme(self._theme, _PALETTES[self._theme], _CARD_ACCENTS[self._theme])
         self._stack.addWidget(self._studio)
         self._stack.addWidget(self._build_settings_form())
-        self._help = HelpPage(lambda k: self._t(k), lambda: self._lang, self._sidebar.select, self._show_about)
+        self._help = HelpPage(lambda k: self._t(k), lambda: self._lang, self._sidebar.select, self._show_about, _icon)
         self._help.apply_theme(_PALETTES[self._theme])
         self._stack.addWidget(self._help)
         content.addWidget(self._stack, stretch=4)

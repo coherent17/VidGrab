@@ -16,6 +16,7 @@ from pathlib import Path
 from PySide6.QtCore import (
     QEvent,
     QObject,
+    QRectF,
     QSize,
     Qt,
     QThread,
@@ -102,6 +103,7 @@ from vidgrab.downloads_panel import (
     save_history,
 )
 from vidgrab.gpu import detect_encoder
+from vidgrab.help_page import HelpPage
 from vidgrab.i18n import FLAGS, LANGUAGES, make_translator
 from vidgrab.jobs import DownloadJob, run_job
 from vidgrab.network import ConnectionStatus, check_internet
@@ -1105,6 +1107,13 @@ def _icon(kind: str, color: str = "#8b93ab", size: int = 18) -> QIcon:
             x2 = cx + (r + 2) * math.cos(rad)
             y2 = cy + (r + 2) * math.sin(rad)
             p.drawLine(int(x1), int(y1), int(x2), int(y2))
+    elif kind == "help":
+        p.drawEllipse(2, 2, m - 4, m - 4)
+        f = p.font()
+        f.setBold(True)
+        f.setPixelSize(int(m * 0.62))
+        p.setFont(f)
+        p.drawText(QRectF(0, 0, m, m), Qt.AlignCenter, "?")
     elif kind == "film":
         p.drawRoundedRect(3, 3, m - 6, m - 6, 2, 2)
         p.drawLine(7, 3, 7, m - 3)
@@ -1576,6 +1585,7 @@ _NAV_ITEMS: list[tuple[str, str]] = [
     ("download", "Download"),
     ("film", "Studio"),
     ("gear", "Settings"),
+    ("help", "Help"),
 ]
 
 # page index -> (title key, subtitle key) for the header above each page
@@ -1583,9 +1593,10 @@ _PAGE_HEADERS: list[tuple[str, str]] = [
     ("Download", "Grab videos, playlists and music from YouTube and other sites"),
     ("Studio", "Join clips, add subtitles and background music"),
     ("Settings", "Appearance, language and app info"),
+    ("Help", "How to use each feature, and answers to common questions"),
 ]
 
-PAGE_DOWNLOAD, PAGE_STUDIO, PAGE_SETTINGS = range(3)
+PAGE_DOWNLOAD, PAGE_STUDIO, PAGE_SETTINGS, PAGE_HELP = range(4)
 
 _THUMB_SIZE = QSize(320, 180)
 
@@ -1658,6 +1669,7 @@ class _Sidebar(QWidget):
                         "download": "tooltip_page_download",
                         "film": "tooltip_page_studio",
                         "gear": "tooltip_page_settings",
+                        "help": "tooltip_page_help",
                     }[kind]
                 )
             )
@@ -1796,6 +1808,9 @@ class VidGrabWindow(QMainWindow):
         self._studio.apply_theme(self._theme, _PALETTES[self._theme], _CARD_ACCENTS[self._theme])
         self._stack.addWidget(self._studio)
         self._stack.addWidget(self._build_settings_form())
+        self._help = HelpPage(lambda k: self._t(k), lambda: self._lang, self._sidebar.select, self._show_about)
+        self._help.apply_theme(_PALETTES[self._theme])
+        self._stack.addWidget(self._help)
         content.addWidget(self._stack, stretch=4)
         body.addLayout(content, stretch=1)
 
@@ -3006,6 +3021,8 @@ class VidGrabWindow(QMainWindow):
             self._studio.apply_theme(
                 self._theme, _PALETTES[self._theme], _CARD_ACCENTS[self._theme]
             )
+        if hasattr(self, "_help"):
+            self._help.apply_theme(_PALETTES[self._theme])
 
     def _toggle_theme(self) -> None:
         self._set_theme("light" if self._theme == "dark" else "dark")
@@ -3055,6 +3072,7 @@ class VidGrabWindow(QMainWindow):
         self._action.setToolTip(t("tooltip_action_download"))
         self._update_page_header()
         self._studio.retranslate()
+        self._help.retranslate()
         # download page
         self._dl_source_title.setText(t("SOURCE"))
         self._dl_options_title.setText(t("OPTIONS"))
@@ -4020,7 +4038,7 @@ class VidGrabWindow(QMainWindow):
         from PySide6.QtGui import QKeySequence, QShortcut
 
         QShortcut(QKeySequence("Ctrl+V"), self, self._paste_url)
-        QShortcut(QKeySequence("F1"), self, self._show_about)
+        QShortcut(QKeySequence("F1"), self, lambda: self._sidebar.select(PAGE_HELP))
 
     # ── close ──────────────────────────────────────────────────────────
 

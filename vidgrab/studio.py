@@ -1709,20 +1709,30 @@ def compose_video(
         # GIF / audio-only exports: render the video first, then convert it
         kind = out.suffix.lower()
         render_to = out if kind == ".mp4" else work / "render.mp4"
-        total = _encode(
-            lambda enc: build_video_command(
-                ffmpeg, resolved, render_to,
-                resolution=resolution,
-                subtitles_file=subs_name,
-                fonts_dir=fonts_name,
-                music=songs,
-                images=[img for img in images or [] if img.end > img.start],
-                quality=quality,
-                encoder=enc,
-                normalize_loudness=normalize_loudness,
-            ),
-            ffmpeg, work, hardware=hardware, on_progress=on_progress, on_log=on_log,
-            translate=translate)
+        for attempt in (0, 1):
+            try:
+                total = _encode(
+                    lambda enc, clips=resolved: build_video_command(
+                        ffmpeg, clips, render_to,
+                        resolution=resolution,
+                        subtitles_file=subs_name,
+                        fonts_dir=fonts_name,
+                        music=songs,
+                        images=[img for img in images or [] if img.end > img.start],
+                        quality=quality,
+                        encoder=enc,
+                        normalize_loudness=normalize_loudness,
+                    ),
+                    ffmpeg, work, hardware=hardware, on_progress=on_progress, on_log=on_log,
+                    translate=translate)
+                break
+            except RuntimeError:
+                if attempt or not any(c.trf for c in resolved):
+                    raise
+                # a stabilising file this ffmpeg can't use: render without that effect
+                if on_log:
+                    on_log(tr("Could not steady the video; rendering without it"))
+                resolved = [replace(c, trf=None) for c in resolved]
         if render_to != out:
             if on_progress:
                 on_progress(tr("Converting…"), None)

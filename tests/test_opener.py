@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 from vidgrab import opener
 
@@ -16,7 +17,8 @@ def test_commands_per_platform() -> None:
 
 def test_linux_reveal_opens_the_folder(monkeypatch) -> None:
     monkeypatch.setattr(opener.shutil, "which", lambda name: "/usr/bin/" + name if name == "xdg-open" else None)
-    assert opener.commands("/home/u/v.mp4", True, system="linux", wsl=False) == [["xdg-open", "/home/u"]]
+    folder = str(Path("/home/u/v.mp4").parent)  # (a backslash path on the Windows runner)
+    assert opener.commands("/home/u/v.mp4", True, system="linux", wsl=False) == [["xdg-open", folder]]
     assert opener.commands("/home/u/v.mp4", system="linux", wsl=False) == [["xdg-open", "/home/u/v.mp4"]]
 
 

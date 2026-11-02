@@ -256,3 +256,27 @@ def test_fuzzy_search_in_help_library_and_download_box(win, qapp) -> None:
         set(w._url_suggestions("hip hopp")) == {"Lofi Hip Hop Radio", "Hip hop beats mix"}
     assert w._url_suggestions("https://youtube.com/watch?v=x") == [] and w._url_suggestions("a") == []
     w._queue.remove(item)
+
+
+def test_suggestions_pop_up_while_typing(win, qapp) -> None:
+    w, m, _media = win
+    w.show()
+    w._sidebar.select(m.PAGE_DOWNLOAD)
+    w._remember_search("lofi hip hop radio")
+    w._remember_search("lofi girl study")
+    box = w._url
+    box.setFocus()
+    qapp.processEvents()
+    box.setText("lof")
+    box.textEdited.emit("lof")  # what typing does
+    qapp.processEvents()
+    popup = box.completer().popup()
+    assert popup.isVisible() and popup.model().rowCount() == 2
+    box.setText("zzzzz")
+    box.textEdited.emit("zzzzz")
+    qapp.processEvents()
+    assert not popup.isVisible()
+    box.setText("https://youtube.com/watch?v=x")
+    box.textEdited.emit("https://youtube.com/watch?v=x")
+    qapp.processEvents()
+    assert not popup.isVisible()  # a link gets no suggestions

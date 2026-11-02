@@ -64,9 +64,16 @@ def attach_suggestions(box: QLineEdit, provider: Callable[[str], list[str]], *, 
     completer.setCaseSensitivity(Qt.CaseInsensitive)
     completer.setMaxVisibleItems(8)
     box.setCompleter(completer)
+    completer.popup().setStyleSheet("QListView::item { padding: 7px 12px; }")
 
     def refresh(text: str) -> None:
-        model.setStringList(provider(text) if len(text.strip()) >= min_chars else [])
+        items = provider(text) if len(text.strip()) >= min_chars else []
+        model.setStringList(items)
+        if items and box.hasFocus():
+            completer.setCompletionPrefix(text)
+            completer.complete()  # open it now, not on the next key
+        elif completer.popup() is not None:
+            completer.popup().hide()
 
     box.textEdited.connect(refresh)
     return completer

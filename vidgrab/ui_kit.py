@@ -98,7 +98,7 @@ def attach_suggestions(box: QLineEdit, provider: Callable[[str], list[str]], *, 
     completer.setMaxVisibleItems(8)
     box.setCompleter(completer)
     completer.popup().setStyleSheet("QListView::item { padding: 7px 12px; }")
-    state = {"local": []}
+    state: dict = {"local": [], "quiet": False}  # quiet: a choice was made, ignore late answers
 
     def show(items: list[str]) -> None:
         model.setStringList(items)
@@ -108,7 +108,15 @@ def attach_suggestions(box: QLineEdit, provider: Callable[[str], list[str]], *, 
         elif completer.popup() is not None:
             completer.popup().hide()
 
+    def close() -> None:
+        """The list is done with: hide it, drop answers still on their way."""
+        state["quiet"] = True
+        if remote is not None:
+            timer.stop()
+        completer.popup().hide()
+
     def refresh(text: str) -> None:
+        state["quiet"] = False
         wanted = len(text.strip()) >= min_chars
         state["local"] = provider(text) if wanted else []
         show(state["local"])
@@ -128,10 +136,13 @@ def attach_suggestions(box: QLineEdit, provider: Callable[[str], list[str]], *, 
         timer.timeout.connect(lambda: pool.start(_Fetch(relay, box.text(), remote)))
 
         def arrived(text: str, items: list) -> None:
-            if text == box.text() and items:  # still what is typed
+            if text == box.text() and items and not state["quiet"] and box.hasFocus():  # still what is typed
                 show((merge or (lambda a, b: [*a, *b]))(state["local"], items))
 
         relay.done.connect(arrived)
+    completer.activated[str].connect(lambda _t: close())  # before on_pick: it may start a search
     if on_pick is not None:
         completer.activated[str].connect(on_pick)
+    box.returnPressed.connect(close)
+    box.editingFinished.connect(close)  # Enter or the focus leaving
     return completer

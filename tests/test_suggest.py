@@ -107,3 +107,49 @@ def test_download_box_shows_youtube_suggestions_while_typing_and_a_pick_searches
         for page in (w._library, w._tools, w._subs):
             page.shutdown()
         w.close()
+
+
+@pytestmark_gui
+def test_the_list_goes_away_on_a_choice_and_late_answers_do_not_bring_it_back(qapp, tmp_path, monkeypatch) -> None:
+    from vidgrab import app as m
+
+    monkeypatch.setattr(m, "_config_dir", lambda: tmp_path)
+
+    def slow(q, **kw):
+        time.sleep(0.5)
+        return [f"{q} girl", f"{q} jazz"]
+
+    monkeypatch.setattr(suggest, "youtube_suggestions", slow)
+    w = m.VidGrabWindow()
+    try:
+        w.show()
+        w._sidebar.select(m.PAGE_DOWNLOAD)
+        monkeypatch.setattr(w, "_start_action", lambda: None)
+        box = w._url
+        box.setFocus()
+        qapp.processEvents()
+        w._remember_search("lofi girl")
+        box.setText("lofi")
+        box.textEdited.emit("lofi")
+        popup = box.completer().popup()
+        qapp.processEvents()
+        assert popup.isVisible()  # your own searches, at once
+        box.completer().activated[str].emit("lofi")  # chosen, while YouTube's answer is still coming
+        assert not popup.isVisible()
+        end = time.time() + 1.5
+        while time.time() < end:  # the late answer arrives and must not reopen it
+            qapp.processEvents()
+            time.sleep(0.02)
+        assert not popup.isVisible()
+        # typing again brings it back; Enter closes it
+        box.textEdited.emit("lofi")
+        qapp.processEvents()
+        assert popup.isVisible()
+        box.returnPressed.emit()
+        assert not popup.isVisible()
+    finally:
+        w._studio.clear_autosave()
+        w._studio.shutdown()
+        for page in (w._library, w._tools, w._subs):
+            page.shutdown()
+        w.close()

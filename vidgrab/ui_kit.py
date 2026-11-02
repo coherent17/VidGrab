@@ -4,16 +4,16 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from PySide6.QtCore import (
+    QEvent,
     QObject,
     QRunnable,
-    QStringListModel,
     Qt,
     QThreadPool,
     QTimer,
     Signal,
 )
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QCompleter, QHBoxLayout, QLineEdit, QPushButton, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLineEdit, QListWidget, QPushButton, QWidget
 
 
 def rgba(color: str, alpha: float) -> str:
@@ -79,58 +79,104 @@ class _Fetch(QRunnable):
             self._relay.done.emit(self._text, [])
 
 
+class Suggestions(QObject):
+    """A drop-down list of best matches under a line edit.
+
+    It is a plain child widget of the window, not a pop-up window: a pop-up that was
+    hidden could stay painted on WSLg and swallow nothing, and could not be told from
+    an open one. Keys: Down / Up move, Enter picks the marked line, Esc closes."""
+
+    ROWS = 8
+    dismissed = Signal()  # closed for good (a choice, Enter, Esc, focus left), not just emptied
+
+    def __init__(self, box: QLineEdit, on_pick: Callable[[str], None] | None) -> None:
+        super().__init__(box)
+        self.box, self._on_pick = box, on_pick
+        self.popup = QListWidget(box.window())
+        self.popup.setObjectName("suggestPop")
+        self.popup.setFocusPolicy(Qt.NoFocus)  # the box keeps the keyboard
+        self.popup.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.popup.setStyleSheet("QListWidget#suggestPop::item { padding: 7px 12px; }")
+        self.popup.hide()
+        self.popup.itemClicked.connect(lambda it: self.pick(it.text()))
+        box.installEventFilter(self)
+
+    def show(self, items: list[str]) -> None:
+        if not items or not self.box.hasFocus():
+            self.close()
+            return
+        self.popup.clear()
+        self.popup.addItems(items)
+        row = self.popup.sizeHintForRow(0) or 30
+        win = self.box.window()
+        if self.popup.parent() is not win:
+            self.popup.setParent(win)
+        at = self.box.mapTo(win, self.box.rect().bottomLeft())
+        self.popup.setGeometry(at.x(), at.y() + 2, self.box.width(), min(len(items), self.ROWS) * row + 6)
+        self.popup.raise_()
+        self.popup.show()
+
+    def close(self) -> None:
+        self.popup.hide()
+
+    def dismiss(self) -> None:
+        self.close()
+        self.dismissed.emit()
+
+    def pick(self, text: str) -> None:
+        self.dismiss()
+        self.box.setText(text)
+        if self._on_pick is not None:
+            self._on_pick(text)
+
+    def eventFilter(self, obj, event) -> bool:
+        if obj is self.box:
+            kind = event.type()
+            if kind == QEvent.FocusOut or kind == QEvent.Hide:
+                self.dismiss()
+            elif kind == QEvent.KeyPress and self.popup.isVisible():
+                key = event.key()
+                n, row = self.popup.count(), self.popup.currentRow()
+                if key in (Qt.Key_Down, Qt.Key_Up):
+                    step = 1 if key == Qt.Key_Down else -1
+                    self.popup.setCurrentRow((row + step) % n if row >= 0 else (0 if step > 0 else n - 1))
+                    return True
+                if key in (Qt.Key_Return, Qt.Key_Enter) and row >= 0:
+                    self.pick(self.popup.item(row).text())
+                    return True  # the choice is the search: Enter must not start a second one
+                if key == Qt.Key_Escape:
+                    self.dismiss()
+                    return True
+        return False
+
+
 def attach_suggestions(box: QLineEdit, provider: Callable[[str], list[str]], *, min_chars: int = 2,
                        remote: Callable[[str], list[str]] | None = None,
                        on_pick: Callable[[str], None] | None = None,
                        merge: Callable[[list[str], list[str]], list[str]] | None = None,
-                       delay_ms: int = 250) -> QCompleter:
-    """Drop-down best matches under a line edit, open while typing.
+                       delay_ms: int = 250) -> Suggestions:
+    """Drop-down best matches under a line edit, open while typing (`box.suggestions`).
 
-    *provider(text)* gives the labels at once, ranked (the popup does not filter
-    them). *remote(text)* — slow, e.g. a web request — runs on a worker thread after
-    a pause of *delay_ms* and its answer is merged in with *merge(local, remote)*
-    when it still matches what is typed. *on_pick(text)* runs when a suggestion is
-    chosen (click, or Enter on a highlighted one)."""
-    model = QStringListModel(box)
-    completer = QCompleter(model, box)
-    completer.setCompletionMode(QCompleter.UnfilteredPopupCompletion)
-    completer.setCaseSensitivity(Qt.CaseInsensitive)
-    completer.setMaxVisibleItems(8)
-    box.setCompleter(completer)
-    completer.popup().setStyleSheet("QListView::item { padding: 7px 12px; }")
-    state: dict = {"local": [], "quiet": False}  # quiet: a choice was made, ignore late answers
+    *provider(text)* gives the labels at once, ranked. *remote(text)* — slow, e.g. a
+    web request — runs on a worker thread after a pause of *delay_ms* and its answer
+    is merged in with *merge(local, remote)* when it still matches what is typed.
+    *on_pick(text)* runs when a suggestion is chosen (click, or Enter on a marked one)."""
+    sug = Suggestions(box, on_pick)
+    box.suggestions = sug  # type: ignore[attr-defined]
+    state: dict = {"local": [], "quiet": False}  # quiet: closed, ignore late answers
+    timer: QTimer | None = None
 
-    def show(items: list[str]) -> None:
-        model.setStringList(items)
-        if items and box.hasFocus():
-            completer.setCompletionPrefix(box.text())
-            completer.complete()  # open it now, not on the next key
-        elif completer.popup() is not None:
-            completer.popup().hide()
-
-    def close() -> None:
-        """The list is done with: hide it, drop answers still on their way."""
+    def dismissed() -> None:
         state["quiet"] = True
-        if remote is not None:
+        if timer is not None:
             timer.stop()
-        popup = completer.popup()
-        popup.hide()
-
-        def settle() -> None:  # a remote desktop (WSLg) can keep painting a closed pop-up
-            popup.hide()
-            top = box.window()
-            top.update()
-            top.repaint()
-
-        QTimer.singleShot(0, settle)
-        QTimer.singleShot(120, settle)
 
     def refresh(text: str) -> None:
         state["quiet"] = False
         wanted = len(text.strip()) >= min_chars
         state["local"] = provider(text) if wanted else []
-        show(state["local"])
-        if remote is not None:
+        sug.show(state["local"])
+        if timer is not None:
             timer.stop()
             if wanted:
                 timer.start()
@@ -146,14 +192,11 @@ def attach_suggestions(box: QLineEdit, provider: Callable[[str], list[str]], *, 
         timer.timeout.connect(lambda: pool.start(_Fetch(relay, box.text(), remote)))
 
         def arrived(text: str, items: list) -> None:
-            if text == box.text() and items and not state["quiet"] and box.hasFocus():  # still what is typed
-                show((merge or (lambda a, b: [*a, *b]))(state["local"], items))
+            if text == box.text() and items and not state["quiet"]:  # still what is typed
+                sug.show((merge or (lambda a, b: [*a, *b]))(state["local"], items))
 
         relay.done.connect(arrived)
-    completer.activated[str].connect(lambda _t: close())  # before on_pick: it may start a search
-    if on_pick is not None:
-        completer.activated[str].connect(on_pick)
-    box.returnPressed.connect(close)
-    box.editingFinished.connect(close)  # Enter or the focus leaving
-    completer.close_list = close  # type: ignore[attr-defined]  # for callers that start the search themselves
-    return completer
+    sug.dismissed.connect(dismissed)
+    box.returnPressed.connect(sug.dismiss)
+    box.editingFinished.connect(sug.dismiss)  # Enter or the focus leaving
+    return sug

@@ -270,7 +270,7 @@ def test_suggestions_pop_up_while_typing(win, qapp) -> None:
     box.setText("lof")
     box.textEdited.emit("lof")  # what typing does
     qapp.processEvents()
-    popup = box.completer().popup()
+    popup = box.suggestions.popup
     assert popup.isVisible() and popup.model().rowCount() == 2
     box.setText("zzzzz")
     box.textEdited.emit("zzzzz")

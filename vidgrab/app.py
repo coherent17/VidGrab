@@ -3551,7 +3551,7 @@ class VidGrabWindow(QMainWindow):
             QMessageBox.warning(self, self._t("No internet"), self._t(
                 "You appear to be offline.\nVidGrab needs a live connection."))
             return
-        self._suggest_list.close_list()  # never leave the drop-down over the results
+        self._suggest_list.dismiss()  # never leave the drop-down over the results
         self._remember_search(query.strip())
         self._body_stack.setCurrentIndex(1)
         self._search_panel.start(query, lambda q: search(q, 12, translate=self._t))

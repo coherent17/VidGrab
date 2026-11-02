@@ -79,6 +79,15 @@ class Network:
 
 NETWORK = Network()
 
+BROWSERS = ("chrome", "firefox", "edge", "brave", "opera", "vivaldi", "chromium", "safari")
+COOKIES = {"browser": ""}  # whose login to borrow for age-restricted / members-only videos
+
+
+def configure_cookies(browser: str = "") -> None:
+    """Use the logged-in cookies of *browser* ('' = none) for every later probe /
+    download."""
+    COOKIES["browser"] = browser if browser in BROWSERS else ""
+
 
 def configure_network(*, rate_limit: int | None = None, proxy: str = "", retries: int = 10,
                       archive: str | Path | None = None) -> None:
@@ -103,6 +112,8 @@ def _net_opts(*, archive: bool = False) -> dict:
         opts["proxy"] = NETWORK.proxy
     if archive and NETWORK.archive:
         opts["download_archive"] = str(NETWORK.archive)
+    if COOKIES["browser"]:
+        opts["cookiesfrombrowser"] = (COOKIES["browser"],)
     return opts
 
 
@@ -555,7 +566,11 @@ def _try_clients(attempt: Callable[[str, bool], object], log: LogCallback, tr: T
                 queue = [(client, True)] + [(c, True) for c, _v4 in queue]
                 continue
             log(tr("Download failed with {client} ({exc}); retrying.", client=client, exc=exc))
-    raise RuntimeError(tr("Download failed: {exc}", exc=last_exc))
+    msg = tr("Download failed: {exc}", exc=last_exc)
+    if COOKIES["browser"] and "cookie" in str(last_exc).lower():
+        msg += " " + tr("Could not read the login of {browser}. Close {browser} and try again, "
+                        "or choose another browser in Settings.", browser=COOKIES["browser"].capitalize())
+    raise RuntimeError(msg)
 
 
 def _ytdl_options(

@@ -939,6 +939,7 @@ DEFAULT_SETTINGS: dict = {
     "proxy": "",  # e.g. http://host:8080 or socks5://host:1080
     "retries": 10,  # attempts for a failing download piece
     "skip_downloaded": False,  # playlists: leave out videos downloaded before
+    "caption_style": "highlight",  # how auto captions come on screen (studio.ANIMATIONS)
     "sponsorblock": False,  # cut sponsor / self-promo parts out of downloads
     "cookies_browser": "",  # borrow this browser's login ("" = none)
     "ytdlp_check": True,  # look for a newer yt-dlp when the app starts

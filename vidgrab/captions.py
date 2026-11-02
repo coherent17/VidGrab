@@ -264,6 +264,27 @@ def line_text(words: list[Word]) -> str:
     return text.rstrip(",; ").strip()
 
 
+def word_spans(line: list[Word], text: str, start: float) -> list[list]:
+    """Where each word of *line* sits in its (tidied) *text* and when it is said
+    (seconds after *start*): [char_from, char_to, t_from, t_to]. The pieces of one
+    Latin word ("S" + "ummer") are one span."""
+    spans: list[list] = []
+    p = 0
+    for w in line:
+        tok = line_text([w])
+        i = text.find(tok, p) if tok else -1
+        if i < 0:
+            continue
+        t0, t1 = round(w.start - start, 3), round(max(w.end, w.start + 0.02) - start, 3)
+        if (spans and spans[-1][1] == i and text[i].isascii() and text[i - 1].isascii()
+                and text[i].isalnum() and text[i - 1].isalnum()):
+            spans[-1][1], spans[-1][3] = i + len(tok), t1
+        else:
+            spans.append([i, i + len(tok), t0, t1])
+        p = i + len(tok)
+    return spans
+
+
 def _joined(a: Word, b: Word) -> bool:
     """*b* continues the same Latin word / number / abbreviation as *a*
     ("S" + "ummer", "U." + "C"): never break a line there."""
@@ -326,7 +347,8 @@ def split_lines(words: list[Word], max_width: int = MAX_WIDTH) -> list[SubtitleC
         end = max(line[-1].end + 0.2, start + MIN_LINE_S)
         if nxt is not None:
             end = max(min(end, nxt), min(line[-1].end, nxt))
-        cues.append(SubtitleCue(round(start, 2), round(max(end, start + 0.1), 2), text))
+        cues.append(SubtitleCue(round(start, 2), round(max(end, start + 0.1), 2), text,
+                                words=word_spans(line, text, start)))
     return cues
 
 
@@ -765,8 +787,10 @@ def _transcribe(engine: str, sources: list[CaptionSource], models_dir: Path, lan
             start = src.offset + cue.start / speed
             if start >= end - 0.05:
                 continue
-            cues.append(SubtitleCue(round(start, 2),
-                                    round(min(src.offset + cue.end / speed, end), 2), cue.text))
+            cues.append(SubtitleCue(
+                round(start, 2), round(min(src.offset + cue.end / speed, end), 2), cue.text,
+                words=[[a, b, round(t0 / speed, 3), round(t1 / speed, 3)]
+                       for a, b, t0, t1 in cue.words or []]))
         done += span if span is not None else length
     cues.sort(key=lambda c: c.start)
     return cues

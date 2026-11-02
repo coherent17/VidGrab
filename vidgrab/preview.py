@@ -38,16 +38,21 @@ from PySide6.QtWidgets import (
 from vidgrab import effects, fx_preview
 from vidgrab.studio import (
     ANIM_IN,
+    HIGHLIGHT,
     SUBTITLE_FONT_NAME,
     SUBTITLE_MARGIN,
     ImageOverlay,
     SubtitleCue,
     SubtitleStyle,
+    active_word,
     box_padding,
+    char_end_times,
     color_hex,
     cue_style,
+    source_index,
     subtitle_scale,
     typewriter_time,
+    word_spans,
     wrap_cue_text,
 )
 
@@ -201,6 +206,17 @@ def transport_icon(kind: str, color: str, size: int = 18) -> QIcon:
 
 
 # ── video canvas with draggable subtitles ─────────────────────────────────
+
+
+def _runs(idx: list[int]) -> list[tuple[int, int]]:
+    """[2, 3, 4, 7] -> [(2, 5), (7, 8)]: the stretches of consecutive numbers."""
+    out: list[tuple[int, int]] = []
+    for i in sorted(idx):
+        if out and out[-1][1] == i:
+            out[-1] = (out[-1][0], i + 1)
+        else:
+            out.append((i, i + 1))
+    return out
 
 
 class VideoCanvas(QWidget):
@@ -660,12 +676,22 @@ class VideoCanvas(QWidget):
             if anim == "typewriter":
                 step = typewriter_time(cue.end - cue.start) / max(1, chars)
                 shown = min(chars, int(max(0.0, el) / step) + 1) if el >= 0 else 0
-            elif anim == "karaoke":
-                sweep = max(0.01, (cue.end - cue.start) * 0.9)
-                sung = int(chars * min(1.0, max(0.0, el / sweep)))
+            spans = word_spans(cue)
+            src = source_index(cue.text, lines) if spans else []
+            timed = bool(spans) and len(src) == chars
+            hot_runs: set[int] = set()  # characters of the word being said (highlight)
+            if anim == "highlight" and timed:
+                k = active_word(spans, el)
+                hot_runs = {n for n, i in enumerate(src) if k is not None and spans[k][0] <= i < spans[k][1]}
+            elif anim in ("karaoke", "highlight"):
+                if timed:  # as many characters as have been said by now
+                    sung = sum(1 for e in char_end_times(src, spans) if e <= el)
+                else:
+                    sweep = max(0.01, (cue.end - cue.start) * 0.9)
+                    sung = int(chars * min(1.0, max(0.0, el / sweep)))
                 unsung = QColor("#AAAAAA") if fill.name().upper() == "#FFFFFF" else QColor("#FFFFFF")
             p.setOpacity(opacity)
-            path, sung_path = QPainterPath(), QPainterPath()
+            path, sung_path, hot_path = QPainterPath(), QPainterPath(), QPainterPath()
             used = 0
             for i, line in enumerate(lines):
                 lw = fm.horizontalAdvance(line)
@@ -678,6 +704,10 @@ class VideoCanvas(QWidget):
                 if visible:
                     if sung is None:
                         path.addText(QPointF(lx, top + fm.ascent()), font, visible)
+                        for run in _runs([n - used for n in hot_runs if used <= n < used + len(visible)]):
+                            hot_path.addText(
+                                QPointF(lx + fm.horizontalAdvance(visible[:run[0]]), top + fm.ascent()),
+                                font, visible[run[0]:run[1]])
                     else:  # sung part in the line's colour, the rest light
                         n = max(0, min(len(visible), sung - used))
                         sung_path.addText(QPointF(lx, top + fm.ascent()), font, visible[:n])
@@ -690,6 +720,7 @@ class VideoCanvas(QWidget):
                 p.strokePath(sung_path, pen)
             p.fillPath(path, unsung if sung is not None else fill)
             p.fillPath(sung_path, fill)
+            p.fillPath(hot_path, QColor("#FFFFFF" if fill.name().upper() == HIGHLIGHT else HIGHLIGHT))
             p.restore()
             hit = hit_box.adjusted(-8, -6, 8, 6)
             if row == self._selected:

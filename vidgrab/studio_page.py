@@ -218,7 +218,8 @@ EXPORT_PRESETS = {
     "audio": ("Audio only (MP3)", None, ".mp3"),
 }
 ANIMATION_LABELS = {"none": "None", "pop": "Pop", "slide": "Slide up",
-                    "typewriter": "Typewriter", "karaoke": "Karaoke"}
+                    "typewriter": "Typewriter", "karaoke": "Karaoke",
+                    "highlight": "Word highlight"}
 FILMSTRIP = 4  # frames probed up front (block label + fallback until the cache fills)
 # tile spacing in source seconds, chosen from these so cached frames line up
 THUMB_STEPS = (0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800)
@@ -3978,7 +3979,10 @@ class StudioPage(QWidget):
     def _edit_cue_text(self) -> None:
         if not self._sel or self._sel[0] != "cue":
             return
-        self._cues[self._sel[1]].text = self.cue_text.toPlainText()
+        cue = self._cues[self._sel[1]]
+        if cue.text != self.cue_text.toPlainText():
+            cue.words = None  # the timings belong to the old text
+        cue.text = self.cue_text.toPlainText()
         self._refresh_track()
         self.preview.set_cues(self._preview_cues(), self._sel[1])
         self._record(f"text{self._sel[1]}")
@@ -4042,8 +4046,8 @@ class StudioPage(QWidget):
         if not cue.start + 0.2 <= t <= cue.end - 0.2:
             self.status.setText(self.t("Move the playhead inside this line to split it."))
             return
-        second = replace(cue, start=t)
-        cue.end = t
+        second = replace(cue, start=t, words=None)  # (word times don't follow a split)
+        cue.end, cue.words = t, None
         self._cues.append(second)
         self._sel = ("cue", self._cues.index(second))
         self._cues_changed()
@@ -5390,6 +5394,20 @@ class StudioPage(QWidget):
         pick(current)
         lay.addWidget(box)
         lay.addWidget(hint)
+        lay.addSpacing(4)
+        cap = QLabel(t("CAPTION STYLE"))
+        cap.setObjectName("field_cap")
+        lay.addWidget(cap)
+        style_box = QComboBox()
+        for anim, label in (("highlight", "Word highlight"), ("karaoke", "Karaoke"), ("none", "Plain")):
+            style_box.addItem(t(label), anim)
+        style_box.setCurrentIndex(max(0, style_box.findData(setting("caption_style") or "highlight")))
+        lay.addWidget(style_box)
+        style_hint = QLabel(t("Word highlight lights up each word as it is said. You can change "
+                              "it per line later (Effects tab)."))
+        style_hint.setObjectName("hint")
+        style_hint.setWordWrap(True)
+        lay.addWidget(style_hint)
         replace_box = QCheckBox(t("Replace the current subtitle lines"))
         replace_box.setVisible(bool(self._cues))
         lay.addWidget(replace_box)
@@ -5408,6 +5426,9 @@ class StudioPage(QWidget):
         if dlg.exec() != QDialog.Accepted:
             return None
         size = next(k for k, b in sizes.items() if b.isChecked())
+        self._caption_anim = style_box.currentData() or "none"
+        if hasattr(self.host, "set_setting"):
+            self.host.set_setting("caption_style", self._caption_anim)
         return lang.currentData(), size, replace_box.isChecked()
 
     # two videos at once ------------------------------------------------------------
@@ -5460,6 +5481,10 @@ class StudioPage(QWidget):
         if not cues:
             self.status.setText(self.t("No speech was found in the clips."))
             return
+        anim = getattr(self, "_caption_anim", "none")
+        for cue in cues:
+            if cue.animation == "none" and anim in ANIMATIONS:
+                cue.animation = anim  # the style chosen in the Auto captions dialog
         self._cues = list(cues) if replace_lines else sorted(
             [*self._cues, *cues], key=lambda c: c.start)
         self.deselect()

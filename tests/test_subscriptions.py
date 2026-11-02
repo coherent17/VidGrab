@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from vidgrab import subscriptions as sb
 
 
@@ -34,3 +36,27 @@ def test_parse_feed_and_new_markers() -> None:
     assert sb.new_ids(sub, items) == {"b2"}
     sb.mark_seen(sub, items)
     assert sb.new_ids(sub, items) == set() and sub.seen == ["a1", "b2"]
+
+
+def test_feed_is_read_without_the_browser_login_first(monkeypatch) -> None:
+    from vidgrab import downloader
+
+    seen = []
+
+    def fake(url, limit, opts):
+        seen.append("cookiesfrombrowser" in opts)
+        if "cookiesfrombrowser" in opts and len(seen) == 1:
+            raise RuntimeError("failed to load cookies")
+        return {"title": "T", "entries": [{"id": "a", "title": "A"}]}
+
+    monkeypatch.setattr(sb, "_extract", fake)
+    monkeypatch.setattr(downloader, "_net_opts", lambda **k: {"retries": 3, "cookiesfrombrowser": ("firefox",)})
+    title, items = sb.fetch("https://x/@c")
+    assert seen == [False] and title == "T" and len(items) == 1  # the public read worked: no login used
+    seen.clear()
+    monkeypatch.setattr(sb, "_extract", lambda u, n, o: (_ for _ in ()).throw(RuntimeError("members only"))
+                        if "cookiesfrombrowser" not in o else {"title": "M", "entries": [{"id": "z", "title": "Z"}]})
+    assert sb.fetch("https://x/@c")[0] == "M"  # then the login, for a members-only list
+    monkeypatch.setattr(sb, "_extract", lambda u, n, o: (_ for _ in ()).throw(RuntimeError("failed to load cookies")))
+    with pytest.raises(RuntimeError):
+        sb.fetch("https://x/@c")

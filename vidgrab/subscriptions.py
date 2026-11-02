@@ -92,12 +92,27 @@ def parse_feed(info: dict) -> tuple[str, list[FeedItem]]:
     return downloader.display_text(info.get("title") or ""), items[:FEED_SIZE]
 
 
+def _extract(url: str, limit: int, opts: dict) -> dict:
+    base = {"quiet": True, "no_warnings": True, "extract_flat": "in_playlist", "playlistend": limit,
+            "ignoreerrors": True, **opts}
+    with yt_dlp.YoutubeDL(base) as ydl:
+        return ydl.extract_info(feed_url(url), download=False) or {}
+
+
 def fetch(url: str, limit: int = FEED_SIZE) -> tuple[str, list[FeedItem]]:
-    opts = {"quiet": True, "no_warnings": True, "extract_flat": "in_playlist", "playlistend": limit,
-            "ignoreerrors": True, **downloader._net_opts()}
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(feed_url(url), download=False)
-    return parse_feed(info or {})
+    """The feed. A public channel needs no login, so it is read *without* the browser
+    cookies first (an unreadable cookie file must not break it); only when that
+    fails, and a login is set, is it tried with the login (members-only lists)."""
+    opts = downloader._net_opts()
+    cookies = opts.pop("cookiesfrombrowser", None)
+    try:
+        info = _extract(url, limit, opts)
+        if info.get("entries") or not cookies:
+            return parse_feed(info)
+    except Exception:
+        if not cookies:
+            raise
+    return parse_feed(_extract(url, limit, {**opts, "cookiesfrombrowser": cookies}))
 
 
 def new_ids(sub: Subscription, items: list[FeedItem]) -> set[str]:

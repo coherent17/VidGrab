@@ -91,7 +91,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab import cuda_runtime, effects
+from vidgrab import cuda_runtime, effects, fx_preview
 from vidgrab.captions import DEFAULT_MODEL as DEFAULT_CAPTION_MODEL
 from vidgrab.captions import LANGUAGES as CAPTION_LANGUAGES
 from vidgrab.captions import MODELS as CAPTION_MODELS
@@ -106,6 +106,7 @@ from vidgrab.captions import (
     installed as captions_installed,
 )
 from vidgrab.preview import MusicBed, Segment, StudioPreview, TransitionMark, fmt_time
+from vidgrab.silence_dialog import SilenceDialog
 from vidgrab.split_dialog import SplitDialog
 from vidgrab.studio import (
     ANIMATIONS,
@@ -2584,6 +2585,11 @@ class StudioPage(QWidget):
         speeds.addWidget(box, stretch=1)
         speeds.addWidget(self.clip_speed)
         lay.addLayout(speeds)
+        lay.addWidget(self._label("CUT", "field_cap"))
+        self.silence_btn = self._btn(
+            "Remove silences…", self.remove_silences,
+            "Cut the quiet pauses out of this clip (it is split into pieces)")
+        lay.addWidget(self.silence_btn)
         lay.addWidget(self._label(
             "Hold Shift while dragging a handle to trim finely; drag it past the edge to "
             "keep going.", "hint"))
@@ -2731,6 +2737,8 @@ class StudioPage(QWidget):
             self.fx_shots.append(shot)
         lay.addLayout(shots)
         lay.addWidget(self._label(
+            "The player shows colour and green screen; clean-up, stabilising and slow "
+            "motion show above and in the render." if fx_preview.available() else
             "Shown above and in the render, not in the player.",
             "hint"))
 
@@ -2849,6 +2857,7 @@ class StudioPage(QWidget):
         clip.fx = effects.sanitize(fx)
         self._fill_clip_fx()
         self._fx_timer.start()
+        self.preview.refresh_effects(self._segments())
         self._record(kind or "fx")
 
     def _fx_reset(self) -> None:
@@ -2857,6 +2866,7 @@ class StudioPage(QWidget):
             clip.fx = {}
             self._fill_clip_fx()
             self._fx_timer.start()
+            self.preview.refresh_effects(self._segments())
             self._record()
 
     def _fx_pick_lut(self) -> None:
@@ -3443,7 +3453,8 @@ class StudioPage(QWidget):
             dur = max(0.0, outs[i] - ov[i] / 2 - ov[i + 1] / 2)  # montage seconds
             segs.append(Segment(c.path, start, dur, c.has_video, fit=c.fit, zoom=c.zoom,
                                 pan_x=c.pan_x, pan_y=c.pan_y,
-                                volume=c.gain() * self._orig_level(), speed=c.speed))
+                                volume=c.gain() * self._orig_level(), speed=c.speed,
+                                fx=c.fx, key_bg=c.fx.get("key_bg", "")))
         return segs
 
     def _transition_marks(self) -> list[TransitionMark]:
@@ -4619,6 +4630,36 @@ class StudioPage(QWidget):
         self._project_changed()
         self.track.set_selection(self._sel)
         self._record()
+
+    def remove_silences(self) -> None:
+        """Ask how quiet counts as a pause, then split the selected clip into
+        the parts that stay (each keeps the clip's speed, framing and effects)."""
+        if not self._sel or self._sel[0] != "clip" or self._busy or not self.host.ffmpeg_ok():
+            return
+        i = self._sel[1]
+        clip = self._clips[i]
+        s, e = clip.span()
+        dlg = SilenceDialog(self, self.t, clip.path, s, e)
+        self._silence_dlg = dlg  # for tests
+        if dlg.exec() != QDialog.Accepted:
+            return
+        self.cut_ranges(i, dlg.ranges())
+
+    def cut_ranges(self, i: int, keeps: list[tuple[float, float]]) -> None:
+        """Replace clip *i* by one clip per kept (start, end); only the first
+        keeps the transition in."""
+        if len(keeps) < 1 or (len(keeps) == 1 and keeps[0] == self._clips[i].span()):
+            return
+        clip = self._clips[i]
+        pieces = [replace(clip, start=a, end=b, transition="none" if n else clip.transition)
+                  for n, (a, b) in enumerate(keeps)]
+        self._clips[i:i + 1] = pieces
+        self._sel = ("clip", i)
+        self._picked = {self._sel}
+        self._project_changed()
+        self.select_clip(i)  # also refreshes the Trim fields to the first part
+        self._record()
+        self.status.setText(self.t("Cut into {n} parts.", n=len(pieces)))
 
     def trim_at_playhead(self, edge: str) -> None:
         """I / O: the clip under the playhead starts (or ends) right here."""

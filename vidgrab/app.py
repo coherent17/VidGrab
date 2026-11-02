@@ -71,9 +71,11 @@ from vidgrab import __version__, ffmpeg_fetch, ytdlp_update
 from vidgrab.captions import detect_gpus, speech_device, transcribe
 from vidgrab.downloader import (
     AUDIO_FORMATS,
+    BROWSERS,
     NAME_TEMPLATES,
     DownloadCancelled,
     asset_roots,
+    configure_cookies,
     configure_network,
     default_output_dir,
     download,
@@ -82,6 +84,7 @@ from vidgrab.downloader import (
     fetch_dislikes,
     find_ffmpeg,
     get_app_dir,
+    parse_link_list,
     probe,
     search,
 )
@@ -936,6 +939,8 @@ DEFAULT_SETTINGS: dict = {
     "proxy": "",  # e.g. http://host:8080 or socks5://host:1080
     "retries": 10,  # attempts for a failing download piece
     "skip_downloaded": False,  # playlists: leave out videos downloaded before
+    "sponsorblock": False,  # cut sponsor / self-promo parts out of downloads
+    "cookies_browser": "",  # borrow this browser's login ("" = none)
     "ytdlp_check": True,  # look for a newer yt-dlp when the app starts
     "ui_font": "jakarta",  # a key of UI_FONTS (bundled), or "system" (the computer's own font)
 }
@@ -1918,6 +1923,14 @@ class VidGrabWindow(QMainWindow):
         pb.clicked.connect(self._paste_url)
         bl.addWidget(pb)
         self._dl_paste = pb
+        ib = QPushButton("Import…")
+        ib.setObjectName("secondary")
+        ib.setFixedHeight(44)
+        ib.setMinimumWidth(96)
+        ib.setCursor(QCursor(_HAND))
+        ib.clicked.connect(self._import_links)
+        bl.addWidget(ib)
+        self._dl_import = ib
         self._action = QPushButton("⬇  Download")
         self._action.setObjectName("primary")
         self._action.setProperty("compact", True)
@@ -2424,6 +2437,13 @@ class VidGrabWindow(QMainWindow):
         nform.addRow(self._trw(QLabel(), "Speed limit:"), self._set_rate)
         nform.addRow(self._trw(QLabel(), "Proxy:"), self._set_proxy)
         nform.addRow(self._trw(QLabel(), "Retries:"), self._set_retries)
+        self._set_cookies = QComboBox()
+        self._set_cookies.setCursor(QCursor(_HAND))
+        self._set_cookies.activated.connect(self._cookies_changed)
+        self._trw(self._set_cookies, "Lets VidGrab use the login of a browser, for age-restricted "
+                                     "or members-only videos. If it fails, close that browser "
+                                     "and try again.", "setToolTip")
+        nform.addRow(self._trw(QLabel(), "Use login of:"), self._set_cookies)
         nl.addLayout(nform)
         self._set_skip = QCheckBox()
         self._set_skip.setCursor(QCursor(_HAND))
@@ -2431,6 +2451,14 @@ class VidGrabWindow(QMainWindow):
         self._set_skip.toggled.connect(lambda on: self.set_setting("skip_downloaded", on))
         self._trw(self._set_skip, "Playlists: skip videos I already downloaded")
         nl.addWidget(self._set_skip)
+        self._set_sponsor = QCheckBox()
+        self._set_sponsor.setCursor(QCursor(_HAND))
+        self._set_sponsor.setChecked(bool(self.setting("sponsorblock")))
+        self._set_sponsor.toggled.connect(self._sponsor_changed)
+        self._trw(self._set_sponsor, "Cut out sponsor and self-promotion parts (SponsorBlock)")
+        self._trw(self._set_sponsor, "Uses the community list at sponsor.ajay.app. "
+                                     "Videos nobody has marked are left as they are.", "setToolTip")
+        nl.addWidget(self._set_sponsor)
         arow = QHBoxLayout()
         self._archive_lbl = QLabel()
         self._archive_lbl.setObjectName("hint")
@@ -2533,6 +2561,8 @@ class VidGrabWindow(QMainWindow):
                                  (t("Persistent (30)"), 30)])
         fill(self._set_sub_mode, [(t("Save as .srt file"), "file"),
                                   (t("Burn into video"), "burn")])
+        fill(self._set_cookies, [(t("No browser"), "")] + [
+            (b.capitalize(), b) for b in BROWSERS if b != "safari" or sys.platform == "darwin"])
         fill(self._set_name, [(t("Title"), "title"), (t("Title [video ID]"), "title_id"),
                               (t("Channel - Title"), "uploader_title"),
                               (t("Upload date + Title"), "date_title")])
@@ -2549,6 +2579,7 @@ class VidGrabWindow(QMainWindow):
                            (self._set_rq, "render_quality"),
                            (self._set_res, "studio_resolution"),
                            (self._set_afmt, "audio_format"), (self._set_rate, "rate_limit"),
+                           (self._set_cookies, "cookies_browser"),
                            (self._set_retries, "retries")):
             want = self.setting(key)
             idx = combo.findData(want if want is not None else "")
@@ -2570,7 +2601,17 @@ class VidGrabWindow(QMainWindow):
         configure_network(rate_limit=int(self.setting("rate_limit") or 0),
                           proxy=self.setting("proxy") or "",
                           retries=int(self.setting("retries") or 10),
-                          archive=self._archive_path())
+                          archive=self._archive_path(),
+                          sponsorblock=bool(self.setting("sponsorblock")))
+        configure_cookies(self.setting("cookies_browser") or "")
+
+    def _sponsor_changed(self, on: bool) -> None:
+        self.set_setting("sponsorblock", bool(on))
+        self._apply_network()
+
+    def _cookies_changed(self, _i: int = 0) -> None:
+        self.set_setting("cookies_browser", self._set_cookies.currentData() or "")
+        configure_cookies(self.setting("cookies_browser") or "")
 
     def _network_changed(self) -> None:
         self.set_setting("rate_limit", int(self._set_rate.currentData() or 0))
@@ -3039,6 +3080,8 @@ class VidGrabWindow(QMainWindow):
         self._ts_lbl.setText(t("Start:"))
         self._te_lbl.setText(t("End:"))
         self._dl_paste.setText(t("Paste"))
+        self._dl_import.setText(t("Import…"))
+        self._dl_import.setToolTip(t("Load a text file with one link per line"))
         self._dl_browse.setText(t("Browse\u2026"))
         self._dl_paste.setToolTip(t("tooltip_paste"))
         self._dl_browse.setToolTip(t("tooltip_browse_out"))
@@ -3108,6 +3151,23 @@ class VidGrabWindow(QMainWindow):
         if text:
             links = re.findall(r"https?://\S+", text)
             self._url.setText(" ".join(links) if len(links) > 1 else text.strip())
+
+    def _import_links(self) -> None:
+        """Fill the link box from a text file with one link per line."""
+        path = self.pick_file(self._t("Choose a list of links"), ("Documents", "Downloads"),
+                              self._t("Text files (*.txt *.csv *.md)") + ";;" + self._t("All files (*)"))
+        if not path:
+            return
+        try:
+            links = parse_link_list(Path(path).read_text(encoding="utf-8", errors="replace"))
+        except OSError as exc:
+            QMessageBox.warning(self, self._t("Import…"), str(exc))
+            return
+        if not links:
+            QMessageBox.information(self, self._t("Import…"),
+                                    self._t("No links found in that file."))
+            return
+        self._url.setText(" ".join(links))
 
     # ── URL auto-detect / info card ───────────────────────────────────────
 

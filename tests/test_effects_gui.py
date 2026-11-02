@@ -155,3 +155,64 @@ def test_text_style_buttons_set_look_animation_and_place(studio_win) -> None:
     st._apply_text_style("title")
     assert st._cues[0].text == "Ada Lovelace"  # typed text is kept
     assert st._cues[0].animation == "pop"
+
+
+def _wait_frame(st, app, ok, seconds: float = 8.0):
+    import time
+
+    end = time.time() + seconds
+    while time.time() < end:
+        app.processEvents()
+        img = st.preview.canvas._frame
+        if img is not None and ok(img):
+            return img
+        time.sleep(0.02)
+    return st.preview.canvas._frame
+
+
+def test_player_shows_colour_effects(studio_win, qapp) -> None:
+    from vidgrab import fx_preview
+
+    if not fx_preview.available():
+        pytest.skip("numpy not installed")
+    st, tmp = studio_win
+    red = tmp / "red.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "color=c=red:s=160x90:r=10:d=3", str(red)], check=True)
+    st.add_clips([str(red)])
+    st.select_clip(2)
+    st.preview.seek(st.track.offsets()[2] + 0.5)
+    img = _wait_frame(st, qapp, lambda i: i.width() > 0)
+    assert img is not None and img.pixelColor(10, 10).red() > 200 > img.pixelColor(10, 10).green() + 100
+    st._fx_set("look", "bw")  # a redraw of the frame that is showing, no reload
+    img = _wait_frame(st, qapp, lambda i: abs(i.pixelColor(10, 10).red() - i.pixelColor(10, 10).green()) < 20)
+    c = img.pixelColor(10, 10)
+    assert abs(c.red() - c.green()) < 20 and abs(c.green() - c.blue()) < 20
+    st._fx_set("look", "none")
+    img = _wait_frame(st, qapp, lambda i: i.pixelColor(10, 10).red() > 200)
+    assert img.pixelColor(10, 10).red() > 200
+
+
+def test_player_keys_green_over_the_background_picture(studio_win, qapp, tmp_path) -> None:
+    from PySide6.QtGui import QColor, QImage
+
+    from vidgrab import fx_preview
+
+    if not fx_preview.available():
+        pytest.skip("numpy not installed")
+    st, tmp = studio_win
+    green = tmp / "green.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "color=c=0x00FF00:s=160x90:r=10:d=3", str(green)], check=True)
+    bg = QImage(64, 64, QImage.Format_RGB32)
+    bg.fill(QColor(20, 40, 220))
+    bg_path = tmp_path / "bg.png"
+    bg.save(str(bg_path))
+    st.add_clips([str(green)])
+    st.select_clip(2)
+    st._fx_set("key", "#00FF00")
+    st._fx_set("key_bg", str(bg_path))
+    st.preview.seek(st.track.offsets()[2] + 0.5)
+    img = _wait_frame(st, qapp, lambda i: i.pixelColor(10, 10).blue() > 150)
+    c = img.pixelColor(10, 10)
+    assert c.blue() > 150 and c.green() < 90

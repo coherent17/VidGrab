@@ -393,6 +393,65 @@ def effect_frame_png(path: str | Path, at: float, fx: dict, height: int = 150) -
     return proc.stdout if proc.returncode == 0 and proc.stdout else None
 
 
+# ── silence removal ────────────────────────────────────────────────────────
+
+SILENCE_LEVELS = {"silence": -46, "quiet": -38, "faint": -30}  # dB below which it is "quiet"
+SILENCE_PAD = 0.12  # breathing room kept on each side of a pause (s)
+
+
+def detect_silences(path: str | Path, start: float, end: float, *, noise_db: float = -38,
+                    min_len: float = 0.6) -> list[tuple[float, float]]:
+    """Quiet stretches of at least *min_len* seconds inside [start, end] of the
+    file, as (from, to) in the file's own time. Nothing for a file without sound."""
+    ffmpeg = find_ffmpeg()
+    if not ffmpeg or end <= start:
+        return []
+    try:
+        proc = subprocess.run(
+            [ffmpeg, "-nostats", "-hide_banner", "-ss", f"{max(0.0, start):.3f}",
+             "-t", f"{end - start:.3f}", "-i", str(path), "-vn",
+             "-af", f"silencedetect=noise={noise_db:g}dB:d={min_len:g}", "-f", "null", "-"],
+            capture_output=True, check=False, timeout=600, text=True, errors="replace",
+            **_no_window())
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    found: list[tuple[float, float]] = []
+    begin: float | None = None
+    for line in proc.stderr.splitlines():
+        m = re.search(r"silence_start: (-?[\d.]+)", line)
+        if m:
+            begin = max(0.0, float(m.group(1)))
+            continue
+        m = re.search(r"silence_end: (-?[\d.]+)", line)
+        if m and begin is not None:
+            found.append((start + begin, start + float(m.group(1))))
+            begin = None
+    if begin is not None:  # quiet until the end of the part
+        found.append((start + begin, end))
+    return [(a, min(b, end)) for a, b in found if min(b, end) - a >= min_len - 1e-6]
+
+
+def speech_ranges(start: float, end: float, silences: list[tuple[float, float]], *,
+                  pad: float = SILENCE_PAD, min_keep: float = 0.1) -> list[tuple[float, float]]:
+    """The parts of [start, end] to keep once each pause is cut out, leaving *pad*
+    seconds of the pause on both sides so words don't start or stop abruptly."""
+    keeps: list[tuple[float, float]] = []
+    here = start
+    for a, b in sorted(silences):
+        a = a + pad if a > start + 0.02 else a  # a pause at the very start / end goes whole
+        b = b - pad if b < end - 0.02 else b
+        if b - a <= 0.02 or b <= here:  # nothing left of this pause to cut
+            continue
+        if a - here >= min_keep:
+            keeps.append((round(here, 3), round(a, 3)))
+        here = max(here, b)
+    if end - here >= min_keep:
+        keeps.append((round(here, 3), round(end, 3)))
+    return keeps or [(start, end)]
+
+
 def waveform(path: str | Path, buckets: int = 600, rate: int = 2000) -> list[float]:
     """Peak level (0..1) of the audio in *buckets* equal slices of the file."""
     ffmpeg = find_ffmpeg()

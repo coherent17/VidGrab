@@ -91,7 +91,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab import cuda_runtime, effects
+from vidgrab import cuda_runtime, effects, fx_preview
 from vidgrab.captions import DEFAULT_MODEL as DEFAULT_CAPTION_MODEL
 from vidgrab.captions import LANGUAGES as CAPTION_LANGUAGES
 from vidgrab.captions import MODELS as CAPTION_MODELS
@@ -2731,6 +2731,8 @@ class StudioPage(QWidget):
             self.fx_shots.append(shot)
         lay.addLayout(shots)
         lay.addWidget(self._label(
+            "The player shows colour and green screen; clean-up, stabilising and slow "
+            "motion show above and in the render." if fx_preview.available() else
             "Shown above and in the render, not in the player.",
             "hint"))
 
@@ -2849,6 +2851,7 @@ class StudioPage(QWidget):
         clip.fx = effects.sanitize(fx)
         self._fill_clip_fx()
         self._fx_timer.start()
+        self.preview.refresh_effects(self._segments())
         self._record(kind or "fx")
 
     def _fx_reset(self) -> None:
@@ -2857,6 +2860,7 @@ class StudioPage(QWidget):
             clip.fx = {}
             self._fill_clip_fx()
             self._fx_timer.start()
+            self.preview.refresh_effects(self._segments())
             self._record()
 
     def _fx_pick_lut(self) -> None:
@@ -3443,7 +3447,8 @@ class StudioPage(QWidget):
             dur = max(0.0, outs[i] - ov[i] / 2 - ov[i + 1] / 2)  # montage seconds
             segs.append(Segment(c.path, start, dur, c.has_video, fit=c.fit, zoom=c.zoom,
                                 pan_x=c.pan_x, pan_y=c.pan_y,
-                                volume=c.gain() * self._orig_level(), speed=c.speed))
+                                volume=c.gain() * self._orig_level(), speed=c.speed,
+                                fx=c.fx, key_bg=c.fx.get("key_bg", "")))
         return segs
 
     def _transition_marks(self) -> list[TransitionMark]:

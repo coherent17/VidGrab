@@ -10,7 +10,7 @@ a working OpenGL context, which many Linux / WSLg setups don't have.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QUrl, Signal
 from PySide6.QtGui import (
@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vidgrab import fx_preview
 from vidgrab.studio import (
     ANIM_IN,
     SUBTITLE_FONT_NAME,
@@ -74,6 +75,8 @@ class Segment:
     pan_y: float = 0.5
     volume: float = 1.0  # 0 = muted
     speed: float = 1.0  # the source plays this many times as fast
+    fx: dict = field(default_factory=dict)  # picture effects (see effects.py); the colour ones show here
+    key_bg: str = ""  # picture behind a green screen
 
     def source_at(self, t: float) -> float:
         """Source time shown at montage time *t*."""
@@ -874,6 +877,10 @@ class StudioPreview(QWidget):
         # blends these, so the two players swapping files never leaves a gap
         self._last_frame: dict[str, QImage] = {}
         self._main_img: QImage | None = None  # the main player's own latest frame
+        self._raw_main: QImage | None = None  # ... before the colour effects
+        self._raw_seg = -1  # which segment it belongs to
+        self._aux_fx: tuple[dict, str] = ({}, "")
+        self._bg_cache: tuple[tuple, QImage] | None = None
         self._music: list[MusicBed] = []
         self._music_players: list[tuple[QMediaPlayer, QAudioOutput, str]] = []
         # headless (tests, scripts): the speakers stay silent
@@ -1283,6 +1290,7 @@ class StudioPreview(QWidget):
     def _aux_to(self, seg: Segment, local: float, *, play: bool) -> None:
         aux = self.aux_player
         local = max(0.0, local)
+        self._aux_fx = (seg.fx, seg.key_bg)
         if self._aux_source != seg.path:
             self._aux_source, self._aux_img = seg.path, None
             self._aux_pending = local
@@ -1315,12 +1323,61 @@ class StudioPreview(QWidget):
         self._aux_awaiting = False
         self._on_aux_status(self.aux_player.mediaStatus())
 
+    # picture effects ------------------------------------------------------
+
+    FX_MAX_W = 800  # frames are shrunk to this before the colour maths (the canvas is small)
+
+    def _fx_image(self, img: QImage, fx: dict, key_bg: str) -> QImage:
+        """*img* with the colour looks / sliders / green screen applied (as far as
+        `fx_preview` can); the frame itself when there is nothing to show."""
+        if not fx or not fx_preview.available() or not fx_preview.can_show(fx):
+            return img
+        if img.width() > self.FX_MAX_W:
+            img = img.scaledToWidth(self.FX_MAX_W, Qt.FastTransformation)
+        img = img.convertToFormat(QImage.Format.Format_RGB888)
+        w, h = img.width(), img.height()
+        np = fx_preview.np
+        arr = np.frombuffer(img.constBits(), np.uint8).reshape(h, img.bytesPerLine())[:, : w * 3]
+        back = self._background(key_bg, w, h) if fx.get("key") and key_bg else None
+        out = np.ascontiguousarray(fx_preview.apply(arr.reshape(h, w, 3), fx, back))
+        return QImage(out.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+
+    def _background(self, path: str, w: int, h: int):
+        """The picture behind a green screen, scaled to cover w x h (an array)."""
+        key = (path, w, h)
+        if self._bg_cache is None or self._bg_cache[0] != key:
+            pic = QImage(path)
+            if pic.isNull():
+                return None
+            pic = pic.scaled(w, h, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+            pic = pic.copy((pic.width() - w) // 2, (pic.height() - h) // 2, w, h)
+            self._bg_cache = (key, pic.convertToFormat(QImage.Format.Format_RGB888))
+        pic = self._bg_cache[1]
+        np = fx_preview.np
+        return np.frombuffer(pic.constBits(), np.uint8).reshape(h, pic.bytesPerLine())[:, : w * 3] \
+            .reshape(h, w, 3)
+
+    def refresh_effects(self, segments: list[Segment]) -> None:
+        """The effects of the clips changed (a slider moved): take them over and
+        redraw the frame that is showing, without reloading anything."""
+        for old, new in zip(self._segments, segments, strict=False):
+            if old.path == new.path:
+                old.fx, old.key_bg = new.fx, new.key_bg
+        seg = self._segments[self._seg_idx] if 0 <= self._seg_idx < len(self._segments) else None
+        if (seg is not None and self._raw_main is not None and seg.has_video
+                and self._raw_seg == self._seg_idx):
+            img = self._fx_image(self._raw_main, seg.fx, seg.key_bg)
+            self._main_img = img
+            self._last_frame[self._source] = img
+            self.canvas.set_frame(img)
+
     def _on_aux_frame(self, frame) -> None:
         if self._aux_pending is not None or self._aux_awaiting:
             return
         img = frame.toImage()
         if img.isNull():
             return
+        img = self._fx_image(img, *self._aux_fx)
         self._aux_img = img
         self._last_frame[self._aux_source] = img
         if self.canvas._blend is not None:
@@ -1354,6 +1411,8 @@ class StudioPreview(QWidget):
             return  # a new file's first frame, before the jump: keep the last picture
         img = frame.toImage()
         if not img.isNull():
+            self._raw_main, self._raw_seg = img, self._seg_idx
+            img = self._fx_image(img, seg.fx, seg.key_bg)
             self._main_img = img
             self._last_frame[self._source] = img
             self.canvas.set_frame(img)

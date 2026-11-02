@@ -150,12 +150,45 @@ class SubtitleCue:
     # this line's own look, over the shared SubtitleStyle (any of LOOK_KEYS)
     look: dict | None = None
     animation: str = "none"  # one of ANIMATIONS
+    # when each word is said (auto captions): [char_from, char_to, t_from, t_to], the
+    # times in seconds after the line's start; cleared when the text is edited
+    words: list | None = None
 
 
 # how a line comes on screen (the shared fade still applies on top)
-ANIMATIONS = ("none", "pop", "slide", "typewriter", "karaoke")
+ANIMATIONS = ("none", "pop", "slide", "typewriter", "karaoke", "highlight")
+HIGHLIGHT = "#FFD400"  # the word being said, in the "highlight" animation (white text)
 LOOK_KEYS = ("color", "background", "bg_opacity", "size", "bold", "font")
 ANIM_IN = {"pop": 0.25, "slide": 0.3}  # seconds the entrance takes
+
+
+def word_spans(cue: SubtitleCue) -> list[tuple[int, int, float, float]]:
+    """The cue's timed words if they still fit its text, else none."""
+    out: list[tuple[int, int, float, float]] = []
+    last = 0
+    for w in cue.words or []:
+        try:
+            a, b, t0, t1 = int(w[0]), int(w[1]), float(w[2]), float(w[3])
+        except (TypeError, ValueError, IndexError):
+            return []
+        if not (last <= a < b <= len(cue.text)) or t1 < t0:
+            return []
+        out.append((a, b, t0, t1))
+        last = b
+    return out
+
+
+def source_index(text: str, lines: list[str]) -> list[int]:
+    """For every character of the wrapped *lines*, where it sits in *text*
+    (wrapping drops the space it broke at)."""
+    out, p = [], 0
+    for line in lines:
+        for ch in line:
+            while p < len(text) and text[p] != ch:
+                p += 1
+            out.append(min(p, len(text) - 1))
+            p += 1
+    return out
 
 
 def typewriter_time(cue_length: float) -> float:
@@ -768,6 +801,95 @@ def _ass_chars(text: str) -> list[str]:
     return out
 
 
+def _visible(chars: list[str]) -> list[str]:
+    return [c for c in chars if c != "\\N"]
+
+
+def _span_of(spans: list[tuple[int, int, float, float]], i: int) -> int | None:
+    return next((k for k, (a, b, _t0, _t1) in enumerate(spans) if a <= i < b), None)
+
+
+def char_end_times(src: list[int], spans: list[tuple[int, int, float, float]]) -> list[float]:
+    """When each character of the wrapped text has been said (a word's time is
+    shared by its characters; others, like spaces, go with the word before)."""
+    out, clock = [], 0.0
+    for i in src:
+        k = _span_of(spans, i)
+        if k is not None:
+            a, b, t0, t1 = spans[k]
+            clock = max(clock, t0 + (i - a + 1) * (t1 - t0) / (b - a))
+        out.append(clock)
+    return out
+
+
+def active_word(spans: list[tuple[int, int, float, float]], el: float) -> int | None:
+    """The word being said *el* seconds into the line."""
+    return next((k for k, (_a, _b, t0, t1) in enumerate(spans) if t0 <= el < t1), None)
+
+
+def _timed_karaoke(chars: list[str], src: list[int],
+                   spans: list[tuple[int, int, float, float]]) -> str:
+    """Karaoke tags that sweep each word while it is said (\\kf per character)."""
+    ends = char_end_times(src, spans)
+    out, clock, n = [], 0.0, 0
+    for c in chars:
+        if c == "\\N":
+            out.append(c)
+            continue
+        end = ends[n]
+        n += 1
+        cs = max(0, round((end - clock) * 100))
+        clock = max(clock, end)
+        out.append(f"{{\\kf{cs}}}{c}")
+    return "".join(out)
+
+
+def _bgr(color: str) -> str:
+    h = color_hex(color)
+    return f"&H{h[5:7]}{h[3:5]}{h[1:3]}&"
+
+
+def _highlight_events(cue: SubtitleCue, name: str, tags: str, chars: list[str], src: list[int],
+                      spans: list[tuple[int, int, float, float]], eff: SubtitleStyle,
+                      fade_ms: int) -> list[str]:
+    """One event per word: the whole line, with the word being said in the
+    highlight colour (and a touch bigger)."""
+    base = color_hex(eff.color)
+    hot = "#FFFFFF" if base.upper() == HIGHLIGHT else HIGHLIGHT
+    owner = []  # the span of every visible character
+    for i in src:
+        owner.append(_span_of(spans, i))
+    length = cue.end - cue.start
+    marks = [0.0] + [min(t0, length) for _a, _b, t0, _t1 in spans] + [length]
+    events = []
+    for k in range(len(spans) + 1):  # k == 0: nothing is said yet
+        t0, t1 = marks[k], marks[k + 1]
+        if t1 - t0 <= 0.01:
+            continue
+        body, n, on = [], 0, False
+        for c in chars:
+            if c == "\\N":
+                body.append(c)
+                continue
+            hit = owner[n] is not None and owner[n] == k - 1
+            n += 1
+            if hit != on:
+                body.append(f"{{\\1c{_bgr(hot if hit else base)}\\fscx110\\fscy110}}" if hit else
+                            f"{{\\1c{_bgr(base)}\\fscx100\\fscy100}}")
+                on = hit
+            body.append(c)
+        if on:
+            body.append(f"{{\\1c{_bgr(base)}\\fscx100\\fscy100}}")
+        events.append((cue.start + t0, cue.start + t1, "".join(body)))
+    out = []
+    for j, (a, b, body) in enumerate(events):
+        fad = f"\\fad({fade_ms if j == 0 else 0},{fade_ms if j == len(events) - 1 else 0})" \
+            if fade_ms and (j == 0 or j == len(events) - 1) else ""
+        tag = f"{{{tags}{fad}}}" if tags or fad else ""
+        out.append(f"Dialogue: 0,{_ass_ts(a)},{_ass_ts(b)},{name},,0,0,0,,{tag}{body}")
+    return out
+
+
 def format_ass(
     cues: list[SubtitleCue], width: int, height: int, style: SubtitleStyle | None = None
 ) -> str:
@@ -843,7 +965,15 @@ def format_ass(
         elif anim == "slide" and not fade_ms:
             tags += f"\\fad({round(ANIM_IN['slide'] * 700)},0)"
         size = round(cue_style(cue, style).size * k)
-        text = _ass_text("\n".join(wrap_cue_text(cue.text, size, width - 2 * margin)))
+        wrapped = wrap_cue_text(cue.text, size, width - 2 * margin)
+        text = _ass_text("\n".join(wrapped))
+        spans = word_spans(cue)
+        src = source_index(cue.text, wrapped)
+        if anim == "highlight" and spans and len(src) == len(_visible(_ass_chars(text))):
+            lines.extend(_highlight_events(cue, name, re.sub(r"\\fad\([^)]*\)", "", tags),
+                                           _ass_chars(text), src, spans,
+                                           cue_style(cue, style), min(fade_ms, length_ms // 2)))
+            continue
         if anim == "typewriter":
             chars = _ass_chars(text)
             visible = [c for c in chars if c != "\\N"]
@@ -862,11 +992,14 @@ def format_ass(
                 out.append(f"{{\\alpha&HFF&\\t({t},{t + 1},{shown_tags})}}{c}")
                 shown += 1
             text = "".join(out)
-        elif anim == "karaoke":  # the colour sweeps across over the whole line
+        elif anim in ("karaoke", "highlight"):  # the colour sweeps across the line
             chars = _ass_chars(text)
-            visible = [c for c in chars if c != "\\N"]
-            cs = max(1, round(length_ms / 10 * 0.9 / max(1, len(visible))))
-            text = "".join(c if c == "\\N" else f"{{\\kf{cs}}}{c}" for c in chars)
+            visible = _visible(chars)
+            if spans and len(src) == len(visible):  # at the pace the words are said
+                text = _timed_karaoke(chars, src, spans)
+            else:
+                cs = max(1, round(length_ms / 10 * 0.9 / max(1, len(visible))))
+                text = "".join(c if c == "\\N" else f"{{\\kf{cs}}}{c}" for c in chars)
         tag = f"{{{tags}}}" if tags else ""
         lines.append(
             f"Dialogue: 0,{_ass_ts(cue.start)},{_ass_ts(cue.end)},{name},,0,0,0,,"
@@ -1237,9 +1370,13 @@ def _frame_filter(c: _ResolvedClip, width: int, height: int, bars: str = "black"
     # canvas out of it at the pan point and pad whatever is still missing
     mode = "increase" if c.fit == "fill" else "decrease"
     zw, zh = _even(width * c.zoom), _even(height * c.zoom)
+    x, y = f"(iw-ow)*{c.pan_x:.4f}", f"(ih-oh)*{c.pan_y:.4f}"
+    follow = c.fx.get("follow")
+    if follow:  # auto-reframe: the crop window centres on the face as the clip plays
+        x = f"clip(({effects.focus_expr(follow, c.start, 1)})*iw-ow/2,0,iw-ow)"
+        y = f"clip(({effects.focus_expr(follow, c.start, 2)})*ih-oh/2,0,ih-oh)"
     return (f"scale={zw}:{zh}:force_original_aspect_ratio={mode}:force_divisible_by=2,"
-            f"crop=w='min(iw,{width})':h='min(ih,{height})':"
-            f"x='(iw-ow)*{c.pan_x:.4f}':y='(ih-oh)*{c.pan_y:.4f}',"
+            f"crop=w='min(iw,{width})':h='min(ih,{height})':x='{x}':y='{y}',"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={bars}")
 
 

@@ -216,3 +216,62 @@ def test_player_keys_green_over_the_background_picture(studio_win, qapp, tmp_pat
     img = _wait_frame(st, qapp, lambda i: i.pixelColor(10, 10).blue() > 150)
     c = img.pixelColor(10, 10)
     assert c.blue() > 150 and c.green() < 90
+
+
+def test_follow_the_face_button(studio_win, qapp, monkeypatch) -> None:
+    import time
+
+    from PySide6.QtWidgets import QMessageBox
+
+    from vidgrab import reframe
+
+    if not reframe.available():
+        pytest.skip("numpy / onnxruntime not installed")
+    st, tmp = studio_win
+    keys = [[0.0, 0.3, 0.4], [1.0, 0.7, 0.4]]
+    monkeypatch.setattr(reframe, "follow_face", lambda *_a, **_k: keys)
+    monkeypatch.setattr(reframe, "model_ready", lambda _d: True)
+    asked = []
+    answer = [QMessageBox.No]
+    monkeypatch.setattr(QMessageBox, "question",
+                        staticmethod(lambda *a, **k: asked.append(a) or answer[0]))
+    st.host.models_dir = lambda: tmp
+    st.select_clip(0)
+    assert st.follow_btn.text() == "Follow the face"
+
+    def press():
+        st.follow_btn.click()
+        end = time.time() + 5
+        while st.follow_btn.isEnabled() is False and time.time() < end:
+            qapp.processEvents()
+            time.sleep(0.02)
+        qapp.processEvents()
+
+    press()
+    clip = st._clips[0]
+    assert clip.fx["follow"] == keys and clip.fit == "fill"
+    assert asked and st.res.currentData() != "vertical"  # offered the Shorts size, declined
+    assert st.follow_btn.text() == "Stop following"
+    st.undo()
+    assert not st._clips[0].fx.get("follow") and st._clips[0].fit == "fit"
+    st.redo()
+    assert st._clips[0].fx["follow"] == keys
+    st.follow_btn.click()  # on: this turns it off
+    assert not st._clips[0].fx.get("follow") and st.follow_btn.text() == "Follow the face"
+    answer[0] = QMessageBox.Yes
+    press()
+    assert st.res.currentData() == "vertical"  # accepted this time
+
+
+def test_preview_crop_follows_the_keys(studio_win, qapp) -> None:
+    from PySide6.QtCore import QRectF
+
+    from vidgrab.preview import frame_geometry
+
+    rect = QRectF(0, 0, 90, 160)
+    src, _tgt = frame_geometry(640, 360, rect, "fill", 1.0, 0.5, 0.5, focus=(0.2, 0.5))
+    assert abs(src.center().x() - 0.2 * 640) < 1
+    src, _tgt = frame_geometry(640, 360, rect, "fill", 1.0, 0.5, 0.5, focus=(0.99, 0.5))
+    assert abs(src.right() - 640) < 1  # never past the picture's edge
+    src, _tgt = frame_geometry(640, 360, rect, "fill", 1.0, 0.5, 0.5)
+    assert abs(src.center().x() - 320) < 1

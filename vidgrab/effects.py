@@ -7,6 +7,7 @@ compared for undo, and handed to the renderer unchanged. Only the keys in
 values equal to the default, so ``{}`` always means "no effects"."""
 from __future__ import annotations
 
+import itertools
 import re
 
 # one-click looks: name -> ffmpeg filters (applied before the sliders)
@@ -53,6 +54,9 @@ DEFAULT_FX: dict = {
     "smooth": False,  # fill in frames when the clip plays slower than normal
     "key": "",  # '#RRGGBB' colour to make see-through (green screen)
     "key_bg": "",  # picture shown behind it (empty = black)
+    # where to keep in view while the picture is cropped (auto-reframe): [[source
+    # seconds, x, y], ...], x / y as fractions of the picture; see vidgrab.reframe
+    "follow": [],
 }
 
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -73,6 +77,8 @@ def sanitize(fx: dict | None) -> dict:
                 value = round(min(max(float(value), lo), hi), 3)
             except (TypeError, ValueError):
                 continue
+        elif key == "follow":
+            value = _follow_keys(value)
         elif key in ("stabilize", "smooth"):
             value = bool(value)
         elif key == "key":
@@ -84,6 +90,45 @@ def sanitize(fx: dict | None) -> dict:
     if "key_bg" in out and "key" not in out:
         del out["key_bg"]
     return out
+
+
+def _follow_keys(value) -> list[list[float]]:
+    """A clean, time-ordered list of [t, x, y] (anything else is dropped)."""
+    out: list[list[float]] = []
+    try:
+        for row in value[:600]:
+            t, x, y = (float(v) for v in row[:3])
+            out.append([round(max(t, 0.0), 3), round(min(max(x, 0.0), 1.0), 4),
+                        round(min(max(y, 0.0), 1.0), 4)])
+    except (TypeError, ValueError, IndexError):
+        return []
+    out.sort(key=lambda k: k[0])
+    return out
+
+
+def focus_at(keys: list[list[float]], t: float) -> tuple[float, float] | None:
+    """(x, y) to keep in view at source time *t* (linear between the keys)."""
+    if not keys:
+        return None
+    if t <= keys[0][0]:
+        return keys[0][1], keys[0][2]
+    for a, b in itertools.pairwise(keys):
+        if t < b[0]:
+            f = (t - a[0]) / max(b[0] - a[0], 1e-6)
+            return a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f
+    return keys[-1][1], keys[-1][2]
+
+
+def focus_expr(keys: list[list[float]], start: float, axis: int) -> str:
+    """The same path as an ffmpeg expression of `t` (seconds from the clip's
+    first frame, which is source time *start*); *axis* 1 = x, 2 = y."""
+    pts = [(max(k[0] - start, 0.0), k[axis]) for k in keys]
+    expr = f"{pts[-1][1]:.4f}"
+    for (t0, v0), (t1, v1) in reversed(list(itertools.pairwise(pts))):
+        if t1 - t0 < 1e-6:
+            continue
+        expr = f"if(lt(t,{t1:.3f}),{v0:.4f}+({v1 - v0:.4f})*(t-{t0:.3f})/{t1 - t0:.3f},{expr})"
+    return f"if(lt(t,{pts[0][0]:.3f}),{pts[0][1]:.4f},{expr})" if len(pts) > 1 else expr
 
 
 def edit_tuple(fx: dict | None) -> tuple:

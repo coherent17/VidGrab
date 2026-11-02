@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from collections import OrderedDict
 from dataclasses import asdict, astuple, dataclass, field, replace
@@ -91,7 +92,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab import cuda_runtime, effects, fx_preview
+from vidgrab import cuda_runtime, effects, fx_preview, reframe
 from vidgrab.captions import DEFAULT_MODEL as DEFAULT_CAPTION_MODEL
 from vidgrab.captions import LANGUAGES as CAPTION_LANGUAGES
 from vidgrab.captions import MODELS as CAPTION_MODELS
@@ -105,6 +106,7 @@ from vidgrab.captions import (
 from vidgrab.captions import (
     installed as captions_installed,
 )
+from vidgrab.downloader import DownloadCancelled
 from vidgrab.preview import MusicBed, Segment, StudioPreview, TransitionMark, fmt_time
 from vidgrab.silence_dialog import SilenceDialog
 from vidgrab.split_dialog import SplitDialog
@@ -216,7 +218,8 @@ EXPORT_PRESETS = {
     "audio": ("Audio only (MP3)", None, ".mp3"),
 }
 ANIMATION_LABELS = {"none": "None", "pop": "Pop", "slide": "Slide up",
-                    "typewriter": "Typewriter", "karaoke": "Karaoke"}
+                    "typewriter": "Typewriter", "karaoke": "Karaoke",
+                    "highlight": "Word highlight"}
 FILMSTRIP = 4  # frames probed up front (block label + fallback until the cache fills)
 # tile spacing in source seconds, chosen from these so cached frames line up
 THUMB_STEPS = (0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800)
@@ -251,6 +254,34 @@ class _FxTask(QRunnable):
         before = thumbnail_png(self._path, self._at, 150) or b""
         after = effect_frame_png(self._path, self._at, self._fx, 150) or b""
         self._relay.done.emit(self._gen, before, after)
+
+
+class _FollowRelay(QObject):
+    done = Signal(int, object, str)  # generation, keys, error text
+    progress = Signal(int, str, int)
+
+
+class _FollowTask(QRunnable):
+    """Look for the face in a clip's part (Follow the face)."""
+
+    def __init__(self, relay: _FollowRelay, gen: int, path: str, start: float, end: float,
+                 models_dir: str, cancel: threading.Event, tr) -> None:
+        super().__init__()
+        self._relay, self._gen, self._path = relay, gen, path
+        self._start, self._end, self._dir, self._cancel, self._tr = start, end, models_dir, cancel, tr
+
+    def run(self) -> None:
+        try:
+            keys = reframe.follow_face(
+                self._path, self._start, self._end, self._dir,
+                on_progress=lambda text, pct: self._relay.progress.emit(self._gen, text, pct),
+                cancelled=self._cancel.is_set, translate=self._tr)
+        except DownloadCancelled:
+            return
+        except Exception as exc:  # noqa: BLE001 - shown to the user
+            self._relay.done.emit(self._gen, [], str(exc))
+            return
+        self._relay.done.emit(self._gen, keys, "")
 
 
 class ThumbCache(QObject):
@@ -2689,6 +2720,24 @@ class StudioPage(QWidget):
             "Fill frame crops the picture so there are no black bars. Drag the picture "
             "in the preview to choose what stays in frame.", "hint")
         lay.addWidget(self.framing_hint)
+        self.follow_cap = self._label("FOLLOW", "field_cap")
+        lay.addWidget(self.follow_cap)
+        self.follow_btn = self._btn(
+            "Follow the face", self._follow_face,
+            "Finds the speaker's face and moves the crop with it, for example to turn a "
+            "wide video into a tall one")
+        lay.addWidget(self.follow_btn)
+        self.follow_hint = self._label(
+            "Keeps the speaker in frame when the picture is cropped. Works on this computer.",
+            "hint")
+        lay.addWidget(self.follow_hint)
+        self._follow_gen = 0
+        self._follow_pool = QThreadPool(self)
+        self._follow_pool.setMaxThreadCount(1)
+        self._follow_cancel = threading.Event()
+        self._follow_relay = _FollowRelay(self)
+        self._follow_relay.done.connect(self._follow_done)
+        self._follow_relay.progress.connect(self._follow_progress)
         lay.addStretch()
         self.clip_tabs.addWidget(self._build_effects_page())
         return inner
@@ -2976,6 +3025,8 @@ class StudioPage(QWidget):
         self.clip_denoise.setEnabled(not clip.muted)
         self.clip_vol_lbl.setText(f"{round(clip.volume * 100)}%")
         self.fit_btns[clip.fit].setChecked(True)
+        self.follow_btn.setText(self.t("Stop following") if clip.fx.get("follow")
+                                else self.t("Follow the face"))
         self.clip_zoom.blockSignals(True)
         self.clip_zoom.setValue(round(clip.zoom * 100))
         self.clip_zoom.blockSignals(False)
@@ -3120,6 +3171,70 @@ class StudioPage(QWidget):
         if clip is not None:
             clip.zoom = round(value / 100, 2)
             self._framing_changed("zoom")
+
+    # follow the face --------------------------------------------------------------
+
+    def _follow_face(self) -> None:
+        clip = self._sel_clip()
+        if clip is None:
+            return
+        if clip.fx.get("follow"):  # on already: this button turns it off
+            clip.fx = effects.sanitize({k: v for k, v in clip.fx.items() if k != "follow"})
+            self._follow_changed()
+            return
+        if not reframe.available():
+            QMessageBox.information(self, self.t("Follow the face"), self.t(
+                "Following a face needs the speech add-on, which this installation doesn't "
+                "have. Install it with:\n\npip install \"vidgrab-studio[captions]\""))
+            return
+        if not self.host.ffmpeg_ok():
+            return
+        models = self.host.models_dir() if hasattr(self.host, "models_dir") else None
+        if models is None:
+            return
+        if not reframe.model_ready(models) and QMessageBox.question(
+                self, self.t("Follow the face"),
+                self.t("Finding faces uses a small model ({size}), downloaded once. "
+                       "Continue?", size=reframe.MODEL_SIZE_LABEL)) != QMessageBox.Yes:
+            return
+        start, end = clip.span()
+        self._follow_gen += 1
+        self._follow_clip = clip
+        self.follow_btn.setEnabled(False)
+        self.status.setText(self.t("Looking for the face…"))
+        self._follow_pool.start(_FollowTask(
+            self._follow_relay, self._follow_gen, clip.path, start, end, str(models),
+            self._follow_cancel, self.t))
+
+    def _follow_progress(self, gen: int, text: str, pct: int) -> None:
+        if gen == self._follow_gen:
+            self.status.setText(f"{text} {pct}%")
+
+    def _follow_done(self, gen: int, keys, error: str) -> None:
+        if gen != self._follow_gen:
+            return
+        self.follow_btn.setEnabled(True)
+        clip = self._follow_clip
+        if error:
+            self.status.setText(error)
+            QMessageBox.warning(self, self.t("Follow the face"), error)
+            return
+        if not keys or clip not in self._clips:
+            self.status.setText(self.t("No face was found in this clip."))
+            return
+        clip.fit = "fill"  # a crop is what follows
+        clip.fx = effects.sanitize({**clip.fx, "follow": keys})
+        self._follow_changed()
+        self.status.setText(self.t("Following the face."))
+        if (self.res.currentData() or "auto") not in ("vertical", "square") and QMessageBox.question(
+                self, self.t("Follow the face"),
+                self.t("Make the video vertical (9:16, for Shorts and Reels) so the crop has "
+                       "something to follow?")) == QMessageBox.Yes:
+            self._set_export("shorts")
+
+    def _follow_changed(self) -> None:
+        self._framing_changed()  # (fills the inspector and records the edit)
+        self.preview.refresh_effects(self._segments())
 
     def _center_clip(self) -> None:
         clip = self._sel_clip()
@@ -3864,7 +3979,10 @@ class StudioPage(QWidget):
     def _edit_cue_text(self) -> None:
         if not self._sel or self._sel[0] != "cue":
             return
-        self._cues[self._sel[1]].text = self.cue_text.toPlainText()
+        cue = self._cues[self._sel[1]]
+        if cue.text != self.cue_text.toPlainText():
+            cue.words = None  # the timings belong to the old text
+        cue.text = self.cue_text.toPlainText()
         self._refresh_track()
         self.preview.set_cues(self._preview_cues(), self._sel[1])
         self._record(f"text{self._sel[1]}")
@@ -3928,8 +4046,8 @@ class StudioPage(QWidget):
         if not cue.start + 0.2 <= t <= cue.end - 0.2:
             self.status.setText(self.t("Move the playhead inside this line to split it."))
             return
-        second = replace(cue, start=t)
-        cue.end = t
+        second = replace(cue, start=t, words=None)  # (word times don't follow a split)
+        cue.end, cue.words = t, None
         self._cues.append(second)
         self._sel = ("cue", self._cues.index(second))
         self._cues_changed()
@@ -5138,6 +5256,9 @@ class StudioPage(QWidget):
     def shutdown(self) -> None:
         """Stop background frame extraction (before the window closes)."""
         self.thumbs.shutdown()
+        self._follow_cancel.set()
+        self._follow_pool.clear()
+        self._follow_pool.waitForDone(3000)
         self.fx_pool.clear()
         self.fx_pool.waitForDone(3000)
 
@@ -5273,6 +5394,20 @@ class StudioPage(QWidget):
         pick(current)
         lay.addWidget(box)
         lay.addWidget(hint)
+        lay.addSpacing(4)
+        cap = QLabel(t("CAPTION STYLE"))
+        cap.setObjectName("field_cap")
+        lay.addWidget(cap)
+        style_box = QComboBox()
+        for anim, label in (("highlight", "Word highlight"), ("karaoke", "Karaoke"), ("none", "Plain")):
+            style_box.addItem(t(label), anim)
+        style_box.setCurrentIndex(max(0, style_box.findData(setting("caption_style") or "highlight")))
+        lay.addWidget(style_box)
+        style_hint = QLabel(t("Word highlight lights up each word as it is said. You can change "
+                              "it per line later (Effects tab)."))
+        style_hint.setObjectName("hint")
+        style_hint.setWordWrap(True)
+        lay.addWidget(style_hint)
         replace_box = QCheckBox(t("Replace the current subtitle lines"))
         replace_box.setVisible(bool(self._cues))
         lay.addWidget(replace_box)
@@ -5291,6 +5426,9 @@ class StudioPage(QWidget):
         if dlg.exec() != QDialog.Accepted:
             return None
         size = next(k for k, b in sizes.items() if b.isChecked())
+        self._caption_anim = style_box.currentData() or "none"
+        if hasattr(self.host, "set_setting"):
+            self.host.set_setting("caption_style", self._caption_anim)
         return lang.currentData(), size, replace_box.isChecked()
 
     # two videos at once ------------------------------------------------------------
@@ -5343,6 +5481,10 @@ class StudioPage(QWidget):
         if not cues:
             self.status.setText(self.t("No speech was found in the clips."))
             return
+        anim = getattr(self, "_caption_anim", "none")
+        for cue in cues:
+            if cue.animation == "none" and anim in ANIMATIONS:
+                cue.animation = anim  # the style chosen in the Auto captions dialog
         self._cues = list(cues) if replace_lines else sorted(
             [*self._cues, *cues], key=lambda c: c.start)
         self.deselect()

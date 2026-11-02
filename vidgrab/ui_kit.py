@@ -145,4 +145,5 @@ def attach_suggestions(box: QLineEdit, provider: Callable[[str], list[str]], *, 
         completer.activated[str].connect(on_pick)
     box.returnPressed.connect(close)
     box.editingFinished.connect(close)  # Enter or the focus leaving
+    completer.close_list = close  # type: ignore[attr-defined]  # for callers that start the search themselves
     return completer

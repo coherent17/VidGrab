@@ -1969,7 +1969,7 @@ class VidGrabWindow(QMainWindow):
         self._url.setPlaceholderText("Paste a link, or type to search YouTube…")
         self._url.setClearButtonEnabled(True)
         self._url.returnPressed.connect(self._start_action)
-        attach_suggestions(self._url, self._url_suggestions, remote=self._online_suggestions, on_pick=self._pick_suggestion,
+        self._suggest_list = attach_suggestions(self._url, self._url_suggestions, remote=self._online_suggestions, on_pick=self._pick_suggestion,
                            merge=suggest.merge)
         bl.addWidget(self._url, stretch=1)
         pb = QPushButton("Paste")
@@ -3551,6 +3551,7 @@ class VidGrabWindow(QMainWindow):
             QMessageBox.warning(self, self._t("No internet"), self._t(
                 "You appear to be offline.\nVidGrab needs a live connection."))
             return
+        self._suggest_list.close_list()  # never leave the drop-down over the results
         self._remember_search(query.strip())
         self._body_stack.setCurrentIndex(1)
         self._search_panel.start(query, lambda q: search(q, 12, translate=self._t))

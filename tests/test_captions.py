@@ -255,6 +255,8 @@ def test_transcribe_options_per_language() -> None:
     zh = captions._options("zh-Hant")
     assert zh["language"] == "zh" and "繁體" in zh["hotwords"]
     assert captions._options("en")["language"] == "en" and "hotwords" not in captions._options("en")
+    tr = captions._options("translate")  # any language in, English out
+    assert tr["language"] is None and tr["task"] == "translate" and "task" not in captions._options("auto")
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not on PATH")

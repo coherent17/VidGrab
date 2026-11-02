@@ -31,7 +31,8 @@ _PAGE_NAMES = {"download": "Download", "studio": "Studio", "settings": "Settings
                "tools": "Tools", "subscriptions": "Subscriptions"}
 # section -> (icon kind, palette key of its colour)
 _LOOK = {"start": ("clipboard", "ACCENT_HI"), "download": ("download", "ACCENT2"),
-         "studio": ("film", "ACCENT"), "captions": ("captions", "AMBER"), "faq": ("help", "ACCENT2_HI")}
+         "studio": ("film", "ACCENT"), "captions": ("captions", "AMBER"), "faq": ("help", "ACCENT2_HI"),
+         "more": ("tools", "ACCENT2_LO")}
 
 
 class _Tile(QFrame):
@@ -135,9 +136,6 @@ class HelpPage(QWidget):
             tile.clicked.connect(lambda s=sec: self._open_section(s))
             self.tiles[sec] = tile
             grid.addWidget(tile, i // 3, i % 3)
-        self.about_tile = _Tile()
-        self.about_tile.clicked.connect(lambda: self._about())
-        grid.addWidget(self.about_tile, 1, 2)
         for c in range(3):
             grid.setColumnStretch(c, 1)
         lay.addLayout(grid)
@@ -154,6 +152,11 @@ class HelpPage(QWidget):
             b.clicked.connect(lambda _c=False, x=tid: self._open_topic(x))
             self.chip_row.addWidget(b)
             self.chips.append((b, tid))
+        self.about_chip = QPushButton()
+        self.about_chip.setObjectName("help_chip")
+        self.about_chip.setCursor(Qt.PointingHandCursor)
+        self.about_chip.clicked.connect(lambda: self._about())
+        self.chip_row.addWidget(self.about_chip)
         self.chip_row.addStretch()
         lay.addLayout(self.chip_row)
         lay.addStretch()
@@ -228,15 +231,15 @@ class HelpPage(QWidget):
         tile_css = (f"QFrame#help_tile {{ background:{p['SURFACE']}; border:1px solid {p['BORDER']};"
                     " border-radius:14px; }"
                     f"QFrame#help_tile:hover {{ border:1px solid {p['ACCENT_HI']}; background:{p['SURFACE_HI']}; }}")
-        for sec, tile in {**self.tiles, "about": self.about_tile}.items():
+        for sec, tile in self.tiles.items():
             tile.setStyleSheet(tile_css)
             tile.name.setStyleSheet(f"font-size:15px; font-weight:700; color:{p['TEXT']}; background:transparent;")
             tile.sub.setStyleSheet(f"font-size:12px; color:{p['TEXT_MUTED']}; background:transparent;")
-            c = QColor(self._color(sec) if sec != "about" else p["ACCENT"])
-            kind = _LOOK[sec][0] if sec != "about" else "help"
+            c = QColor(self._color(sec))
+            kind = _LOOK[sec][0]
             tile.badge.setPixmap(self._icon(kind, c.name(), 24).pixmap(24, 24))
             tile.badge.setStyleSheet(f"background:{rgba(c.name(), .18)}; border-radius:14px;")
-        for b, _tid in self.chips:
+        for b in [*(c for c, _t in self.chips), self.about_chip]:
             b.setStyleSheet(
                 f"QPushButton#help_chip {{ background:{p['SURFACE']}; color:{p['TEXT_DIM']};"
                 f" border:1px solid {p['BORDER']}; border-radius:16px; padding:7px 16px; font-size:13px; }}"
@@ -267,8 +270,7 @@ class HelpPage(QWidget):
         for sec, tile in self.tiles.items():
             tile.name.setText(help_content.SECTIONS[sec][lang])
             tile.sub.setText(help_content.BLURBS[sec][lang])
-        self.about_tile.name.setText(t("About VidGrab"))
-        self.about_tile.sub.setText(t("Version, licence and credits"))
+        self.about_chip.setText(t("About VidGrab"))
         for b, tid in self.chips:
             b.setText(self._topics[tid][2][lang])
         self._fill(keep=self.current_id())

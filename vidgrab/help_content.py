@@ -10,6 +10,7 @@ SECTIONS: dict[str, dict[str, str]] = {
     "download": {"en": "Download", "zh": "下載"},
     "studio": {"en": "Studio", "zh": "Studio 剪輯"},
     "captions": {"en": "Captions and effects", "zh": "字幕與特效"},
+    "more": {"en": "Library, tools and channels", "zh": "媒體庫、工具與頻道"},
     "faq": {"en": "Questions and fixes", "zh": "常見問題"},
 }
 
@@ -19,6 +20,7 @@ BLURBS: dict[str, dict[str, str]] = {
     "download": {"en": "Playlists, trimming, sponsors and logins", "zh": "播放清單、裁切、業配與登入"},
     "studio": {"en": "Build videos, Shorts, music and cuts", "zh": "剪輯影片、短影片、音樂與剪裁"},
     "captions": {"en": "Auto captions, styles and picture effects", "zh": "自動字幕、樣式與畫面特效"},
+    "more": {"en": "Find files, shrink videos, follow channels", "zh": "找檔案、壓縮影片、追蹤頻道"},
     "faq": {"en": "Fixes, privacy and keyboard shortcuts", "zh": "問題排解、隱私與快速鍵"},
 }
 
@@ -168,6 +170,93 @@ TOPICS: list[tuple[str, str, str | None, dict[str, str], dict[str, str]]] = [
             "<li><b>防震</b>讓晃動的畫面穩定；<b>降噪</b>與<b>銳化</b>改善畫質。</li>"
             "<li><b>綠幕</b>可讓某個顏色變透明，後方顯示圖片或影片。</li></ul>"
             "<p>播放器即時顯示的顏色是近似效果，輸出的檔案才是精確結果。防震與銳化可在前後對照圖與輸出檔中看到。</p>"}),
+    ("library", "more", "library",
+     {"en": "Find and reuse your files", "zh": "尋找並重複使用你的檔案"},
+     {"en": "<p>The <b>Library</b> page lists every video, song and picture in your download folder, newest "
+            "first, with a picture for each video.</p>"
+            "<ol><li>Search by name, or filter by <b>Videos</b>, <b>Music</b> or <b>Pictures</b>.</li>"
+            "<li>Click a file, then <b>Send to Studio</b> to edit it, <b>Compress / convert…</b> to open it in "
+            "Tools, or <b>Show in folder</b>.</li>"
+            "<li>Double-click a file to play it. <b>Delete</b> always asks first.</li></ol>"
+            "<p>It shows the folder chosen in Settings, one level of sub-folders included.</p>",
+      "zh": "<p><b>媒體庫</b>列出下載資料夾中所有的影片、音樂與圖片，最新的在最上面，影片會顯示縮圖。</p>"
+            "<ol><li>可依名稱搜尋，或以<b>影片</b>、<b>音樂</b>、<b>圖片</b>篩選。</li>"
+            "<li>選取檔案後，按<b>傳送到 Studio</b>編輯、<b>壓縮／轉檔…</b>在工具中開啟，或<b>在資料夾中顯示</b>。</li>"
+            "<li>雙擊檔案即可播放。<b>刪除</b>一律會先詢問。</li></ol>"
+            "<p>顯示的是設定中選擇的資料夾，包含一層子資料夾。</p>"}),
+    ("tools_shrink", "more", "tools",
+     {"en": "Make a video fit a size limit", "zh": "讓影片符合大小限制"},
+     {"en": "<ol><li>Open <b>Tools</b> and choose <b>Shrink to a size</b>.</li>"
+            "<li>Choose a file, then a size such as 8 MB (Discord) or 25 MB (e-mail), or your own.</li>"
+            "<li>Leave <i>Lower the resolution when needed</i> on: a small size on a big picture looks blurry, "
+            "so VidGrab also shrinks the picture.</li>"
+            "<li>Press <b>Start</b>. The new file is saved next to the original, which is never changed.</li></ol>"
+            "<p>The size is a target: the result lands close to it, usually a little under.</p>",
+      "zh": "<ol><li>開啟<b>工具</b>，選擇<b>壓縮到指定大小</b>。</li>"
+            "<li>選擇檔案，再選擇大小，例如 8 MB（Discord）、25 MB（電子郵件），或自行輸入。</li>"
+            "<li>建議保持開啟「必要時降低解析度」：大畫面配很小的檔案會很模糊，所以 VidGrab 也會縮小畫面。</li>"
+            "<li>按<b>開始</b>。新檔案會存在原檔旁邊，原檔不會被更動。</li></ol>"
+            "<p>大小是目標值：結果會很接近，通常略小一點。</p>"}),
+    ("tools_other", "more", "tools",
+     {"en": "Convert, GIF, thumbnail and audio", "zh": "轉檔、GIF、縮圖與音訊"},
+     {"en": "<ul><li><b>Convert</b> changes the format: MP4, MKV, WebM, or audio (MP3, M4A, Opus, WAV, FLAC).</li>"
+            "<li><b>Make a GIF</b> turns a few seconds, from the time you choose, into a looping GIF.</li>"
+            "<li><b>Thumbnail</b> saves one frame as a 1280×720 picture. Type a title and it is drawn on the "
+            "picture, with a preview as you type.</li>"
+            "<li><b>Extract audio</b> saves only the sound.</li></ul>"
+            "<p>Each result is saved next to the original, with a note in its name such as “(gif)”.</p>",
+      "zh": "<ul><li><b>轉檔</b>更換格式：MP4、MKV、WebM，或音訊（MP3、M4A、Opus、WAV、FLAC）。</li>"
+            "<li><b>製作 GIF</b>把你選的起點之後的幾秒鐘變成循環播放的 GIF。</li>"
+            "<li><b>縮圖</b>把一個畫面存成 1280×720 的圖片。輸入標題會畫在圖上，並即時預覽。</li>"
+            "<li><b>擷取音訊</b>只儲存聲音。</li></ul>"
+            "<p>結果會存在原檔旁邊，檔名會註明，例如「(gif)」。</p>"}),
+    ("channels", "more", "subscriptions",
+     {"en": "Follow channels and grab new videos", "zh": "追蹤頻道並抓取新影片"},
+     {"en": "<ol><li>Open <b>Channels</b>, paste a channel or playlist link and press <b>Follow</b>.</li>"
+            "<li>Its newest videos appear on the right. After the first look, videos that appeared since "
+            "you last checked are marked with a dot.</li>"
+            "<li>Press <b>Tick the new ones</b> (or tick any you like) and then <b>Download ticked</b>. They go "
+            "into the normal Download queue.</li></ol>"
+            "<p>Your list is stored on your computer. VidGrab only looks when you open the page or press "
+            "Refresh.</p>",
+      "zh": "<ol><li>開啟<b>頻道</b>，貼上頻道或播放清單連結，按<b>追蹤</b>。</li>"
+            "<li>最新的影片會顯示在右側。第一次查看之後，上次之後新出現的影片會以圓點標示。</li>"
+            "<li>按<b>勾選新影片</b>（或自行勾選），再按<b>下載已勾選的</b>。它們會進入一般的下載佇列。</li></ol>"
+            "<p>追蹤清單只存在你的電腦。VidGrab 只會在你開啟此頁或按重新整理時查看。</p>"}),
+    ("best_moment", "more", "studio",
+     {"en": "Keep only the best moment", "zh": "只保留最精彩的片段"},
+     {"en": "<p>Select a clip, open the <b>Trim</b> tab and press <b>Best moment…</b>, then pick 15, 30 or "
+            "60 seconds. VidGrab listens to the clip and keeps the loudest, most active stretch of that length "
+            "(speech, music, cheering) instead of a quiet intro.</p>"
+            "<p>It is one undo step, and you can still drag the trim handles afterwards. It judges by sound only, "
+            "so check the result.</p>",
+      "zh": "<p>選取片段，開啟<b>裁切</b>分頁，按<b>最佳片段…</b>，再選擇 15、30 或 60 秒。"
+            "VidGrab 會聆聽影片，保留該長度中聲音最大、最活躍的一段（說話、音樂、歡呼），而不是安靜的開頭。</p>"
+            "<p>整個動作只算一次復原，之後仍可拖曳裁切把手。它只依聲音判斷，請確認結果。</p>"}),
+    ("translate_captions", "captions", "studio",
+     {"en": "Captions in English from any language", "zh": "把任何語言轉成英文字幕"},
+     {"en": "<p>In the Auto captions window, set <b>Spoken language</b> to <b>Translate to English</b>. "
+            "The speech engine listens in whatever language is spoken and writes the captions in English. "
+            "Translations of small models are rougher than normal captions, so pick a larger model "
+            "for important videos.</p>",
+      "zh": "<p>在自動字幕視窗，把<b>口說語言</b>設為<b>翻譯成英文</b>。"
+            "語音引擎會聽取任何語言，並以英文寫出字幕。小型模型的翻譯較粗略，重要影片請選擇較大的模型。</p>"}),
+    ("faq_cli", "faq", None,
+     {"en": "Use VidGrab from the command line", "zh": "從命令列使用 VidGrab"},
+     {"en": "<p>These commands run without opening a window:</p>"
+            "<ul><li><b>vidgrab get URL</b> (add <b>--mp3</b>, <b>--quality 720</b>, <b>--out FOLDER</b>)</li>"
+            "<li><b>vidgrab shrink FILE --mb 25</b></li>"
+            "<li><b>vidgrab convert FILE --to mp3</b></li>"
+            "<li><b>vidgrab gif FILE --start 3 --length 4</b></li>"
+            "<li><b>vidgrab best FILE --seconds 30</b> prints the start and end of the liveliest stretch</li></ul>"
+            "<p><b>vidgrab --help</b> lists them all.</p>",
+      "zh": "<p>以下指令不會開啟視窗：</p>"
+            "<ul><li><b>vidgrab get 網址</b>（可加 <b>--mp3</b>、<b>--quality 720</b>、<b>--out 資料夾</b>）</li>"
+            "<li><b>vidgrab shrink 檔案 --mb 25</b></li>"
+            "<li><b>vidgrab convert 檔案 --to mp3</b></li>"
+            "<li><b>vidgrab gif 檔案 --start 3 --length 4</b></li>"
+            "<li><b>vidgrab best 檔案 --seconds 30</b> 會印出最精彩一段的起訖時間</li></ul>"
+            "<p><b>vidgrab --help</b> 可查看全部指令。</p>"}),
     ("faq_ffmpeg", "faq", None,
      {"en": "It says ffmpeg is missing", "zh": "顯示找不到 ffmpeg"},
      {"en": "<p>The Windows and Linux downloads include ffmpeg. If you installed VidGrab with pip or on macOS, "

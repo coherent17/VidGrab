@@ -92,7 +92,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab import cuda_runtime, effects, fx_preview, reframe
+from vidgrab import cuda_runtime, effects, fx_preview, highlights, reframe
 from vidgrab.captions import DEFAULT_MODEL as DEFAULT_CAPTION_MODEL
 from vidgrab.captions import LANGUAGES as CAPTION_LANGUAGES
 from vidgrab.captions import MODELS as CAPTION_MODELS
@@ -138,6 +138,7 @@ from vidgrab.studio import (
 
 _HAND = Qt.PointingHandCursor
 MIN_CLIP = 0.2  # shortest a clip can be trimmed to (s)
+BEST_LENGTHS = (15, 30, 60)  # "Best moment" choices (s)
 MIN_MUSIC = 0.5  # shortest part of a song that can be kept (s)
 PROJECT_EXT = ".vgproj"
 AUTOSAVE_MS = 60_000  # how often unsaved Studio work is copied for recovery
@@ -282,6 +283,26 @@ class _FollowTask(QRunnable):
             self._relay.done.emit(self._gen, [], str(exc))
             return
         self._relay.done.emit(self._gen, keys, "")
+
+
+class _BestRelay(QObject):
+    done = Signal(int, float, float, str)  # clip index, start, end, error
+
+
+class _BestTask(QRunnable):
+    """Find the liveliest stretch of a clip (Best moment)."""
+
+    def __init__(self, relay: _BestRelay, i: int, path: str, start: float, end: float, length: float) -> None:
+        super().__init__()
+        self._relay, self._i, self._args = relay, i, (path, start, end, length)
+
+    def run(self) -> None:
+        try:
+            a, b = highlights.find_best(*self._args)
+        except Exception as exc:  # noqa: BLE001 - shown to the user
+            self._relay.done.emit(self._i, 0.0, 0.0, str(exc))
+            return
+        self._relay.done.emit(self._i, a, b, "")
 
 
 class ThumbCache(QObject):
@@ -2621,6 +2642,10 @@ class StudioPage(QWidget):
             "Remove silences…", self.remove_silences,
             "Cut the quiet pauses out of this clip (it is split into pieces)")
         lay.addWidget(self.silence_btn)
+        self.best_btn = self._btn(
+            "Best moment…", self._best_menu,
+            "Keep only the liveliest part of this clip: the loudest, most active stretch")
+        lay.addWidget(self.best_btn)
         lay.addWidget(self._label(
             "Hold Shift while dragging a handle to trim finely; drag it past the edge to "
             "keep going.", "hint"))
@@ -2732,6 +2757,10 @@ class StudioPage(QWidget):
             "hint")
         lay.addWidget(self.follow_hint)
         self._follow_gen = 0
+        self._best_pool = QThreadPool(self)
+        self._best_pool.setMaxThreadCount(1)
+        self._best_relay = _BestRelay(self)
+        self._best_relay.done.connect(self._best_done)
         self._follow_pool = QThreadPool(self)
         self._follow_pool.setMaxThreadCount(1)
         self._follow_cancel = threading.Event()
@@ -4763,6 +4792,41 @@ class StudioPage(QWidget):
             return
         self.cut_ranges(i, dlg.ranges())
 
+    def _best_menu(self) -> None:
+        """Pick a length, then keep that much of the selected clip: the liveliest part."""
+        if not self._sel or self._sel[0] != "clip" or self._busy or not self.host.ffmpeg_ok():
+            return
+        menu = QMenu(self)
+        for secs in BEST_LENGTHS:
+            menu.addAction(self.t("Best {n} seconds", n=secs), lambda n=secs: self.find_best_moment(n))
+        self._best_menu_obj = menu  # for tests
+        menu.exec(self.best_btn.mapToGlobal(self.best_btn.rect().bottomLeft()))
+
+    def find_best_moment(self, length: float) -> None:
+        if not self._sel or self._sel[0] != "clip":
+            return
+        i = self._sel[1]
+        s, e = self._clips[i].span()
+        if e - s <= length + 1:
+            self.status.setText(self.t("This clip is already that short."))
+            return
+        self.best_btn.setEnabled(False)
+        self.status.setText(self.t("Listening for the best moment…"))
+        self._best_pool.start(_BestTask(self._best_relay, i, self._clips[i].path, s, e, length))
+
+    def _best_done(self, i: int, start: float, end: float, err: str) -> None:
+        self.best_btn.setEnabled(True)
+        if err:
+            self.status.setText(self.t("Could not analyse the sound: {err}", err=err))
+            return
+        if i >= len(self._clips):
+            return
+        self._sel = ("clip", i)
+        self._on_clip_trimmed(i, start, end)
+        self.select_clip(i)
+        self.status.setText(self.t("Kept the best {n} seconds ({a} – {b}).", n=round(end - start),
+                                   a=fmt_time(start), b=fmt_time(end)))
+
     def cut_ranges(self, i: int, keeps: list[tuple[float, float]]) -> None:
         """Replace clip *i* by one clip per kept (start, end); only the first
         keeps the transition in."""
@@ -5257,6 +5321,8 @@ class StudioPage(QWidget):
         """Stop background frame extraction (before the window closes)."""
         self.thumbs.shutdown()
         self._follow_cancel.set()
+        self._best_pool.clear()
+        self._best_pool.waitForDone(3000)
         self._follow_pool.clear()
         self._follow_pool.waitForDone(3000)
         self.fx_pool.clear()
@@ -5333,7 +5399,7 @@ class StudioPage(QWidget):
         lay.addWidget(cap)
         lang = QComboBox()
         for code, name in CAPTION_LANGUAGES.items():
-            lang.addItem(name or t("Detect automatically"), code)
+            lang.addItem(name or t("Translate to English" if code == "translate" else "Detect automatically"), code)
         idx = lang.findData(setting("caption_language") or "auto")
         lang.setCurrentIndex(max(0, idx))
         lay.addWidget(lang)

@@ -76,6 +76,7 @@ _HF = "https://huggingface.co"
 # script is steered with a prompt written in it.
 LANGUAGES: dict[str, str] = {
     "auto": "",
+    "translate": "",  # listen in any language, write English (Whisper's "translate" task)
     "en": "English",
     "zh-Hant": "中文（繁體）",
     "zh-Hans": "中文（简体）",
@@ -671,7 +672,7 @@ class _FasterWhisper:
                 words += [Word(w.start, w.end, w.word) for w in seg.words]
             else:
                 words.append(Word(seg.start, seg.end, seg.text))
-        return words, info.language
+        return words, "en" if self.opts.get("task") == "translate" else info.language
 
     def words(self, audio, on_segment) -> tuple[list[Word], str]:
         words, lang = self._words(audio, self.opts, on_segment)
@@ -686,13 +687,16 @@ class _OpenVino:
     """OpenVINO GenAI on an Intel GPU (or ``CPU`` in tests). The compiled GPU
     kernels are cached next to the models, so only the first run waits for them."""
 
+    translating = False  # Whisper's "translate" task: any language in, English out
+
     def __init__(self, path: Path, device: str, cache: Path, language: str,
                  on_log: LogCallback | None):
         import openvino_genai as ovg
 
         cache.mkdir(parents=True, exist_ok=True)
         self.pipe = ovg.WhisperPipeline(str(path), device, CACHE_DIR=str(cache))
-        self.language = None if language == "auto" else language.split("-")[0]
+        self.translating = language == "translate"
+        self.language = None if language in ("auto", "translate") else language.split("-")[0]
         self.prompt = _PROMPTS.get(language)
         if on_log:
             on_log(f"Speech recognition on OpenVINO ({device})")
@@ -704,7 +708,7 @@ class _OpenVino:
             if _rms(piece) < SILENCE_RMS:
                 continue
             cfg = self.pipe.get_generation_config()
-            cfg.task = "transcribe"
+            cfg.task = "translate" if self.translating else "transcribe"
             cfg.return_timestamps = True
             if self.language:
                 cfg.language = f"<|{self.language}|>"
@@ -719,12 +723,12 @@ class _OpenVino:
             if not self.language and detected and words:
                 self.language = detected  # keep one language for the rest of the clip
             on_segment(offset + piece.size / SAMPLE_RATE)
-        return words, self.language or ""
+        return words, "en" if self.translating else (self.language or "")
 
 
 def _options(language: str) -> dict:
     opts: dict = {
-        "language": None if language == "auto" else language.split("-")[0],
+        "language": None if language in ("auto", "translate") else language.split("-")[0],
         "word_timestamps": True,
         "vad_filter": True,
         "condition_on_previous_text": False,  # stops repeated-line loops
@@ -732,6 +736,8 @@ def _options(language: str) -> dict:
         "beam_size": 5,
         "temperature": (0.0, 0.2, 0.4),  # fewer retries: music made it crawl
     }
+    if language == "translate":
+        opts["task"] = "translate"
     if language in _PROMPTS:
         opts["hotwords"] = _PROMPTS[language]  # unlike initial_prompt, every window sees it
     try:

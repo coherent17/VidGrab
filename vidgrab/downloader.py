@@ -84,10 +84,48 @@ BROWSERS = ("chrome", "firefox", "edge", "brave", "opera", "vivaldi", "chromium"
 COOKIES = {"browser": ""}  # whose login to borrow for age-restricted / members-only videos
 
 
+COOKIE_RETRY_S = 30.0  # an unreadable login is looked at again after this long
+_COOKIE_CHECK: dict[str, tuple[bool, float, str]] = {}  # browser -> (works, when, why not)
+
+
+class _Quiet:
+    def debug(self, *_a) -> None: ...
+    info = warning = error = debug
+
+
 def configure_cookies(browser: str = "") -> None:
     """Use the logged-in cookies of *browser* ('' = none) for every later probe /
-    download."""
+    download (when they can be read: see `cookies_usable`)."""
     COOKIES["browser"] = browser if browser in BROWSERS else ""
+    _COOKIE_CHECK.clear()
+
+
+def cookies_usable() -> bool:
+    """Can the chosen browser's login be read right now? If not (the browser is
+    open and locks its file, it is on the other side of WSL, the profile folder is
+    missing, …) the login is left out and everything works without it: public
+    videos, search and channel lists do not need one. A failure is checked again
+    after `COOKIE_RETRY_S`, a success is kept until the setting changes."""
+    browser = COOKIES["browser"]
+    if not browser:
+        return False
+    known = _COOKIE_CHECK.get(browser)
+    if known and (known[0] or time.monotonic() - known[1] < COOKIE_RETRY_S):
+        return known[0]
+    try:
+        from yt_dlp.cookies import extract_cookies_from_browser
+
+        extract_cookies_from_browser(browser, logger=_Quiet())
+        _COOKIE_CHECK[browser] = (True, time.monotonic(), "")
+    except Exception as exc:  # noqa: BLE001 - any failure to read the browser means: go without
+        _COOKIE_CHECK[browser] = (False, time.monotonic(), str(exc))
+    return _COOKIE_CHECK[browser][0]
+
+
+def cookies_problem() -> str:
+    """Why the login is not used ('' when it is, or none is chosen)."""
+    known = _COOKIE_CHECK.get(COOKIES["browser"])
+    return known[2] if known and not known[0] else ""
 
 
 def configure_network(*, rate_limit: int | None = None, proxy: str = "", retries: int = 10,
@@ -127,7 +165,7 @@ def _net_opts(*, archive: bool = False) -> dict:
         opts["proxy"] = NETWORK.proxy
     if archive and NETWORK.archive:
         opts["download_archive"] = str(NETWORK.archive)
-    if COOKIES["browser"]:
+    if cookies_usable():
         opts["cookiesfrombrowser"] = (COOKIES["browser"],)
     return opts
 

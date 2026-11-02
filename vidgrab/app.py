@@ -16,6 +16,7 @@ from pathlib import Path
 from PySide6.QtCore import (
     QEvent,
     QObject,
+    QRectF,
     QSize,
     Qt,
     QThread,
@@ -26,6 +27,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QColor,
     QCursor,
+    QDesktopServices,
     QFont,
     QIcon,
     QPainter,
@@ -51,7 +53,9 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
+    QPlainTextEdit,
     QProgressDialog,
     QPushButton,
     QScrollArea,
@@ -61,18 +65,20 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QStatusBar,
     QSystemTrayIcon,
+    QTextEdit,
     QToolButton,
     QTreeView,
     QVBoxLayout,
     QWidget,
 )
 
-from vidgrab import __version__, ffmpeg_fetch, ytdlp_update
+from vidgrab import __version__, ffmpeg_fetch, opener, suggest, ytdlp_update
 from vidgrab.captions import detect_gpus, speech_device, transcribe
 from vidgrab.downloader import (
     AUDIO_FORMATS,
     BROWSERS,
     NAME_TEMPLATES,
+    NETWORK,
     DownloadCancelled,
     asset_roots,
     configure_cookies,
@@ -101,14 +107,20 @@ from vidgrab.downloads_panel import (
     load_history,
     save_history,
 )
+from vidgrab.fuzzy import FuzzyIndex
 from vidgrab.gpu import detect_encoder
+from vidgrab.help_page import HelpPage
 from vidgrab.i18n import FLAGS, LANGUAGES, make_translator
 from vidgrab.jobs import DownloadJob, run_job
+from vidgrab.library_page import LibraryPage
 from vidgrab.network import ConnectionStatus, check_internet
 from vidgrab.pick_dialogs import FormatDialog, SearchPanel, shutdown_threads
 from vidgrab.preview import QT_MULTIMEDIA_OK as _QT_MULTIMEDIA_OK
 from vidgrab.studio import compose_audio, compose_split, compose_video
 from vidgrab.studio_page import StudioPage
+from vidgrab.subscriptions_page import SubscriptionsPage
+from vidgrab.tools_page import ToolsPage
+from vidgrab.ui_kit import attach_suggestions
 
 # ── palette ────────────────────────────────────────────────────────────────
 #
@@ -942,6 +954,8 @@ DEFAULT_SETTINGS: dict = {
     "caption_style": "highlight",  # how auto captions come on screen (studio.ANIMATIONS)
     "sponsorblock": False,  # cut sponsor / self-promo parts out of downloads
     "cookies_browser": "",  # borrow this browser's login ("" = none)
+    "online_suggest": True,  # offer YouTube's own search suggestions while typing in the link box
+    "recent_searches": [],  # what was typed into the link box to search YouTube, newest first
     "ytdlp_check": True,  # look for a newer yt-dlp when the app starts
     "ui_font": "jakarta",  # a key of UI_FONTS (bundled), or "system" (the computer's own font)
 }
@@ -1105,6 +1119,24 @@ def _icon(kind: str, color: str = "#8b93ab", size: int = 18) -> QIcon:
             x2 = cx + (r + 2) * math.cos(rad)
             y2 = cy + (r + 2) * math.sin(rad)
             p.drawLine(int(x1), int(y1), int(x2), int(y2))
+    elif kind == "tools":  # sliders: two lines with a knob each
+        for y, x in ((m // 3, m // 3), (2 * m // 3, 2 * m // 3 + 1)):
+            p.drawLine(3, y, m - 3, y)
+            p.setBrush(QColor(color))
+            p.drawEllipse(x - 2, y - 2, 5, 5)
+    elif kind == "rss":  # a feed: dot and two waves
+        p.setBrush(QColor(color))
+        p.drawEllipse(3, m - 6, 4, 4)
+        p.setBrush(Qt.NoBrush)
+        p.drawArc(3 - m // 2, m // 2, m, m, 0, 90 * 16)
+        p.drawArc(3 - m + 3, 3, m * 2 - 6, m * 2 - 6, 0, 90 * 16)
+    elif kind == "help":
+        p.drawEllipse(2, 2, m - 4, m - 4)
+        f = p.font()
+        f.setBold(True)
+        f.setPixelSize(int(m * 0.62))
+        p.setFont(f)
+        p.drawText(QRectF(0, 0, m, m), Qt.AlignCenter, "?")
     elif kind == "film":
         p.drawRoundedRect(3, 3, m - 6, m - 6, 2, 2)
         p.drawLine(7, 3, 7, m - 3)
@@ -1575,17 +1607,26 @@ class _Worker(QThread):
 _NAV_ITEMS: list[tuple[str, str]] = [
     ("download", "Download"),
     ("film", "Studio"),
+    ("folder", "Library"),
+    ("tools", "Tools"),
+    ("rss", "Channels"),
     ("gear", "Settings"),
+    ("help", "Help"),
 ]
 
 # page index -> (title key, subtitle key) for the header above each page
 _PAGE_HEADERS: list[tuple[str, str]] = [
     ("Download", "Grab videos, playlists and music from YouTube and other sites"),
     ("Studio", "Join clips, add subtitles and background music"),
+    ("Library", "Everything you have downloaded and made"),
+    ("Tools", "Shrink, convert, GIF, thumbnails and audio in one click"),
+    ("Subscriptions", "Follow channels and grab their new videos"),
     ("Settings", "Appearance, language and app info"),
+    ("Help", "How to use each feature, and answers to common questions"),
 ]
 
-PAGE_DOWNLOAD, PAGE_STUDIO, PAGE_SETTINGS = range(3)
+(PAGE_DOWNLOAD, PAGE_STUDIO, PAGE_LIBRARY, PAGE_TOOLS, PAGE_SUBS, PAGE_SETTINGS,
+ PAGE_HELP) = range(7)
 
 _THUMB_SIZE = QSize(320, 180)
 
@@ -1657,7 +1698,11 @@ class _Sidebar(QWidget):
                     {
                         "download": "tooltip_page_download",
                         "film": "tooltip_page_studio",
+                        "folder": "tooltip_page_library",
+                        "tools": "tooltip_page_tools",
+                        "rss": "tooltip_page_subscriptions",
                         "gear": "tooltip_page_settings",
+                        "help": "tooltip_page_help",
                     }[kind]
                 )
             )
@@ -1686,15 +1731,29 @@ class _FadeStack(QStackedWidget):
 
 class _WheelGuard(QObject):
     """The mouse wheel never changes a dropdown, number box or slider — it
-    scrolls the panel underneath instead (no accidental edits while scrolling)."""
+    scrolls the panel underneath instead (no accidental edits while scrolling).
+    It also repaints the window once a drop-down list or menu has closed: on WSLg a
+    closed pop-up can stay drawn over the page."""
 
     _KINDS = (QComboBox, QAbstractSpinBox, QSlider)
 
     def eventFilter(self, obj, event) -> bool:
-        if event.type() == QEvent.Wheel and isinstance(obj, self._KINDS):
+        kind = event.type()
+        if kind == QEvent.Wheel and isinstance(obj, self._KINDS):
             event.ignore()  # handled here, but unaccepted: Qt passes it to the parent
             return True
+        if kind == QEvent.Hide and isinstance(obj, QWidget) and obj.isWindow() \
+                and (isinstance(obj, QMenu) or obj.metaObject().className() == "QComboBoxPrivateContainer"):
+            QTimer.singleShot(0, self._repaint)
+            QTimer.singleShot(120, self._repaint)
         return False
+
+    @staticmethod
+    def _repaint() -> None:
+        win = QApplication.activeWindow()
+        if win is not None:
+            win.update()
+            win.repaint()
 
 
 _wheel_guard: _WheelGuard | None = None
@@ -1724,6 +1783,7 @@ class VidGrabWindow(QMainWindow):
         self._t = make_translator(self._lang)
         self._busy = False
         self._internet_online: bool | None = None
+        self._subs_loaded = False
         self._worker: _Worker | None = None  # Studio render
         self._hw_encoder: object = False  # False = not checked yet, None = none works
         self._hw_probe: _HwProbe | None = None
@@ -1795,7 +1855,16 @@ class VidGrabWindow(QMainWindow):
             lambda: self._worker.cancel() if self._worker is not None else None)
         self._studio.apply_theme(self._theme, _PALETTES[self._theme], _CARD_ACCENTS[self._theme])
         self._stack.addWidget(self._studio)
+        self._library = LibraryPage(self)
+        self._tools = ToolsPage(self)
+        self._subs = SubscriptionsPage(self, _config_dir() / "subscriptions.json")
+        for page in (self._library, self._tools, self._subs):
+            page.apply_theme(_PALETTES[self._theme])
+            self._stack.addWidget(page)
         self._stack.addWidget(self._build_settings_form())
+        self._help = HelpPage(lambda k: self._t(k), lambda: self._lang, self._go_page, self._show_about, _icon)
+        self._help.apply_theme(_PALETTES[self._theme])
+        self._stack.addWidget(self._help)
         content.addWidget(self._stack, stretch=4)
         body.addLayout(content, stretch=1)
 
@@ -1915,6 +1984,8 @@ class VidGrabWindow(QMainWindow):
         self._url.setPlaceholderText("Paste a link, or type to search YouTube…")
         self._url.setClearButtonEnabled(True)
         self._url.returnPressed.connect(self._start_action)
+        self._suggest_list = attach_suggestions(self._url, self._url_suggestions, remote=self._online_suggestions, on_pick=self._pick_suggestion,
+                           merge=suggest.merge)
         bl.addWidget(self._url, stretch=1)
         pb = QPushButton("Paste")
         pb.setObjectName("secondary")
@@ -2452,6 +2523,14 @@ class VidGrabWindow(QMainWindow):
         self._set_skip.toggled.connect(lambda on: self.set_setting("skip_downloaded", on))
         self._trw(self._set_skip, "Playlists: skip videos I already downloaded")
         nl.addWidget(self._set_skip)
+        self._set_suggest = QCheckBox()
+        self._set_suggest.setCursor(QCursor(_HAND))
+        self._set_suggest.setChecked(bool(self.setting("online_suggest")))
+        self._set_suggest.toggled.connect(lambda on: self.set_setting("online_suggest", bool(on)))
+        self._trw(self._set_suggest, "Suggest searches while I type (asks YouTube)")
+        self._trw(self._set_suggest, "Sends the words you type in the link box to YouTube's suggestion "
+                                     "service, as its own search box does. Links are never sent.", "setToolTip")
+        nl.addWidget(self._set_suggest)
         self._set_sponsor = QCheckBox()
         self._set_sponsor.setCursor(QCursor(_HAND))
         self._set_sponsor.setChecked(bool(self.setting("sponsorblock")))
@@ -2970,6 +3049,11 @@ class VidGrabWindow(QMainWindow):
         self._bottom.setVisible(idx == PAGE_DOWNLOAD)
         if idx == PAGE_DOWNLOAD:
             self._update_action_label()
+        if idx == PAGE_LIBRARY:
+            self._library.refresh()
+        elif idx == PAGE_SUBS and not self._subs_loaded:
+            self._subs_loaded = True
+            self._subs.refresh_all()
         if idx == PAGE_SETTINGS:  # sizes change while you work (a model was downloaded, a cache grew)
             self._refresh_storage()
             self._refresh_hardware()
@@ -3006,6 +3090,10 @@ class VidGrabWindow(QMainWindow):
             self._studio.apply_theme(
                 self._theme, _PALETTES[self._theme], _CARD_ACCENTS[self._theme]
             )
+        if hasattr(self, "_help"):
+            self._help.apply_theme(_PALETTES[self._theme])
+            for page in (self._library, self._tools, self._subs):
+                page.apply_theme(_PALETTES[self._theme])
 
     def _toggle_theme(self) -> None:
         self._set_theme("light" if self._theme == "dark" else "dark")
@@ -3055,6 +3143,9 @@ class VidGrabWindow(QMainWindow):
         self._action.setToolTip(t("tooltip_action_download"))
         self._update_page_header()
         self._studio.retranslate()
+        self._help.retranslate()
+        for page in (self._library, self._tools, self._subs):
+            page.retranslate()
         # download page
         self._dl_source_title.setText(t("SOURCE"))
         self._dl_options_title.setText(t("OPTIONS"))
@@ -3145,13 +3236,24 @@ class VidGrabWindow(QMainWindow):
     # ── clipboard / file dialogs ───────────────────────────────────────
 
     def _paste_url(self) -> None:
-        if self._stack.currentIndex() == PAGE_STUDIO:  # Ctrl+V there pastes Studio items
-            self._studio.paste()
+        """Ctrl+V. A text box with the focus (the Channels link, a search box…) pastes
+        for itself; the Download page's link box and the Studio take it otherwise."""
+        focus = QApplication.focusWidget()
+        if isinstance(focus, QLineEdit | QPlainTextEdit | QTextEdit) and focus is not self._url \
+                and not focus.isReadOnly():
+            focus.paste()
             return
-        text = QApplication.clipboard().text()
-        if text:
-            links = re.findall(r"https?://\S+", text)
-            self._url.setText(" ".join(links) if len(links) > 1 else text.strip())
+        page = self._stack.currentIndex()
+        if page == PAGE_STUDIO:  # Ctrl+V there pastes Studio items
+            self._studio.paste()
+        elif page == PAGE_SUBS:
+            self._subs.url.setText(QApplication.clipboard().text().strip())
+            self._subs.url.setFocus()
+        elif page == PAGE_DOWNLOAD:
+            text = QApplication.clipboard().text()
+            if text:
+                links = re.findall(r"https?://\S+", text)
+                self._url.setText(" ".join(links) if len(links) > 1 else text.strip())
 
     def _import_links(self) -> None:
         """Fill the link box from a text file with one link per line."""
@@ -3428,12 +3530,44 @@ class VidGrabWindow(QMainWindow):
             self._exact_pick = dlg.chosen()
             self._sync_audio_options()
 
+    def _url_suggestions(self, text: str) -> list[str]:
+        """Best matches for words typed in the link box: earlier searches and the
+        titles of what was downloaded (never for a link)."""
+        if _looks_like_url(text) or "://" in text:
+            return []
+        ix = FuzzyIndex()
+        for q in self.setting("recent_searches") or []:
+            ix.add(q, q, (q, 2.0))
+        for item in self._queue:
+            if item.status == DONE and item.title:
+                ix.add(item.title, item.title, (item.title, 1.0))
+        return ix.suggest(text, 8)
+
+    def _online_suggestions(self, text: str) -> list[str]:
+        """YouTube's suggestions for the words typed (runs on a worker thread)."""
+        if not self.setting("online_suggest") or _looks_like_url(text) or "://" in text \
+                or self._internet_online is False:
+            return []
+        return suggest.youtube_suggestions(text, proxy=NETWORK.proxy,
+                                           lang="zh-TW" if self._lang == "zh" else "en")
+
+    def _pick_suggestion(self, text: str) -> None:
+        """A suggestion was chosen: it is the search, no Enter needed."""
+        self._url.setText(text)
+        self._start_action()
+
+    def _remember_search(self, query: str) -> None:
+        keep = [q for q in (self.setting("recent_searches") or []) if q.casefold() != query.casefold()]
+        self.set_setting("recent_searches", [query, *keep][:30])
+
     def _search_flow(self, query: str) -> None:
         """Words in the link box: show YouTube's results to tick, then fill the box with them."""
         if self._internet_online is not True:
             QMessageBox.warning(self, self._t("No internet"), self._t(
                 "You appear to be offline.\nVidGrab needs a live connection."))
             return
+        self._suggest_list.dismiss()  # never leave the drop-down over the results
+        self._remember_search(query.strip())
         self._body_stack.setCurrentIndex(1)
         self._search_panel.start(query, lambda q: search(q, 12, translate=self._t))
 
@@ -3482,6 +3616,39 @@ class VidGrabWindow(QMainWindow):
 
     def icon(self, kind: str, color: str, size: int = 18) -> QIcon:
         return _icon(kind, color, size)
+
+    # ── host interface of Library / Tools / Subscriptions ──────────────
+
+    def _go_page(self, name: str) -> None:
+        """Open a page by name (the Help page's buttons use this)."""
+        self._sidebar.select({"download": PAGE_DOWNLOAD, "studio": PAGE_STUDIO, "library": PAGE_LIBRARY,
+                              "tools": PAGE_TOOLS, "subscriptions": PAGE_SUBS,
+                              "settings": PAGE_SETTINGS}[name])
+
+    def open_path(self, path: str, reveal: bool = False) -> None:
+        if not opener.open_path(path, reveal):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).parent if reveal else path)))
+            self._statusbar.showMessage(self._t("Could not open: {path}", path=path), 8000)
+
+    def reveal(self, path: str) -> None:
+        self.open_path(path, reveal=True)
+
+    def send_to_studio(self, paths: list[str]) -> None:
+        if paths:
+            self._studio.add_clips(paths)
+            self._sidebar.select(PAGE_STUDIO)
+
+    def open_tool(self, path: str) -> None:
+        self._tools.set_file(path)
+        self._sidebar.select(PAGE_TOOLS)
+
+    def online(self) -> bool:
+        return self._internet_online is not False
+
+    def download_links(self, urls: list[str]) -> None:
+        self._url.setText(" ".join(urls))
+        self._sidebar.select(PAGE_DOWNLOAD)
+        self._start_download()
 
     def log(self, msg: str) -> None:
         self._append_log(msg)
@@ -4020,7 +4187,7 @@ class VidGrabWindow(QMainWindow):
         from PySide6.QtGui import QKeySequence, QShortcut
 
         QShortcut(QKeySequence("Ctrl+V"), self, self._paste_url)
-        QShortcut(QKeySequence("F1"), self, self._show_about)
+        QShortcut(QKeySequence("F1"), self, lambda: self._sidebar.select(PAGE_HELP))
 
     # ── close ──────────────────────────────────────────────────────────
 
@@ -4076,6 +4243,8 @@ class VidGrabWindow(QMainWindow):
             _stop_thread(worker, 3000)
         self._studio.preview.stop()
         self._studio.shutdown()
+        for page in (self._library, self._tools, self._subs):
+            page.shutdown()
         self._studio.clear_autosave()  # a normal close: nothing to recover
         event.accept()
 

@@ -78,6 +78,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMenu,
     QMessageBox,
     QPlainTextEdit,
@@ -2790,6 +2791,49 @@ class StudioPage(QWidget):
             "Keeps the speaker in frame when the picture is cropped. Works on this computer.",
             "hint")
         lay.addWidget(self.follow_hint)
+        self.keys_cap = self._label("ZOOM KEYFRAMES", "field_cap")
+        lay.addWidget(self.keys_cap)
+        self.keys_list = QListWidget()
+        self.keys_list.setMaximumHeight(92)
+        self.keys_list.currentRowChanged.connect(lambda _r: self._fill_key_fields())
+        lay.addWidget(self.keys_list)
+        krow = QHBoxLayout()
+        krow.setSpacing(6)
+        self.key_add_btn = self._btn("Add keyframe here", self._add_key,
+                                     "Zoom in (or out) from the playhead: the picture eases between keyframes")
+        self.key_del_btn = self._btn("Remove", self._remove_key, "Remove the selected keyframe")
+        krow.addWidget(self.key_add_btn)
+        krow.addWidget(self.key_del_btn)
+        lay.addLayout(krow)
+        self.key_form = QWidget()
+        kf = QFormLayout(self.key_form)
+        kf.setContentsMargins(0, 0, 0, 0)
+        kf.setSpacing(6)
+        self.key_time = QDoubleSpinBox()
+        self.key_time.setDecimals(2)
+        self.key_time.setSuffix(" s")
+        self.key_time.setRange(0.0, 99999.0)
+        self.key_zoom = QSpinBox()
+        self.key_zoom.setRange(100, 400)
+        self.key_zoom.setSuffix("%")
+        self.key_x = QSpinBox()
+        self.key_x.setRange(0, 100)
+        self.key_x.setSuffix("%")
+        self.key_y = QSpinBox()
+        self.key_y.setRange(0, 100)
+        self.key_y.setSuffix("%")
+        for w in (self.key_time, self.key_zoom, self.key_x, self.key_y):
+            w.setKeyboardTracking(False)
+            w.valueChanged.connect(lambda _v: self._edit_key())
+        kf.addRow(self._label("At (clip time):"), self.key_time)
+        kf.addRow(self._label("Zoom:"), self.key_zoom)
+        kf.addRow(self._label("Aim left to right:"), self.key_x)
+        kf.addRow(self._label("Aim top to bottom:"), self.key_y)
+        lay.addWidget(self.key_form)
+        self.keys_hint = self._label(
+            "Add a keyframe where the move should reach its zoom. Between two keyframes the "
+            "picture glides; before the first and after the last it holds still.", "hint")
+        lay.addWidget(self.keys_hint)
         self._follow_gen = 0
         self._best_pool = QThreadPool(self)
         self._best_pool.setMaxThreadCount(1)
@@ -3077,8 +3121,10 @@ class StudioPage(QWidget):
         self.trans_len.setValue(clip.transition_d)
         self.trans_len.blockSignals(False)
         self.trans_len.setEnabled(clip.transition != "none")
-        for w in (self.framing_cap, self.fit_box, self.zoom_row, self.framing_hint):
+        for w in (self.framing_cap, self.fit_box, self.zoom_row, self.framing_hint, self.keys_cap,
+                  self.keys_list, self.key_add_btn, self.key_del_btn, self.keys_hint):
             w.setVisible(clip.has_video)
+        self._fill_keys()
         for w in (self.sound_cap, self.sound_row, self.clip_denoise):
             w.setVisible(clip.has_audio)
         for w in (self.clip_mute, self.clip_vol, self.clip_denoise):
@@ -3238,6 +3284,88 @@ class StudioPage(QWidget):
         if clip is not None:
             clip.zoom = round(value / 100, 2)
             self._framing_changed("zoom")
+
+    # zoom keyframes ---------------------------------------------------------------
+
+    def _clip_keys(self) -> list[list[float]]:
+        clip = self._sel_clip()
+        return [list(k) for k in clip.fx.get("keys", [])] if clip is not None else []
+
+    def _fill_keys(self) -> None:
+        keys = self._clip_keys()
+        clip = self._sel_clip()
+        start = clip.span()[0] if clip is not None else 0.0
+        row = self.keys_list.currentRow()
+        self.keys_list.blockSignals(True)
+        self.keys_list.clear()
+        for k in keys:
+            self.keys_list.addItem(f"{fmt_time(max(k[0] - start, 0.0))}  ·  {round(k[3] * 100)}%")
+        if keys:
+            self.keys_list.setCurrentRow(min(max(row, 0), len(keys) - 1))
+        self.keys_list.blockSignals(False)
+        self.key_del_btn.setEnabled(bool(keys))
+        self.key_form.setVisible(bool(keys) and clip is not None and clip.has_video)
+        self._fill_key_fields()
+
+    def _fill_key_fields(self) -> None:
+        keys, row = self._clip_keys(), self.keys_list.currentRow()
+        clip = self._sel_clip()
+        if clip is None or not 0 <= row < len(keys):
+            return
+        k = keys[row]
+        for w, v in ((self.key_time, max(k[0] - clip.span()[0], 0.0)), (self.key_zoom, round(k[3] * 100)),
+                     (self.key_x, round(k[1] * 100)), (self.key_y, round(k[2] * 100))):
+            w.blockSignals(True)
+            w.setValue(v)
+            w.blockSignals(False)
+
+    def _set_keys(self, keys: list[list[float]], kind: str = "") -> None:
+        clip = self._sel_clip()
+        if clip is None:
+            return
+        clip.fx = effects.sanitize({**clip.fx, "keys": keys})
+        clip.fit = "fill" if clip.fx.get("keys") else clip.fit  # a crop is what zooms
+        self._follow_changed()
+        if kind:
+            self._record(kind)
+
+    def _add_key(self) -> None:
+        clip = self._sel_clip()
+        if clip is None or not clip.has_video:
+            return
+        i = self._sel[1]
+        offset = self.track.offsets()[i]
+        local = min(max(self.preview.position() - offset, 0.0), clip.kept())
+        src = round(clip.span()[0] + local * clip.speed, 3)
+        keys = self._clip_keys()
+        zoom = keys[-1][3] if keys and keys[-1][3] > 1.0 else 1.6  # a first push in; later ones repeat the last
+        if any(abs(k[0] - src) < 0.05 for k in keys):
+            self.status.setText(self.t("There is a keyframe here already."))
+            return
+        if not keys:  # a move needs somewhere to start from: the picture as it is now
+            keys.append([clip.span()[0], 0.5, 0.5, 1.0])
+        keys.append([src, 0.5, 0.5, zoom])
+        keys.sort(key=lambda k: k[0])
+        self._set_keys(keys, "keys")
+        self.keys_list.setCurrentRow(next(n for n, k in enumerate(self._clip_keys()) if abs(k[0] - src) < 1e-3))
+
+    def _remove_key(self) -> None:
+        keys, row = self._clip_keys(), self.keys_list.currentRow()
+        if 0 <= row < len(keys):
+            del keys[row]
+            if len(keys) == 1 and keys[0][3] <= 1.0:  # only the start frame is left: no move at all
+                keys = []
+            self._set_keys(keys, "keys")
+
+    def _edit_key(self) -> None:
+        keys, row = self._clip_keys(), self.keys_list.currentRow()
+        clip = self._sel_clip()
+        if clip is None or not 0 <= row < len(keys):
+            return
+        keys[row] = [round(clip.span()[0] + self.key_time.value(), 3), self.key_x.value() / 100,
+                     self.key_y.value() / 100, self.key_zoom.value() / 100]
+        keys.sort(key=lambda k: k[0])
+        self._set_keys(keys, "keys")
 
     # follow the face --------------------------------------------------------------
 

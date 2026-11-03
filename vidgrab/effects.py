@@ -57,6 +57,9 @@ DEFAULT_FX: dict = {
     # where to keep in view while the picture is cropped (auto-reframe): [[source
     # seconds, x, y], ...], x / y as fractions of the picture; see vidgrab.reframe
     "follow": [],
+    # zoom keyframes: [[source seconds, x, y, zoom], ...] - what to keep in view and how
+    # far in, blended linearly between the keys (holds before the first / after the last)
+    "keys": [],
 }
 
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -79,6 +82,8 @@ def sanitize(fx: dict | None) -> dict:
                 continue
         elif key == "follow":
             value = _follow_keys(value)
+        elif key == "keys":
+            value = _zoom_keys(value)
         elif key in ("stabilize", "smooth"):
             value = bool(value)
         elif key == "key":
@@ -104,6 +109,38 @@ def _follow_keys(value) -> list[list[float]]:
         return []
     out.sort(key=lambda k: k[0])
     return out
+
+
+ZOOM_RANGE = (1.0, 4.0)
+
+
+def _zoom_keys(value) -> list[list[float]]:
+    """A clean, time-ordered list of [t, x, y, zoom]."""
+    out: list[list[float]] = []
+    if not isinstance(value, (list, tuple)):
+        return out
+    for row in value[:200]:
+        try:
+            t, x, y, z = (float(v) for v in row[:4])
+        except (TypeError, ValueError):
+            continue  # a bad row is dropped, the rest stays
+        out.append([round(max(t, 0.0), 3), round(min(max(x, 0.0), 1.0), 4),
+                    round(min(max(y, 0.0), 1.0), 4), round(min(max(z, ZOOM_RANGE[0]), ZOOM_RANGE[1]), 3)])
+    out.sort(key=lambda k: k[0])
+    return out
+
+
+def keys_at(keys: list[list[float]], t: float) -> tuple[float, float, float] | None:
+    """(x, y, zoom) at source time *t*, blended linearly between the keyframes."""
+    if not keys:
+        return None
+    if t <= keys[0][0]:
+        return keys[0][1], keys[0][2], keys[0][3]
+    for a, b in itertools.pairwise(keys):
+        if t < b[0]:
+            f = (t - a[0]) / max(b[0] - a[0], 1e-6)
+            return tuple(a[i] + (b[i] - a[i]) * f for i in (1, 2, 3))  # type: ignore[return-value]
+    return keys[-1][1], keys[-1][2], keys[-1][3]
 
 
 def focus_at(keys: list[list[float]], t: float) -> tuple[float, float] | None:

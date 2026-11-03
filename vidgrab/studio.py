@@ -1375,11 +1375,21 @@ def _canvas(clips: list[_ResolvedClip], resolution: str) -> tuple[int, int]:
 def _frame_filter(c: _ResolvedClip, width: int, height: int, bars: str = "black") -> str:
     """Scale (+ crop) one clip onto the output canvas. *bars* is the colour of
     the padding (``black@0`` keeps it see-through for a green-screen clip)."""
-    if c.fit == "fit" and c.zoom == 1.0:  # the whole picture, centred, with bars
+    if c.fit == "fit" and c.zoom == 1.0 and not c.fx.get("keys"):  # the whole picture, centred, with bars
         return (f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={bars}")
     # cover (fill) or contain (fit) a box `zoom` times the canvas, then cut the
     # canvas out of it at the pan point and pad whatever is still missing
+    keys = c.fx.get("keys")
+    if keys:  # zoom keyframes: cover the canvas, then zoom and aim frame by frame
+        zoom = effects.focus_expr(keys, c.start, 3)
+        aim = c.fx.get("follow") or keys  # a face path, when there is one, steers the crop
+        x = f"clip(({effects.focus_expr(aim, c.start, 1)})*iw-ow/2,0,iw-ow)"
+        y = f"clip(({effects.focus_expr(aim, c.start, 2)})*ih-oh/2,0,ih-oh)"
+        return (f"scale={width}:{height}:force_original_aspect_ratio=increase:force_divisible_by=2,"
+                f"scale=w='trunc(iw*({zoom})/2)*2':h='trunc(ih*({zoom})/2)*2':eval=frame,"
+                f"crop=w='min(iw,{width})':h='min(ih,{height})':x='{x}':y='{y}',"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={bars}")
     mode = "increase" if c.fit == "fill" else "decrease"
     zw, zh = _even(width * c.zoom), _even(height * c.zoom)
     x, y = f"(iw-ow)*{c.pan_x:.4f}", f"(ih-oh)*{c.pan_y:.4f}"

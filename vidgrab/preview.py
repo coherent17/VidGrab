@@ -247,6 +247,7 @@ class VideoCanvas(QWidget):
         self._colors = {"bg": "#05060f", "accent": "#7c5cff", "muted": "#7b80aa"}
         self._time = 0.0
         self._framing = ("fit", 1.0, 0.5, 0.5)
+        self._zoom_now: float | None = None
         self._focus: tuple[float, float] | None = None  # auto-reframe: where the face is now
         self._pannable = False
         self._pan_drag: tuple[QPointF, float, float] | None = None
@@ -447,10 +448,18 @@ class VideoCanvas(QWidget):
                 return row, "move"
         return None
 
-    def set_focus(self, focus: tuple[float, float] | None) -> None:
-        if focus != self._focus:
-            self._focus = focus
+    def set_focus(self, focus: tuple[float, float] | None, zoom: float | None = None) -> None:
+        """*focus*: where the crop is aimed (face path / keyframes); *zoom*: the keyframes'
+        zoom at this moment (None = the clip's own)."""
+        if focus != self._focus or zoom != self._zoom_now:
+            self._focus, self._zoom_now = focus, zoom
             self.update()
+
+    def _framing_now(self) -> tuple:
+        """The framing to draw: the clip's, or fill-frame at the keyframed zoom."""
+        if self._zoom_now is None:
+            return self._framing
+        return ("fill", self._zoom_now, self._framing[2], self._framing[3])
 
     def set_framing(self, fit: str, zoom: float, pan_x: float, pan_y: float) -> None:
         self._framing = (fit, zoom, pan_x, pan_y)
@@ -598,7 +607,7 @@ class VideoCanvas(QWidget):
                 self._paint_transition(p, rect)
             else:
                 source, target = frame_geometry(self._frame.width(), self._frame.height(), rect,
-                                                *self._framing, focus=self._focus)
+                                                *self._framing_now(), focus=self._focus)
                 p.drawImage(target, self._frame, source)
             if self._pannable and (self._pan_drag is not None or self.underMouse()):
                 p.setPen(QPen(QColor(self._colors["accent"]), 1.5, Qt.DashLine))
@@ -1424,8 +1433,11 @@ class StudioPreview(QWidget):
     def _follow(self, seg: Segment | None) -> None:
         """Auto-reframe: aim the crop at the face where the showing frame is."""
         keys = seg.fx.get("follow") if seg is not None else None
-        self.canvas.set_focus(
-            effects.focus_at(keys, self.player.position() / 1000) if keys else None)
+        zoomkeys = seg.fx.get("keys") if seg is not None else None
+        now = self.player.position() / 1000
+        at = effects.keys_at(zoomkeys, now) if zoomkeys else None
+        focus = effects.focus_at(keys, now) if keys else (at[:2] if at else None)
+        self.canvas.set_focus(focus, at[2] if at else None)
 
     def refresh_effects(self, segments: list[Segment]) -> None:
         """The effects of the clips changed (a slider moved): take them over and

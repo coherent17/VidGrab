@@ -256,6 +256,18 @@ class ImageOverlay:
     fade: float = 0.0  # fade in / out (s)
     rotation: float = 0.0  # degrees, clockwise, around the centre
     motion: str = "none"  # slow zoom while shown: none | zoom_in | zoom_out (Ken Burns)
+    # a "blur" / "pixel" box hides what is under it (a plate, a face, a name): there is
+    # no picture then (path is ""), the box is `width` x `height` of the frame, centred
+    # on (x, y), and `strength` (0..1) says how hard it is hidden
+    kind: str = "image"  # image | blur | pixel
+    height: float = 0.2
+    strength: float = 0.6
+
+    def is_picture(self) -> bool:
+        return self.kind == "image"
+
+
+COVER_KINDS = ("blur", "pixel")  # the overlay kinds that cover part of the video
 
 
 def _songs(music: Music) -> list[BackgroundMusic]:
@@ -1430,6 +1442,29 @@ def _image_filter(img: ImageOverlay, frame_width: int) -> str:
     return chain
 
 
+def _cover_graph(img: ImageOverlay, k: int, vin: str, width: int, height: int) -> list[str]:
+    """Blur / pixelate the box of the frame between the overlay's start and end:
+    cut the box out of the picture, hide it, put it back."""
+    bw, bh = min(max(img.width, 0.01), 1.0), min(max(img.height, 0.01), 1.0)
+    strength = min(max(img.strength, 0.0), 1.0)
+    crop = (f"crop=w=trunc(iw*{bw:.4f}/2)*2:h=trunc(ih*{bh:.4f}/2)*2"
+            f":x='max(0,min(iw-ow,iw*{img.x:.4f}-ow/2))':y='max(0,min(ih-oh,ih*{img.y:.4f}-oh/2))'")
+    if img.kind == "pixel":
+        blocks = 4 + round(strength * 28)  # bigger blocks the stronger it is
+        hide = (f"scale=w='max(2,iw/{blocks})':h='max(2,ih/{blocks})',"
+                f"scale=w='iw*{blocks}':h='ih*{blocks}':flags=neighbor")
+    else:
+        sigma = max(3.0, min(width, height) * (0.006 + 0.04 * strength))
+        hide = f"gblur=sigma={sigma:.2f}:steps=2"
+    return [
+        f"{vin}split[cv{k}a][cv{k}b]",
+        f"[cv{k}b]{crop},{hide}[cb{k}]",
+        (f"[cv{k}a][cb{k}]overlay=x='max(0,min(main_w-overlay_w,main_w*{img.x:.4f}-overlay_w/2))'"
+         f":y='max(0,min(main_h-overlay_h,main_h*{img.y:.4f}-overlay_h/2))'"
+         f":enable='between(t,{img.start:.3f},{img.end:.3f})'[vo{k}]"),
+    ]
+
+
 def build_video_command(
     ffmpeg: str,
     clips: list[_ResolvedClip],
@@ -1491,6 +1526,9 @@ def build_video_command(
     # pictures: one looped still per overlay, only as long as it is needed
     image_inputs: list[int] = []
     for img in images or []:
+        if not img.is_picture():  # a cover box has no file: it works on the video itself
+            image_inputs.append(-1)
+            continue
         cmd += ["-loop", "1", "-framerate", str(fps), "-t", f"{min(img.end, total):.3f}",
                 "-i", str(img.path)]
         image_inputs.append(next_input)
@@ -1557,7 +1595,11 @@ def build_video_command(
 
     vout = "[vc]"
     # pictures go under the subtitles, each only between its start and end
-    for k, (img, idx) in enumerate(zip(images or [], image_inputs)):
+    for k, (img, idx) in enumerate(zip(images or [], image_inputs, strict=True)):
+        if not img.is_picture():
+            graph.extend(_cover_graph(img, k, vout, width, height))
+            vout = f"[vo{k}]"
+            continue
         graph.append(f"[{idx}:v]{_image_filter(img, width)}[im{k}]")
         graph.append(
             f"{vout}[im{k}]overlay=x='main_w*{img.x:.4f}-overlay_w/2'"

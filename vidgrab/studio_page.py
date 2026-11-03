@@ -29,9 +29,11 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import asdict, astuple, dataclass, field, replace
 from pathlib import Path
 
@@ -92,7 +94,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab import beats, cuda_runtime, effects, fx_preview, highlights, reframe
+from vidgrab import (
+    beats,
+    cuda_runtime,
+    effects,
+    fx_preview,
+    highlights,
+    reframe,
+    stickers,
+)
 from vidgrab.captions import DEFAULT_MODEL as DEFAULT_CAPTION_MODEL
 from vidgrab.captions import LANGUAGES as CAPTION_LANGUAGES
 from vidgrab.captions import MODELS as CAPTION_MODELS
@@ -112,6 +122,7 @@ from vidgrab.silence_dialog import SilenceDialog
 from vidgrab.split_dialog import SplitDialog
 from vidgrab.studio import (
     ANIMATIONS,
+    COVER_KINDS,
     IMAGE_EXTS,
     SPEED_RANGE,
     SUBTITLE_FONT_NAME,
@@ -1948,8 +1959,8 @@ class StudioPage(QWidget):
                                      "Add a subtitle line at the playhead")
         self.captions_btn = self._btn("Auto captions…", self.auto_captions,
                                       "Turn the speech in the clips into subtitle lines")
-        self.image_btn = self._btn("＋ Image…", self._browse_images,
-                                   "Show a picture over the video from the playhead")
+        self.image_btn = self._btn("＋ Image…", self._image_menu,
+                                   "Add a picture, a sticker, or a blur box over the video from the playhead")
         self.music_btn = self._btn("♪ Music…", self._browse_music, "Add background music")
         self.combine_btn = self._btn("Two videos…", self.combine_videos,
                                      "Play two videos at the same time, for example side by side")
@@ -3679,7 +3690,8 @@ class StudioPage(QWidget):
             list(self._clips),
             [(c.start, c.end, c.text) for c in self._cues] if self.is_video() else [],
             music if self.is_video() else None,
-            [(img.start, img.end, Path(img.path).name, self._image_thumb(img.path))
+            [(img.start, img.end, self._image_label(img),
+              self._image_thumb(img.path) if img.is_picture() else None)
              for img in self._images] if self.is_video() else [],
         )
         self._fit_timeline()
@@ -4495,7 +4507,8 @@ class StudioPage(QWidget):
         if paths:
             self.add_images(paths, at=at)
 
-    def add_images(self, paths: list[str], *, at: float | None = None) -> None:
+    def add_images(self, paths: list[str], *, at: float | None = None,
+                   tweak: Callable[[ImageOverlay], None] | None = None) -> None:
         """Add pictures from the playhead (or *at*), placed by what they look
         like: a cut-out with transparency (a logo, a sticker) goes small in a
         corner, a photo large in the middle. Several are shown one after another."""
@@ -4523,6 +4536,8 @@ class StudioPage(QWidget):
                 fit_w = min(0.8, 0.8 * frame_h / frame_w * pic.width() / max(1, pic.height()))
                 img.width = round(fit_w, 4)
                 img.fade = 0.3
+            if tweak is not None:
+                tweak(img)
             self._images.append(img)
             added = len(self._images) - 1
             t = img.end
@@ -4533,6 +4548,64 @@ class StudioPage(QWidget):
         self.select_image(added)
         self.preview.seek(self._images[added].start + 0.01)
         self._record()
+
+    def _image_label(self, img: ImageOverlay) -> str:
+        if img.kind == "blur":
+            return self.t("Blur")
+        if img.kind == "pixel":
+            return self.t("Pixelate")
+        stem = Path(img.path).stem
+        if stem.startswith("sticker-") and stem[8:] in stickers.NAMES:
+            return self.t(stickers.label(stem[8:]))
+        return Path(img.path).name
+
+    def _image_menu(self) -> None:
+        menu = QMenu(self)
+        menu.addAction(self.t("Picture from a file…"), self._browse_images)
+        menu.addSeparator()
+        menu.addAction(self.t("Blur box (hide a face or plate)"), lambda: self.add_cover("blur"))
+        menu.addAction(self.t("Pixelate box"), lambda: self.add_cover("pixel"))
+        menu.addSeparator()
+        sub = menu.addMenu(self.t("Sticker"))
+        for name in stickers.NAMES:
+            sub.addAction(self.t(stickers.label(name)), lambda n=name: self.add_sticker(n))
+        self._image_menu_obj = menu  # for tests
+        menu.exec(self.image_btn.mapToGlobal(self.image_btn.rect().bottomLeft()))
+
+    def add_cover(self, kind: str, *, at: float | None = None) -> None:
+        """A box that blurs / pixelates part of the picture from the playhead."""
+        total = self.track.total()
+        if total <= 0 or not self.is_video():
+            self.status.setText(self.t("Add at least one clip first."))
+            return
+        t = self.preview.position() if at is None else at
+        length = min(4.0, total)
+        start = round(min(max(0.0, t), max(0.0, total - length)), 2)
+        img = ImageOverlay("", start, round(min(start + length, total), 2), 0.5, 0.5, 0.3,
+                           kind=kind, height=0.2, strength=0.6)
+        self._images.append(img)
+        self._refresh_track()
+        self._push_images()
+        self.select_image(len(self._images) - 1)
+        self.preview.seek(img.start + 0.01)
+        self._record()
+
+    def add_sticker(self, name: str) -> None:
+        folder = Path(tempfile.gettempdir()) / "vidgrab-stickers"
+        target = self._autosave_path()
+        if target is not None:
+            folder = target.parent / "stickers"
+        try:
+            paths = stickers.ensure(folder)
+        except OSError as exc:
+            self.status.setText(str(exc))
+            return
+        def place(img: ImageOverlay) -> None:
+            img.width = 0.18  # stickers are punctuation: small, in the middle
+            img.x, img.y = 0.5, 0.5
+            img.fade = 0.2
+
+        self.add_images([paths[name]], tweak=place)
 
     def _first_video_size(self) -> tuple[int, int]:
         first = next((c for c in self._clips if c.has_video), None)
@@ -4577,6 +4650,8 @@ class StudioPage(QWidget):
                          rotation: float = 0.0) -> None:
         if 0 <= k < len(self._images):
             img = self._images[k]
+            if not img.is_picture() and img.width > 0:
+                img.height = round(min(max(img.height * width / img.width, 0.02), 1.0), 4)  # keeps its shape
             img.x, img.y, img.width, img.rotation = x, y, width, rotation
             self._sel = ("image", k)
             self._image_changed()
@@ -4614,17 +4689,29 @@ class StudioPage(QWidget):
         self.image_size.setRange(3, 200)
         self.image_size.valueChanged.connect(self._set_image_size)
         form.addRow(self._label("Size:"), srow)
+        self.image_height, hrow = self._level(20)
+        self.image_height.setRange(2, 100)
+        self.image_height.valueChanged.connect(self._set_image_height)
+        self.image_height_lbl = self._label("Height:")
+        form.addRow(self.image_height_lbl, hrow)
+        self.image_strength, trow = self._level(60)
+        self.image_strength.setRange(0, 100)
+        self.image_strength.valueChanged.connect(self._set_image_strength)
+        self.image_strength_lbl = self._label("Strength:")
+        form.addRow(self.image_strength_lbl, trow)
         self.image_opacity, orow = self._level(100)
         self.image_opacity.setRange(5, 100)
         self.image_opacity.valueChanged.connect(self._set_image_opacity)
-        form.addRow(self._label("Opacity:"), orow)
+        self.image_opacity_lbl = self._label("Opacity:")
+        form.addRow(self.image_opacity_lbl, orow)
         self.image_fade = QDoubleSpinBox()
         self.image_fade.setRange(0.0, 5.0)
         self.image_fade.setSingleStep(0.1)
         self.image_fade.setDecimals(1)
         self.image_fade.setSuffix(" s")
         self.image_fade.valueChanged.connect(self._set_image_fade)
-        form.addRow(self._label("Fade in / out:"), self.image_fade)
+        self.image_fade_lbl = self._label("Fade in / out:")
+        form.addRow(self.image_fade_lbl, self.image_fade)
         turn = QHBoxLayout()
         turn.setSpacing(6)
         self.image_rotation = QDoubleSpinBox()
@@ -4638,13 +4725,17 @@ class StudioPage(QWidget):
         for text, step, tip in (("↺ 90°", -90.0, "Turn left 90°"), ("↻ 90°", 90.0, "Turn right 90°")):
             b = self._btn(text, lambda _c=False, d=step: self._turn_image(d), tip)
             turn.addWidget(b)
-        form.addRow(self._label("Rotation:"), turn)
+        self.image_rotation_lbl = self._label("Rotation:")
+        form.addRow(self.image_rotation_lbl, turn)
+        self.image_form = form
         lay.addLayout(form)
-        lay.addWidget(self._label("MOVEMENT", "field_cap"))
+        self.image_move_cap = self._label("MOVEMENT", "field_cap")
+        lay.addWidget(self.image_move_cap)
         self.image_motion_btns: dict[str, QPushButton] = {}
-        lay.addWidget(self._choice_grid(
+        self.image_motion_grid = self._choice_grid(
             [("none", "Still"), ("zoom_in", "Zoom in"), ("zoom_out", "Zoom out")], 3,
-            self._set_image_motion, self.image_motion_btns))
+            self._set_image_motion, self.image_motion_btns)
+        lay.addWidget(self.image_motion_grid)
         lay.addWidget(self._label("POSITION", "field_cap"))
         pos_row = QHBoxLayout()
         pos_row.setSpacing(12)
@@ -4683,19 +4774,28 @@ class StudioPage(QWidget):
         if img is None:
             return
         self.image_name.setText(QFontMetricsF(self.image_name.font()).elidedText(
-            Path(img.path).name, Qt.ElideMiddle, max(120, self.insp.width() - 16)))
+            self._image_label(img), Qt.ElideMiddle, max(120, self.insp.width() - 16)))
         self.image_name.setToolTip(img.path)
+        cover = not img.is_picture()  # a blur / pixel box: height and strength, no picture options
+        for lbl, shown in ((self.image_height_lbl, cover), (self.image_strength_lbl, cover),
+                           (self.image_opacity_lbl, not cover), (self.image_fade_lbl, not cover),
+                           (self.image_rotation_lbl, not cover)):
+            self.image_form.setRowVisible(lbl, shown)
+        self.image_move_cap.setVisible(not cover)
+        self.image_motion_grid.setVisible(not cover)
         for key, value in (("start", img.start), ("end", img.end)):
             if not self.image_fields[key].hasFocus():
                 self.image_fields[key].setText(_fmt_precise(value))
         for w, v in ((self.image_size, round(img.width * 100)),
+                     (self.image_height, round(img.height * 100)),
+                     (self.image_strength, round(img.strength * 100)),
                      (self.image_opacity, round(img.opacity * 100)), (self.image_fade, img.fade),
                      (self.image_rotation, img.rotation)):
             w.blockSignals(True)
             w.setValue(v)
             w.blockSignals(False)
-        self._sync_level_label(self.image_size)
-        self._sync_level_label(self.image_opacity)
+        for w in (self.image_size, self.image_height, self.image_strength, self.image_opacity):
+            self._sync_level_label(w)
         for kind, b in self.image_motion_btns.items():
             b.setChecked(kind == img.motion)
 
@@ -4723,6 +4823,18 @@ class StudioPage(QWidget):
         if img is not None:
             img.width = value / 100
             self._image_changed("image_size")
+
+    def _set_image_height(self, value: int) -> None:
+        img = self._cur_image()
+        if img is not None:
+            img.height = value / 100
+            self._image_changed("image_height")
+
+    def _set_image_strength(self, value: int) -> None:
+        img = self._cur_image()
+        if img is not None:
+            img.strength = value / 100
+            self._image_changed("image_strength")
 
     def _set_image_opacity(self, value: int) -> None:
         img = self._cur_image()
@@ -5176,7 +5288,8 @@ class StudioPage(QWidget):
                        "denoise": c.denoise, "fx": effects.sanitize(c.fx)}
                       for c in self._clips],
             "subtitles": [asdict(c) for c in self._cues],
-            "images": [{**ref(img.path), **{k: v for k, v in asdict(img).items() if k != "path"}}
+            "images": [{**(ref(img.path) if img.is_picture() else {"path": ""}),
+                        **{k: v for k, v in asdict(img).items() if k != "path"}}
                        for img in self._images],
             "music": music,
             "music_options": {"original_volume": self.orig_vol.value(),
@@ -5306,8 +5419,10 @@ class StudioPage(QWidget):
         img_fields = set(ImageOverlay.__dataclass_fields__) - {"path"}
         images = []
         for m in data.get("images") or []:
-            found = find(m) if isinstance(m, dict) else ""
-            if found:
+            found = find(m) if isinstance(m, dict) and m.get("kind", "image") == "image" else ""
+            if isinstance(m, dict) and m.get("kind") in COVER_KINDS:  # a box has no file to find
+                images.append(astuple(ImageOverlay("", **{k: v for k, v in m.items() if k in img_fields})))
+            elif found:
                 images.append(astuple(ImageOverlay(found, **{k: v for k, v in m.items()
                                                              if k in img_fields})))
         self._load_state({"clips": clips, "cues": cues, "music": songs, "images": images,

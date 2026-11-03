@@ -10,10 +10,11 @@ a working OpenGL context, which many Linux / WSLg setups don't have.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QUrl, Signal
 from PySide6.QtGui import (
+    QBrush,
     QColor,
     QCursor,
     QFont,
@@ -358,9 +359,12 @@ class VideoCanvas(QWidget):
         return img
 
     def _image_box(self, img: ImageOverlay, rect: QRectF) -> QRectF:
-        pic = self.picture(img.path)
         w = rect.width() * img.width
-        h = w * pic.height() / max(1, pic.width()) if not pic.isNull() else w
+        if not img.is_picture():  # a blur / pixel box has its own height
+            h = rect.height() * img.height
+        else:
+            pic = self.picture(img.path)
+            h = w * pic.height() / max(1, pic.width()) if not pic.isNull() else w
         cx, cy = rect.x() + img.x * rect.width(), rect.y() + img.y * rect.height()
         return QRectF(cx - w / 2, cy - h / 2, w, h)
 
@@ -371,9 +375,9 @@ class VideoCanvas(QWidget):
         for row, img in self._images:
             if self._img_drag is not None and self._img_drag[0] == row and self._img_live:
                 x, y, w, rot = self._img_live
-                img = ImageOverlay(img.path, img.start, img.end, x, y, w,
-                                   opacity=img.opacity, fade=img.fade, rotation=rot)
-            pic = self.picture(img.path)
+                img = replace(img, x=x, y=y, width=w, rotation=rot,
+                              height=img.height * w / max(img.width, 1e-6))
+            pic = self.picture(img.path) if img.is_picture() else QImage()
             box = self._image_box(img, rect)
             level = img.opacity
             if img.fade > 0 and self._img_drag is None:
@@ -387,21 +391,40 @@ class VideoCanvas(QWidget):
             p.setOpacity(level)
             if not pic.isNull():
                 p.drawImage(local, pic)
+            elif not img.is_picture():  # a marker for what gets hidden: frosted, hatched, labelled
+                self._paint_cover(p, local, img)
             p.setOpacity(1.0)
             grip = QRectF(local.right() - 7, local.bottom() - 7, 14, 14)
             knob = QRectF(-7, local.top() - 30, 14, 14)
+            if not img.is_picture():
+                knob = QRectF(-1e6, -1e6, 0, 0)  # a box does not turn
             if row == self._selected_image:
                 p.setPen(QPen(QColor(self._colors["accent"]), 1.5, Qt.DashLine))
                 p.setBrush(Qt.NoBrush)
                 p.drawRect(local)
-                p.drawLine(QPointF(0, local.top()), QPointF(0, knob.bottom()))
+                if img.is_picture():
+                    p.drawLine(QPointF(0, local.top()), QPointF(0, knob.bottom()))
                 p.setPen(QPen(QColor("#ffffff"), 1.2))
                 p.setBrush(QColor(self._colors["accent"]))
                 p.drawRect(grip)
-                p.drawEllipse(knob)
+                if img.is_picture():
+                    p.drawEllipse(knob)
             p.restore()
             self._img_hits.append((row, box, img.rotation, grip, knob))
         p.restore()
+
+    def _paint_cover(self, p: QPainter, local: QRectF, img: ImageOverlay) -> None:
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, 60))
+        p.drawRect(local)
+        p.setBrush(QBrush(QColor(255, 255, 255, 90), Qt.BDiagPattern))
+        p.drawRect(local)
+        p.setPen(QColor(255, 255, 255, 220))
+        font = p.font()
+        font.setPixelSize(max(10, min(int(local.height() * 0.3), 18)))
+        font.setBold(True)
+        p.setFont(font)
+        p.drawText(local, Qt.AlignCenter, "blur" if img.kind == "blur" else "pixels")
 
     @staticmethod
     def _to_local(pos: QPointF, box: QRectF, rotation: float) -> QPointF:

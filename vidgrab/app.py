@@ -72,7 +72,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab import __version__, ffmpeg_fetch, opener, suggest, ytdlp_update
+from vidgrab import (
+    __version__,
+    ffmpeg_fetch,
+    opener,
+    suggest,
+    update_check,
+    ytdlp_update,
+)
 from vidgrab.captions import default_models_dir, detect_gpus, speech_device, transcribe
 from vidgrab.downloader import (
     AUDIO_FORMATS,
@@ -950,6 +957,7 @@ DEFAULT_SETTINGS: dict = {
     "cookies_browser": "",  # borrow this browser's login ("" = none)
     "online_suggest": True,  # offer YouTube's own search suggestions while typing in the link box
     "recent_searches": [],  # what was typed into the link box to search YouTube, newest first
+    "update_check": True,  # tell me when a newer VidGrab is out (one quiet request to github.com)
     "ytdlp_check": True,  # look for a newer yt-dlp when the app starts
     "ui_font": "jakarta",  # a key of UI_FONTS (bundled), or "system" (the computer's own font)
 }
@@ -1439,6 +1447,19 @@ class _FfmpegThread(QThread):
             self.failed.emit(str(exc))
 
 
+class _ReleaseThread(QThread):
+    found = Signal(dict)
+
+    def __init__(self, proxy: str) -> None:
+        super().__init__()
+        self._proxy = proxy
+
+    def run(self) -> None:
+        news = update_check.latest_release(proxy=self._proxy)
+        if news:
+            self.found.emit(news)
+
+
 class _YtdlpThread(QThread):
     """Ask PyPI for a newer yt-dlp ("check"), or download and unpack it ("update")."""
 
@@ -1819,6 +1840,8 @@ class VidGrabWindow(QMainWindow):
             QTimer.singleShot(1200, self.probe_hardware)
             if not find_ffmpeg():  # the macOS app / a pip install: fetch it once
                 QTimer.singleShot(900, self._offer_ffmpeg)
+            if self.setting("update_check"):
+                QTimer.singleShot(6000, self.check_for_release)
             if self.setting("ytdlp_check") and self._can_update_ytdlp:  # one quiet request to pypi.org
                 QTimer.singleShot(4000, lambda: self._start_ytdlp("check", quiet=True))
 
@@ -2013,6 +2036,12 @@ class VidGrabWindow(QMainWindow):
         self._update_note.clicked.connect(self._update_note_clicked)
         self._update_note.hide()
         lay.addWidget(self._update_note, alignment=Qt.AlignLeft)
+        self._release_note = QPushButton()  # only shown when a newer VidGrab was released
+        self._release_note.setObjectName("secondary")
+        self._release_note.setCursor(QCursor(_HAND))
+        self._release_note.clicked.connect(lambda: self.open_url(update_check.PAGE))
+        self._release_note.hide()
+        lay.addWidget(self._release_note, alignment=Qt.AlignLeft)
 
         body = QHBoxLayout()
         body.setSpacing(14)
@@ -2575,6 +2604,12 @@ class VidGrabWindow(QMainWindow):
         self._set_ytdlp_auto.toggled.connect(lambda on: self.set_setting("ytdlp_check", on))
         self._trw(self._set_ytdlp_auto, "Look for a newer version when VidGrab starts")
         yl.addWidget(self._set_ytdlp_auto)
+        self._set_release_auto = QCheckBox()
+        self._set_release_auto.setCursor(QCursor(_HAND))
+        self._set_release_auto.setChecked(bool(self.setting("update_check")))
+        self._set_release_auto.toggled.connect(lambda on: self.set_setting("update_check", on))
+        self._trw(self._set_release_auto, "Tell me when a new VidGrab is out")
+        yl.addWidget(self._set_release_auto)
         yhint = QLabel()
         yhint.setObjectName("hint")
         yhint.setWordWrap(True)
@@ -2786,6 +2821,24 @@ class VidGrabWindow(QMainWindow):
         self._ytdlp_info = None
         self._ytdlp_say(self._t("The built-in version will be used after you restart VidGrab."))
         self._refresh_ytdlp()
+
+    def check_for_release(self) -> None:
+        """Ask (in the background) whether a newer VidGrab was released."""
+        if getattr(self, "_release_thread", None) is not None and self._release_thread.isRunning():
+            return
+        self._release_thread = _ReleaseThread(NETWORK.proxy)
+        self._release_thread.found.connect(self._on_release)
+        self._release_thread.start()
+
+    def _on_release(self, news: dict) -> None:
+        self._release_info = news
+        self._release_note.setText(self._t("VidGrab {v} is out — see what is new", v=news["version"]))
+        self._release_note.setToolTip(news.get("notes", ""))
+        self._release_note.show()
+
+    def open_url(self, url: str) -> None:
+        if not opener.open_url(url):
+            QDesktopServices.openUrl(QUrl(url))
 
     def _update_note_clicked(self) -> None:
         self._sidebar.set_page(PAGE_SETTINGS) if hasattr(self._sidebar, "set_page") else None

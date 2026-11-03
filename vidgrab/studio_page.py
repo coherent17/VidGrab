@@ -2945,6 +2945,19 @@ class StudioPage(QWidget):
         lut.addWidget(self.fx_lut_clear)
         lay.addLayout(lut)
 
+        lay.addWidget(self._label("REMOVE BACKGROUND", "field_cap"))
+        self.fx_cutout = QCheckBox()
+        self.fx_cutout.setCursor(QCursor(_HAND))
+        self._tr(self.fx_cutout, "Cut out the person (no green sheet needed)")
+        self._tr(self.fx_cutout, "Finds the person or main object in every frame and replaces everything "
+                 "behind it with the background picture below (black if none). Works best with one "
+                 "subject filling a good part of the picture. Done while rendering, so the preview "
+                 "does not show it; the Effects pictures do not either.", "setToolTip")
+        self.fx_cutout.toggled.connect(lambda on: self._fx_set("cutout", on))
+        lay.addWidget(self.fx_cutout)
+        lay.addWidget(self._label(
+            "Takes a while: about three times the length of the clip on a normal computer. "
+            "Needs the speech add-on; a small model downloads once.", "hint"))
         lay.addWidget(self._label("GREEN SCREEN", "field_cap"))
         self.fx_key = QCheckBox()
         self.fx_key.setCursor(QCursor(_HAND))
@@ -3012,8 +3025,14 @@ class StudioPage(QWidget):
             return
         fx = dict(clip.fx)
         fx[key] = value
-        if key == "key" and not value:
+        if key == "key" and not value and not fx.get("cutout"):
             fx["key_bg"] = ""
+        if key == "cutout" and not value and not fx.get("key"):
+            fx["key_bg"] = ""
+        if key == "cutout" and value:
+            fx["key"] = ""  # one way of cutting out at a time
+        if key == "key" and value:
+            fx["cutout"] = False
         clip.fx = effects.sanitize(fx)
         self._fill_clip_fx()
         self._fx_timer.start()
@@ -3054,6 +3073,7 @@ class StudioPage(QWidget):
             self.fx_stab.setChecked(fx["stabilize"])
             self.fx_smooth.setChecked(fx["smooth"])
             self.fx_key.setChecked(bool(fx["key"]))
+            self.fx_cutout.setChecked(bool(fx["cutout"]))
             for value, b in self.fx_key_btns.items():
                 b.setAutoExclusive(False)
                 b.setChecked(value == fx["key"])
@@ -3061,8 +3081,10 @@ class StudioPage(QWidget):
         finally:
             self._fx_busy = False
         on = bool(fx["key"])
-        for w in (*self.fx_key_widgets, self.fx_sliders["key_similarity"]):
+        for w in (self.fx_key_box, self.fx_sliders["key_similarity"]):
             w.setEnabled(on)
+        for w in (self.fx_bg_btn, self.fx_bg_clear):  # the picture behind works for both kinds of cut-out
+            w.setEnabled(on or bool(fx["cutout"]))
         self.fx_lut_clear.setVisible(bool(fx["lut"]))
         self.fx_lut_btn.setText(Path(fx["lut"]).name if fx["lut"] else self.t("Colour look file…"))
         self.fx_bg_clear.setVisible(bool(fx["key_bg"]))
@@ -5931,6 +5953,7 @@ class StudioPage(QWidget):
                 "hardware": bool(self.host.setting("gpu_render"))
                 if hasattr(self.host, "setting") else False,
                 "normalize_loudness": self.loud_cb.isChecked(),
+                "models_dir": self.host.models_dir() if hasattr(self.host, "models_dir") else None,
             })
         else:
             ext = self.afmt.currentData() or ".mp3"

@@ -30,7 +30,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 12  # the suite takes ~3 minutes; a hang should not hold a runner for 20
     # macOS is new here and could only be tried on GitHub's runners: report it,
     # but don't block a release on it until it has proven stable
     continue-on-error: ${{ matrix.os == 'macos-latest' }}

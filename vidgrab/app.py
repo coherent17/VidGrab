@@ -1568,6 +1568,7 @@ class _Worker(QThread):
                     quality=self._kw.get("render_quality", "balanced"),
                     hardware=bool(self._kw.get("hardware")),
                     normalize_loudness=bool(self._kw.get("normalize_loudness")),
+                    models_dir=self._kw.get("models_dir"),
                     on_progress=self._cb_progress,
                     on_log=self._cb_log,
                     translate=self._kw.get("translate"),

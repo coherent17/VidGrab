@@ -51,6 +51,7 @@ DEFAULT_FX: dict = {
     **{k: v[0] for k, v in RANGES.items()},
     "lut": "",  # a .cube file
     "stabilize": False,
+    "cutout": False,  # remove the background (a matte made at render time, see vidgrab.matting)
     "smooth": False,  # fill in frames when the clip plays slower than normal
     "key": "",  # '#RRGGBB' colour to make see-through (green screen)
     "key_bg": "",  # picture shown behind it (empty = black)
@@ -84,7 +85,7 @@ def sanitize(fx: dict | None) -> dict:
             value = _follow_keys(value)
         elif key == "keys":
             value = _zoom_keys(value)
-        elif key in ("stabilize", "smooth"):
+        elif key in ("stabilize", "smooth", "cutout"):
             value = bool(value)
         elif key == "key":
             value = value if isinstance(value, str) and _HEX.match(value) else ""
@@ -92,7 +93,7 @@ def sanitize(fx: dict | None) -> dict:
             value = value if isinstance(value, str) else ""
         if value != DEFAULT_FX[key]:
             out[key] = value
-    if "key_bg" in out and "key" not in out:
+    if "key_bg" in out and "key" not in out and "cutout" not in out:
         del out["key_bg"]
     return out
 

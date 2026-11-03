@@ -297,6 +297,7 @@ class _ResolvedClip:
     fx: dict = field(default_factory=dict)
     trf: str | None = None  # stabilising data file in the render's work folder
     lut: str | None = None  # .cube file in the render's work folder
+    matte: str | None = None  # grey matte video in the render's work folder (remove background)
 
     @property
     def out_duration(self) -> float:
@@ -1521,8 +1522,9 @@ def build_video_command(
 
     # green-screen clips: what shows through them (a picture, or black)
     key_inputs: dict[int, int] = {}
+    matte_inputs: dict[int, int] = {}
     for i, c in enumerate(clips):
-        if not effects.key_filter(c.fx):
+        if not (effects.key_filter(c.fx) or c.matte):
             continue
         bg = c.fx.get("key_bg")
         if bg:
@@ -1532,6 +1534,10 @@ def build_video_command(
                     "-i", f"color=c=black:s={width}x{height}:r={fps}"]
         key_inputs[i] = next_input
         next_input += 1
+        if c.matte:
+            cmd += ["-i", str(c.matte)]
+            matte_inputs[i] = next_input
+            next_input += 1
 
     # pictures: one looped still per overlay, only as long as it is needed
     image_inputs: list[int] = []
@@ -1564,11 +1570,21 @@ def build_video_command(
         # ffmpeg 7.0's setpts forgets the frame rate, which xfade requires:
         # restate it, then put every input on one timebase
         tail = f",fps={fps},settb=AVTB" if any(overlaps) else ""
-        head = (f"[{i}:v:0]{effects.source_chain(c.fx, trf_name=c.trf, lut_name=c.lut)}"
-                + (effects.key_filter(c.fx) + "," if keyed else ""))
-        if keyed:  # the clip, see-through where the colour was, over its background
+        key = effects.key_filter(c.fx)
+        head = f"[{i}:v:0]{effects.source_chain(c.fx, trf_name=c.trf, lut_name=c.lut)}" + (key + "," if key else "")
+        if keyed and i in matte_inputs:  # background removed: the matte is the clip's alpha
+            graph.append(f"{head}{_frame_filter(c, width, height)},setsar=1,{speed}"
+                         f"fps={fps},format=yuv420p,setpts=PTS-STARTPTS[kc{i}]")
+            # the matte goes through the same framing, speed and frame rate as the picture,
+            # softened a little and pushed towards 0 / 1 so the edge is clean
+            graph.append(f"[{matte_inputs[i]}:v]scale={c.width or width}:{c.height or height}:flags=bicubic,"
+                         f"{_frame_filter(c, width, height)},setsar=1,{speed}fps={fps},"
+                         f"gblur=sigma=1.2,lut=y='clip((val-70)*2.4,0,255)',format=gray,setpts=PTS-STARTPTS[km{i}]")
+            graph.append(f"[kc{i}][km{i}]alphamerge,format=yuva420p[k{i}]")
+        elif keyed:  # the clip, see-through where the colour was, over its background
             graph.append(f"{head}{_frame_filter(c, width, height, 'black@0')},setsar=1,{speed}"
                          f"fps={fps},format=yuva420p,setpts=PTS-STARTPTS[k{i}]")
+        if keyed:  # (either way) what shows through: the clip's background picture, or black
             graph.append(f"[{key_inputs[i]}:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
                          f"crop={width}:{height},setsar=1,fps={fps},format=yuv420p,setpts=PTS-STARTPTS[kb{i}]")
             graph.append(f"[kb{i}][k{i}]overlay=shortest=1,format=yuv420p,setpts=PTS-STARTPTS{tail}[v{i}]")
@@ -1862,6 +1878,7 @@ def _prepare_effects(
     on_progress: ProgressCallback | None,
     on_log: LogCallback | None,
     translate: TranslateFn | None,
+    models_dir: str | Path | None = None,
 ) -> list[_ResolvedClip]:
     """Do what the effects need before the render: analyse shaky clips (one
     pass each, written to *work*) and copy colour-look files next to the
@@ -1876,7 +1893,19 @@ def _prepare_effects(
                 c = replace(c, lut=f"lut{k}.cube")
             elif on_log:
                 on_log(tr("File not found: {src}", src=lut))
-        if c.fx.get("stabilize") and c.has_video:
+        if c.fx.get("cutout") and c.has_video:
+            from vidgrab import matting  # (onnxruntime is optional)
+
+            if models_dir is None or not matting.available():
+                if on_log:
+                    on_log(tr("Removing the background needs the speech add-on (onnxruntime), which this "
+                              "installation doesn't have."))
+            else:
+                name = f"matte{k}.mkv"
+                matting.make_matte(c.path, c.start, c.start + c.duration, work / name, models_dir,
+                                   on_progress=on_progress, translate=translate)
+                c = replace(c, matte=name)
+        if c.fx.get("stabilize") and c.has_video and not c.matte:  # (the matte would not follow the shake fix)
             name = f"stab{k}.trf"
             _run_with_progress(
                 [ffmpeg, "-y", *_input_args(c), "-an", "-vf", effects.detect_filter(name),
@@ -1902,6 +1931,7 @@ def compose_video(
     gif_fps: int = 15,
     hardware: bool = False,
     normalize_loudness: bool = False,
+    models_dir: str | Path | None = None,
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
     translate: TranslateFn | None = None,
@@ -1953,7 +1983,7 @@ def compose_video(
                 shutil.copy2(font, work / "fonts" / font.name)
                 fonts_name = "fonts"
         resolved = _prepare_effects(resolved, ffmpeg, work, on_progress=on_progress,
-                                    on_log=on_log, translate=translate)
+                                    on_log=on_log, translate=translate, models_dir=models_dir)
         # GIF / audio-only exports: render the video first, then convert it
         kind = out.suffix.lower()
         render_to = out if kind == ".mp4" else work / "render.mp4"

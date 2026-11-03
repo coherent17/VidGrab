@@ -186,6 +186,31 @@ TOPICS: list[tuple[str, str, str | None, dict[str, str], dict[str, str]]] = [
             "<li>選取檔案後，按<b>傳送到 Studio</b>編輯、<b>壓縮／轉檔…</b>在工具中開啟，或<b>在資料夾中顯示</b>。</li>"
             "<li>雙擊檔案即可播放。<b>刪除</b>一律會先詢問。</li></ol>"
             "<p>顯示的是設定中選擇的資料夾，包含一層子資料夾。</p>"}),
+    ("studio_more_tools", "studio", "studio",
+     {"en": "Blur boxes, stickers, zoom keyframes, beat cuts and background removal", "zh": "模糊方塊、貼圖、縮放關鍵影格、對拍剪輯與移除背景"},
+     {"en": "<ul><li><b>Hide a face or a plate:</b> <i>＋ Image…</i> → <b>Blur box</b> or <b>Pixelate box</b>. "
+            "Drag it over the spot, pull its corner to resize, and set <i>Strength</i> and the time it is on. "
+            "It sits in the Images row.</li>"
+            "<li><b>Stickers:</b> <i>＋ Image…</i> → <b>Sticker</b> gives an arrow, ring, star, heart, speech bubble, "
+            "check, cross or sparkle. They are ordinary pictures: move, resize, rotate and fade them.</li>"
+            "<li><b>Zoom keyframes</b> (clip → Frame tab): move the playhead, press <b>Add keyframe here</b>, then set "
+            "the zoom and where to aim. The picture glides between keyframes, for example a slow push-in on the "
+            "punchline.</li>"
+            "<li><b>Cut to the beat</b> (Music tab): with two or more clips and a song, trims each clip so every cut "
+            "lands on a beat. Plain cuts only (no transitions).</li>"
+            "<li><b>Remove background</b> (clip → Effects tab): cuts the person out without a green sheet and puts "
+            "the background picture (or black) behind. It is done while rendering and takes about three times "
+            "the clip's length.</li></ul>",
+      "zh": "<ul><li><b>遮住臉或車牌：</b><i>＋ 圖片…</i> → <b>模糊方塊</b>或<b>馬賽克方塊</b>。把它拖到要遮的地方、"
+            "拉角落調整大小，並設定<i>強度</i>與出現的時間。它會出現在圖片列。</li>"
+            "<li><b>貼圖：</b><i>＋ 圖片…</i> → <b>貼圖</b>有箭頭、圓圈、星星、愛心、對話框、打勾、打叉與閃光。"
+            "它們就是一般圖片：可以移動、縮放、旋轉與淡入淡出。</li>"
+            "<li><b>縮放關鍵影格</b>（片段 → 畫面頁籤）：移動播放頭，按<b>在此加入關鍵影格</b>，再設定縮放與對準位置。"
+            "畫面會在關鍵影格之間平順變化，例如在重點處緩緩推近。</li>"
+            "<li><b>對拍剪輯</b>（音樂頁籤）：有兩個以上的片段和一首歌時，修剪每個片段，讓每個剪接點都落在節拍上。"
+            "僅適用於一般剪接（無轉場）。</li>"
+            "<li><b>移除背景</b>（片段 → 效果頁籤）：不用綠幕就能把人物摳出來，後面放背景圖片（或黑色）。"
+            "在輸出時處理，大約需要片段長度的三倍時間。</li></ul>"}),
     ("tools_short", "more", "tools",
      {"en": "Make a Short in one click", "zh": "一鍵做成短影片"},
      {"en": "<ol><li>Open <b>Tools</b> and choose <b>Make a Short</b> (it is the first one).</li>"

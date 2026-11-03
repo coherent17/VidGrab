@@ -92,7 +92,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab import cuda_runtime, effects, fx_preview, highlights, reframe
+from vidgrab import beats, cuda_runtime, effects, fx_preview, highlights, reframe
 from vidgrab.captions import DEFAULT_MODEL as DEFAULT_CAPTION_MODEL
 from vidgrab.captions import LANGUAGES as CAPTION_LANGUAGES
 from vidgrab.captions import MODELS as CAPTION_MODELS
@@ -304,6 +304,29 @@ class _BestTask(QRunnable):
             self._relay.done.emit(self._i, 0.0, 0.0, str(exc))
             return
         self._relay.done.emit(self._i, a, b, "")
+
+
+class _BeatRelay(QObject):
+    done = Signal(float, list, str)  # BPM, beat times on the montage timeline, error
+
+
+class _BeatTask(QRunnable):
+    """Find the beats of a song (Cut to the beat)."""
+
+    def __init__(self, relay: _BeatRelay, path: str, start: float, end: float | None, offset: float) -> None:
+        super().__init__()
+        self._relay, self._args, self._offset = relay, (path, start, end), offset
+
+    def run(self) -> None:
+        try:
+            found = beats.detect(*self._args)
+        except Exception as exc:  # noqa: BLE001 - shown to the user
+            self._relay.done.emit(0.0, [], str(exc))
+            return
+        if found is None:
+            self._relay.done.emit(0.0, [], "")
+            return
+        self._relay.done.emit(found.bpm, [round(self._offset + t, 3) for t in found.times], "")
 
 
 class ThumbCache(QObject):
@@ -2761,6 +2784,10 @@ class StudioPage(QWidget):
         self._best_pool.setMaxThreadCount(1)
         self._best_relay = _BestRelay(self)
         self._best_relay.done.connect(self._best_done)
+        self._beat_pool = QThreadPool(self)
+        self._beat_pool.setMaxThreadCount(1)
+        self._beat_relay = _BeatRelay(self)
+        self._beat_relay.done.connect(self._beat_done)
         self._follow_pool = QThreadPool(self)
         self._follow_pool.setMaxThreadCount(1)
         self._follow_cancel = threading.Event()
@@ -3324,6 +3351,13 @@ class StudioPage(QWidget):
         cut.addRow(self._label("Fade in / out:"), self.song_fade)
         lay.addLayout(cut)
 
+        lay.addWidget(self._label("CUT TO THE BEAT", "field_cap"))
+        self.beat_btn = self._btn("Cut clips to the beat", self.cut_to_beat,
+                                  "Moves each cut a little so it lands on this song's beat")
+        lay.addWidget(self.beat_btn)
+        lay.addWidget(self._label(
+            "Listens to the song and trims the clips so every cut lands on a beat. "
+            "Works with plain cuts (no transitions).", "hint"))
         lay.addWidget(self._label("ALL MUSIC", "field_cap"))
         self.orig_vol, ov = self._level(100)
         self.orig_vol.valueChanged.connect(lambda _v: (self._push_music(), self._record("orig_vol")))
@@ -4827,6 +4861,52 @@ class StudioPage(QWidget):
         self.status.setText(self.t("Kept the best {n} seconds ({a} – {b}).", n=round(end - start),
                                    a=fmt_time(start), b=fmt_time(end)))
 
+    def _beat_song(self) -> _Song | None:
+        if self._sel and self._sel[0] == "music" and 0 <= self._sel[1] < len(self._songs):
+            return self._songs[self._sel[1]]
+        return self._songs[0] if self._songs else None
+
+    def cut_to_beat(self) -> None:
+        song = self._beat_song()
+        if song is None or len(self._clips) < 2 or not self.is_video():
+            self.status.setText(self.t("Add at least two clips and a song first."))
+            return
+        if any(c.transition != "none" for c in self._clips[1:]):
+            self.status.setText(self.t("Cut to the beat works with plain cuts: set the transitions to None first."))
+            return
+        if not beats.available():
+            self.status.setText(self.t("Beat finding needs the speech add-on (numpy), which this "
+                                       "installation doesn't have."))
+            return
+        self.beat_btn.setEnabled(False)
+        self.status.setText(self.t("Listening for the beat…"))
+        start, end = song.span()
+        self._beat_pool.start(_BeatTask(self._beat_relay, song.path, start, end, song.offset))
+
+    def _beat_done(self, bpm: float, times: list, err: str) -> None:
+        self.beat_btn.setEnabled(True)
+        if err or not times:
+            self.status.setText(self.t("Could not find a clear beat in this song.") if not err
+                                else self.t("Could not analyse the sound: {err}", err=err))
+            return
+        before = [c.kept() for c in self._clips]
+        after = beats.snap_durations(before, [t for t in times if t >= 0])
+        changed = 0
+        for clip, new in zip(self._clips, after, strict=True):
+            start = clip.span()[0]
+            new_end = round(start + new * clip.speed, 3)
+            if clip.length:
+                new_end = min(new_end, clip.length)
+            if abs(new_end - clip.span()[1]) > 0.01:
+                clip.end = new_end
+                changed += 1
+        if not changed:
+            self.status.setText(self.t("The cuts already sit on the beat ({bpm} BPM).", bpm=round(bpm)))
+            return
+        self._project_changed()
+        self._record("beat")
+        self.status.setText(self.t("Cut {n} clips to the beat ({bpm} BPM).", n=changed, bpm=round(bpm)))
+
     def cut_ranges(self, i: int, keeps: list[tuple[float, float]]) -> None:
         """Replace clip *i* by one clip per kept (start, end); only the first
         keeps the transition in."""
@@ -5323,6 +5403,8 @@ class StudioPage(QWidget):
         self._follow_cancel.set()
         self._best_pool.clear()
         self._best_pool.waitForDone(3000)
+        self._beat_pool.clear()
+        self._beat_pool.waitForDone(3000)
         self._follow_pool.clear()
         self._follow_pool.waitForDone(3000)
         self.fx_pool.clear()

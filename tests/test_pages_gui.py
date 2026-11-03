@@ -100,6 +100,24 @@ def test_tools_shrink_runs_in_the_background(win, qapp) -> None:
     assert out.is_file() and tp.status.text().startswith("Done") and tp.show_btn.isVisibleTo(tp)
 
 
+def test_tools_make_a_short_renders_vertical_and_reports_progress(win, qapp, monkeypatch) -> None:
+    w, _m, media = win
+    monkeypatch.setattr(w, "models_dir", lambda: media)
+    tp = w._tools
+    assert tp._tool == "short"  # the first tile
+    tp.set_file(str(media / "clip one.mp4"))
+    tp.short_follow.setChecked(False)
+    tp.short_caps.setChecked(False)
+    tp.run_btn.click()
+    assert tp.run_btn.text() == "Cancel"
+    assert _wait(qapp, lambda: not tp._running, 60)
+    out = media / "clip one (short).mp4"
+    assert out.is_file() and tp.status.text().startswith("Done")
+    from vidgrab import studio
+
+    assert studio.probe_media(out)["duration"] > 2
+
+
 def test_tools_convert_gif_audio_and_thumbnail(win, qapp) -> None:
     w, _m, media = win
     tp = w._tools

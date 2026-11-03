@@ -103,6 +103,17 @@ PAUSE_S = 0.7  # a silence this long starts a new line
 MIN_LINE_S = 0.8
 
 
+def default_models_dir() -> Path:
+    """The speech models (hundreds of MB, downloaded again on demand) live in
+    the local cache, not the config folder: on Windows that one is the
+    *roaming* profile, which managed accounts sync to a server."""
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA", str(Path.home())))
+        return base / "VidGrab" / "models"
+    base = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+    return base / "vidgrab" / "models"
+
+
 @dataclass
 class CaptionSource:
     """One clip's kept part: source *start*..*end* seconds (end None = to the

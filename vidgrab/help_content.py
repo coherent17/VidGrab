@@ -186,6 +186,25 @@ TOPICS: list[tuple[str, str, str | None, dict[str, str], dict[str, str]]] = [
             "<li>選取檔案後，按<b>傳送到 Studio</b>編輯、<b>壓縮／轉檔…</b>在工具中開啟，或<b>在資料夾中顯示</b>。</li>"
             "<li>雙擊檔案即可播放。<b>刪除</b>一律會先詢問。</li></ol>"
             "<p>顯示的是設定中選擇的資料夾，包含一層子資料夾。</p>"}),
+    ("tools_short", "more", "tools",
+     {"en": "Make a Short in one click", "zh": "一鍵做成短影片"},
+     {"en": "<ol><li>Open <b>Tools</b> and choose <b>Make a Short</b> (it is the first one).</li>"
+            "<li>Choose a long video (or drop one on the window).</li>"
+            "<li>Pick 15, 30 or 60 seconds. Shorts, Reels and TikTok stop at 60.</li>"
+            "<li>Press <b>Start</b>. VidGrab listens for the liveliest part, makes it vertical (9:16), "
+            "keeps the main face in the picture, adds word-by-word captions and evens out the sound.</li></ol>"
+            "<p>Face tracking and captions can be switched off. Both use the speech add-on; the speech model "
+            "downloads once. If one of them cannot run, you still get your Short without it. "
+            "Want to change something? Open the result in the Studio. From a terminal: "
+            "<code>vidgrab short FILE --seconds 30</code>.</p>",
+      "zh": "<ol><li>開啟<b>工具</b>，選擇<b>做成短影片</b>（第一個）。</li>"
+            "<li>選擇一支長影片（或把檔案拖到視窗上）。</li>"
+            "<li>選擇 15、30 或 60 秒。Shorts、Reels 與 TikTok 最長 60 秒。</li>"
+            "<li>按<b>開始</b>。VidGrab 會找出最精彩的片段、轉成直式（9:16）、讓主要人臉留在畫面中、"
+            "加上逐字字幕並整平音量。</li></ol>"
+            "<p>人臉追蹤與字幕可以關閉。兩者都需要語音附加元件；語音模型只會下載一次。"
+            "若其中一項無法執行，仍會輸出沒有它的短影片。想再調整？在剪輯工作室開啟結果即可。"
+            "終端機指令：<code>vidgrab short FILE --seconds 30</code>。</p>"}),
     ("tools_shrink", "more", "tools",
      {"en": "Make a video fit a size limit", "zh": "讓影片符合大小限制"},
      {"en": "<ol><li>Open <b>Tools</b> and choose <b>Shrink to a size</b>.</li>"

@@ -73,7 +73,7 @@ from PySide6.QtWidgets import (
 )
 
 from vidgrab import __version__, ffmpeg_fetch, opener, suggest, ytdlp_update
-from vidgrab.captions import detect_gpus, speech_device, transcribe
+from vidgrab.captions import default_models_dir, detect_gpus, speech_device, transcribe
 from vidgrab.downloader import (
     AUDIO_FORMATS,
     BROWSERS,
@@ -915,14 +915,8 @@ def _config_dir() -> Path:
 
 
 def _models_dir() -> Path:
-    """The speech models (hundreds of MB, downloaded again on demand) live in
-    the local cache, not the config folder: on Windows that one is the
-    *roaming* profile, which managed accounts sync to a server."""
-    if sys.platform == "win32":
-        base = Path(os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA", str(Path.home())))
-        return base / "VidGrab" / "models"
-    base = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
-    return base / "vidgrab" / "models"
+    """The speech models live in the local cache (see captions.default_models_dir)."""
+    return default_models_dir()
 
 
 # every persisted setting with its default; config.json may hold any subset
@@ -1619,7 +1613,7 @@ _PAGE_HEADERS: list[tuple[str, str]] = [
     ("Download", "Grab videos, playlists and music from YouTube and other sites"),
     ("Studio", "Join clips, add subtitles and background music"),
     ("Library", "Everything you have downloaded and made"),
-    ("Tools", "Shrink, convert, GIF, thumbnails and audio in one click"),
+    ("Tools", "Shorts, shrink, convert, GIF, thumbnails and audio in one click"),
     ("Channels", "Follow channels and grab their new videos"),
     ("Settings", "Appearance, language and app info"),
     ("Help", "How to use each feature, and answers to common questions"),
@@ -3618,6 +3612,9 @@ class VidGrabWindow(QMainWindow):
         return _icon(kind, color, size)
 
     # ── host interface of Library / Tools / Subscriptions ──────────────
+
+    def use_gpu_captions(self) -> bool:
+        return bool(self.setting("gpu_captions"))
 
     def _go_page(self, name: str) -> None:
         """Open a page by name (the Help page's buttons use this)."""

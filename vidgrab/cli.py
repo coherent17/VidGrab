@@ -22,6 +22,8 @@ Without opening a window:
   vidgrab convert FILE --to mp3        mp4 mkv webm mp3 m4a opus wav flac
   vidgrab gif FILE --start 3 --length 4
   vidgrab best FILE --seconds 30       print the liveliest stretch (from the sound)
+  vidgrab short FILE --seconds 30      make a vertical Short: best moment, face, captions
+                                       (--no-face, --no-captions to skip those)
   from a Python script:    from vidgrab.app import main; main()
 
 Installed with pip?
@@ -65,7 +67,7 @@ def parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     return parser.parse_known_args(argv)  # anything else (Qt's own options) goes on to Qt
 
 
-COMMANDS = ("get", "shrink", "convert", "gif", "best")
+COMMANDS = ("get", "shrink", "convert", "gif", "best", "short")
 
 
 def _progress(label: str, pct: float | None) -> None:
@@ -96,6 +98,10 @@ def run_command(argv: list[str]) -> int:
             parser.add_argument("--start", type=float, default=0.0)
             parser.add_argument("--length", type=float, default=4.0)
             parser.add_argument("--width", type=int, default=480)
+        elif cmd == "short":
+            parser.add_argument("--seconds", type=float, default=30.0)
+            parser.add_argument("--no-face", action="store_true", help="centred crop, no face tracking")
+            parser.add_argument("--no-captions", action="store_true")
         else:
             parser.add_argument("--seconds", type=float, default=30.0)
     args = parser.parse_args(argv[1:])
@@ -111,6 +117,15 @@ def run_command(argv: list[str]) -> int:
             print(f"vidgrab: no such file: {src}", file=sys.stderr)
             return 2
         dur = float(studio.probe_media(src).get("duration") or 0.0)
+        if cmd == "short":
+            from vidgrab import captions, shorts
+
+            out = tools.output_for(src, "short", ".mp4")
+            shorts.make_short(src, out, seconds=args.seconds, follow=not args.no_face,
+                              with_captions=not args.no_captions, models_dir=captions.default_models_dir(),
+                              on_progress=_progress)
+            print(f"\n{out}")
+            return 0
         if cmd == "best":
             a, b = highlights.find_best(src, 0.0, dur, args.seconds)
             print(f"{a:.2f} {b:.2f}")

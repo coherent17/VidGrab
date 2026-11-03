@@ -38,7 +38,8 @@ def ago(mtime: float, t) -> str:
         return t("{n} min ago", n=int(secs // 60))
     if secs < 86400:
         return t("{n} h ago", n=int(secs // 3600))
-    return t("{n} days ago", n=int(secs // 86400))
+    days = int(secs // 86400)
+    return t("yesterday") if days == 1 else t("{n} days ago", n=days)
 
 
 class LibraryPage(QWidget):

@@ -262,6 +262,7 @@ class ToolsPage(QWidget):
         for k, b in self.tiles.items():
             b.setText(f"{t(_NAMES[k])}\n{t(_BLURBS[k])}")
         self.browse.setText(t("Choose file…"))
+        self.file.setPlaceholderText(t("Choose a file, or drop one on this window"))
         self.show_btn.setText(t("Show in folder"))
         self.size_combo.setItemText(self.size_combo.count() - 1, t("Custom…"))
         self.size_lbl.setText(t("Make the file about"))

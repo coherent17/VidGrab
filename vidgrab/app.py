@@ -1620,7 +1620,7 @@ _PAGE_HEADERS: list[tuple[str, str]] = [
     ("Studio", "Join clips, add subtitles and background music"),
     ("Library", "Everything you have downloaded and made"),
     ("Tools", "Shrink, convert, GIF, thumbnails and audio in one click"),
-    ("Subscriptions", "Follow channels and grab their new videos"),
+    ("Channels", "Follow channels and grab their new videos"),
     ("Settings", "Appearance, language and app info"),
     ("Help", "How to use each feature, and answers to common questions"),
 ]
@@ -4131,6 +4131,9 @@ class VidGrabWindow(QMainWindow):
     def dropEvent(self, event) -> None:
         files = [u.toLocalFile() for u in event.mimeData().urls() if u.isLocalFile()]
         if not files:
+            return
+        if self._stack.currentIndex() == PAGE_TOOLS:  # a file dropped on Tools is that tool's file
+            self._tools.set_file(files[0])
             return
         self._sidebar.select(PAGE_STUDIO)
         self._studio.add_clips(files)

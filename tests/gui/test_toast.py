@@ -11,9 +11,9 @@ pytestmark = pytest.mark.skipif(os.environ.get("SMOKE_GUI") != "1", reason="set 
 
 @pytest.fixture
 def win(tmp_path, monkeypatch):
+    from conftest import patch_ui
     from PySide6.QtWidgets import QApplication
 
-    from conftest import patch_ui
     from vidgrab.ui import app as m
 
     QApplication.instance() or QApplication([])

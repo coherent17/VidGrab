@@ -7,6 +7,7 @@ import subprocess
 import time
 
 import pytest
+from conftest import patch_ui
 
 pytestmark = pytest.mark.skipif(os.environ.get("SMOKE_GUI") != "1", reason="set SMOKE_GUI=1 to enable")
 
@@ -23,7 +24,7 @@ def test_best_moment_keeps_the_loud_part(qapp, tmp_path, monkeypatch) -> None:
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
-    monkeypatch.setattr(m, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     clip = tmp_path / "talk.mp4"
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=160x90:r=10:d=30",
                     "-f", "lavfi", "-i",

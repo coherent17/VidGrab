@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 
 import pytest
+from conftest import patch_ui
 
 from vidgrab.ui import help_content
 
@@ -44,7 +45,7 @@ def qapp():
 def test_help_page_in_the_window(qapp, tmp_path, monkeypatch) -> None:
     from vidgrab.ui import app as m
 
-    monkeypatch.setattr(m, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     w = m.VidGrabWindow()
     try:
         w._sidebar.select(m.PAGE_HELP)

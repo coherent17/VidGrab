@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 
 import pytest
+from conftest import patch_ui
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("SMOKE_GUI") != "1",
@@ -26,7 +27,7 @@ def qapp():
 
 def test_window_constructs_and_destroys(qapp, monkeypatch) -> None:
     monkeypatch.setattr(
-        "vidgrab.ui.app.check_internet",
+        "vidgrab.ui.download_page.check_internet",
         lambda timeout=2.5: type("S", (), {"online": True, "reason": "mock"})(),
     )
     from vidgrab.ui import app as appmod
@@ -50,7 +51,7 @@ def test_window_constructs_and_destroys(qapp, monkeypatch) -> None:
 def test_theme_toggle(qapp, tmp_path, monkeypatch) -> None:
     from vidgrab.ui import app as appmod
 
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     appmod._save_config("dark")
     win = appmod.VidGrabWindow()
     try:
@@ -67,7 +68,7 @@ def test_theme_toggle(qapp, tmp_path, monkeypatch) -> None:
 def test_lang_toggle(qapp, tmp_path, monkeypatch) -> None:
     from vidgrab.ui import app as appmod
 
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     appmod._save_config("dark", "en")
     win = appmod.VidGrabWindow()
     try:
@@ -108,7 +109,7 @@ def test_studio_page(qapp, tmp_path, monkeypatch) -> None:
 
     from vidgrab.ui import app as appmod
 
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     win = appmod.VidGrabWindow()
     try:
         win._switch_page(appmod.PAGE_STUDIO)
@@ -277,7 +278,7 @@ def test_dialogs_follow_theme(qapp, tmp_path, monkeypatch) -> None:
 
     from vidgrab.ui import app as appmod
 
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     win = appmod.VidGrabWindow()
     try:
         for theme in ("dark", "light"):
@@ -301,9 +302,9 @@ def test_download_queue_history_and_send_to_studio(qapp, tmp_path, monkeypatch) 
     from vidgrab.ui import app as appmod
     from vidgrab.ui.downloads_panel import DONE, load_history
 
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     monkeypatch.setattr(
-        "vidgrab.ui.app.check_internet",
+        "vidgrab.ui.download_page.check_internet",
         lambda timeout=2.5: type("S", (), {"online": True, "reason": "mock"})(),
     )
     have_ff = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
@@ -320,8 +321,8 @@ def test_download_queue_history_and_send_to_studio(qapp, tmp_path, monkeypatch) 
         on_progress("Downloading", 50.0)
         return [clip]
 
-    monkeypatch.setattr(appmod, "run_job", fake_run_job)
-    monkeypatch.setattr(appmod, "find_ffmpeg", lambda: "ffmpeg")
+    patch_ui(monkeypatch, "run_job", fake_run_job)
+    patch_ui(monkeypatch, "find_ffmpeg", lambda: "ffmpeg")
     monkeypatch.setattr(appmod.VidGrabWindow, "_probe_item", lambda self, item: None)
     win = appmod.VidGrabWindow()
     try:
@@ -359,7 +360,7 @@ def test_connection_is_rechecked(qapp, tmp_path, monkeypatch) -> None:
     """The online check repeats: fast while offline, slower while online."""
     from vidgrab.ui import app as appmod
 
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     win = appmod.VidGrabWindow()
     try:
         status = type("S", (), {"reason": "mock"})
@@ -382,8 +383,8 @@ def test_multiple_links_preview_and_queue(qapp, tmp_path, monkeypatch) -> None:
     using the cached titles and each playlist's own choice."""
     from vidgrab.ui import app as appmod
 
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
-    monkeypatch.setattr(appmod, "find_ffmpeg", lambda: "ffmpeg")
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "find_ffmpeg", lambda: "ffmpeg")
     looked_up = []
     infos = {
         "https://youtu.be/a": {"title": "Video A", "duration": 65, "is_playlist": False},
@@ -433,7 +434,7 @@ def test_settings_defaults_presets_and_storage(qapp, tmp_path, monkeypatch) -> N
 
     from vidgrab.ui import app as appmod
 
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     (tmp_path / "config.json").write_text(json.dumps({"theme": "light", "lang": "en"}))
     cfg = appmod._load_config()
     assert cfg["theme"] == "light" and cfg["fmt"] == "mp4" and cfg["notify"] is True
@@ -508,7 +509,7 @@ def test_studio_undo_projects_split_zoom(qapp, tmp_path, monkeypatch) -> None:
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     clip = tmp_path / "c.mp4"
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
                     "testsrc=size=160x120:rate=10", "-t", "4", str(clip)], check=True)
@@ -618,7 +619,7 @@ def test_trim_is_clamped_to_the_source(qapp, tmp_path, monkeypatch) -> None:
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     clip = tmp_path / "c.mp4"
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
                     "testsrc=size=160x120:rate=10", "-t", "4", str(clip)], check=True)
@@ -642,7 +643,7 @@ def test_studio_transitions_and_framing(qapp, tmp_path, monkeypatch) -> None:
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     clip = tmp_path / "c.mp4"
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
                     "testsrc=size=160x120:rate=10", "-f", "lavfi", "-i", "sine", "-t", "4",
@@ -731,7 +732,7 @@ def test_precise_trimming(qapp, tmp_path, monkeypatch) -> None:
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     clip = tmp_path / "c.mp4"
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
                     "testsrc=size=160x120:rate=25", "-t", "60", str(clip)], check=True)
@@ -844,7 +845,7 @@ def test_music_cut_offset_and_preview_bed(qapp, tmp_path, monkeypatch) -> None:
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     clip, song = tmp_path / "c.mp4", tmp_path / "s.wav"
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
                     "testsrc=size=160x120:rate=10", "-f", "lavfi", "-i", "sine", "-t", "8",
@@ -915,7 +916,7 @@ def test_several_background_songs(qapp, tmp_path, monkeypatch) -> None:
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     clip = tmp_path / "c.mp4"
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
                     "testsrc=size=160x120:rate=10", "-t", "20", str(clip)], check=True)
@@ -1018,7 +1019,7 @@ def test_image_overlays(qapp, tmp_path, monkeypatch) -> None:
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     clip = tmp_path / "c.mp4"
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
                     "testsrc=size=320x180:rate=10", "-t", "10", str(clip)], check=True)
@@ -1116,7 +1117,7 @@ def test_render_worker_passes_everything_to_compose_video(qapp, monkeypatch) -> 
     from vidgrab.ui import app as appmod
 
     got = {}
-    monkeypatch.setattr(appmod, "compose_video",
+    patch_ui(monkeypatch, "compose_video",
                         lambda clips, out, **kw: got.update(kw, clips=clips) or out)
     kw = {"clips": [Clip("a.mp4")], "output_file": "o.mp4", "resolution": "720p",
           "subtitles": [SubtitleCue(0, 1, "x")], "music": [BackgroundMusic("m.mp3")],
@@ -1180,7 +1181,7 @@ def test_studio_34_features(qapp, tmp_path, monkeypatch) -> None:
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     clip = tmp_path / "c.mp4"
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
                     "testsrc=size=320x180:rate=10", "-f", "lavfi", "-i", "sine", "-t", "10",
@@ -1320,8 +1321,8 @@ def test_studio_auto_captions(qapp, tmp_path, monkeypatch) -> None:
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
-    monkeypatch.setattr(appmod, "_models_dir", lambda: tmp_path / "models")
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_models_dir", lambda: tmp_path / "models")
     monkeypatch.setattr(appmod.QMessageBox, "question",
                         staticmethod(lambda *_a, **_k: appmod.QMessageBox.Discard))
     clip = tmp_path / "c.mp4"
@@ -1339,7 +1340,7 @@ def test_studio_auto_captions(qapp, tmp_path, monkeypatch) -> None:
         return [SubtitleCue(s.offset + 1 / s.speed, s.offset + 2 / s.speed, f"line {k}")
                 for k, s in enumerate(sources)]
 
-    monkeypatch.setattr(appmod, "transcribe", fake_transcribe)
+    patch_ui(monkeypatch, "transcribe", fake_transcribe)
     answers = []
 
     def run_dialog(dlg):  # pick the language / model and press Create captions
@@ -1394,7 +1395,7 @@ def test_studio_auto_captions(qapp, tmp_path, monkeypatch) -> None:
         # Stop: the Render button cancels; nothing is added
         answers[:] = ["auto"]
         win.set_setting("caption_language", "auto")
-        monkeypatch.setattr(appmod, "transcribe", lambda *a, **k: fake_transcribe(
+        patch_ui(monkeypatch, "transcribe", lambda *a, **k: fake_transcribe(
             *a, **{**k, "language": "slow"}))
         st.auto_captions()
         for _ in range(20):
@@ -1423,7 +1424,7 @@ def test_hardware_switches(qapp, tmp_path, monkeypatch) -> None:
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     monkeypatch.setattr(captions, "_gpus", [])  # not detected yet
     clip = tmp_path / "c.mp4"
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
@@ -1481,9 +1482,9 @@ def test_speech_models_storage_row(qapp, tmp_path, monkeypatch) -> None:
     """Settings -> Storage shows the downloaded speech models and deletes them."""
     from vidgrab.ui import app as appmod
 
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path / "cfg")
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path / "cfg")
     models = tmp_path / "models"
-    monkeypatch.setattr(appmod, "_models_dir", lambda: models)
+    patch_ui(monkeypatch, "_models_dir", lambda: models)
     win = appmod.VidGrabWindow()
     try:
         win._refresh_storage()
@@ -1515,11 +1516,11 @@ def test_hardware_probe_checks_video_and_captions(qapp, tmp_path, monkeypatch) -
 
     qsv = next(e for e in CANDIDATES if e.key == "qsv")
     intel = captions.SpeechGpu("openvino", "GPU", "Intel Arc 140T GPU")
-    monkeypatch.setattr(appmod, "detect_encoder", lambda ffmpeg: qsv)
+    patch_ui(monkeypatch, "detect_encoder", lambda ffmpeg: qsv)
     monkeypatch.setattr(captions, "_gpus", [])
     monkeypatch.setattr(captions, "cuda_available", lambda: False)
     monkeypatch.setattr(captions, "_openvino_gpu", lambda: intel)
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     win = appmod.VidGrabWindow()
     try:
         assert not captions.gpus_checked()
@@ -1561,8 +1562,8 @@ def test_closing_with_stuck_threads_neither_crashes_nor_hangs(qapp, tmp_path, mo
         def run(self) -> None:
             self.gate.wait(30)
 
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
-    monkeypatch.setattr(appmod, "_STOP_GRACE_MS", 200)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_STOP_GRACE_MS", 200)
     answer = {"value": appmod.QMessageBox.No}
     monkeypatch.setattr(appmod.QMessageBox, "question", staticmethod(lambda *_a, **_k: answer["value"]))
     win = appmod.VidGrabWindow()
@@ -1599,7 +1600,7 @@ def test_studio_two_videos_at_once(qapp, tmp_path, monkeypatch) -> None:
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     monkeypatch.setattr(appmod.QMessageBox, "question",
                         staticmethod(lambda *_a, **_k: appmod.QMessageBox.Discard))
     shown: list = []
@@ -1622,18 +1623,20 @@ def test_studio_two_videos_at_once(qapp, tmp_path, monkeypatch) -> None:
         return QDialog.Accepted
 
     monkeypatch.setattr(QDialog, "exec", run_dialog)
+    from vidgrab.ui import workers
+
     win = appmod.VidGrabWindow()
     try:
         st = win._studio
         st.add_clips(clips)
         seen: dict = {}
-        real = appmod.compose_split
+        real = workers.compose_split
 
         def spy(clip_list, out, **kw):
             seen.update(kw, clips=[c.path for c in clip_list])
             return real(clip_list, out, **kw)
 
-        monkeypatch.setattr(appmod, "compose_split", spy)
+        patch_ui(monkeypatch, "compose_split", spy)
         st.out_dir.setText(str(tmp_path / "out"))
         st.combine_videos()
         t0 = time.time()
@@ -1665,8 +1668,8 @@ def test_settings_tabs_and_network(qapp, tmp_path, monkeypatch) -> None:
     from vidgrab.core import downloader
     from vidgrab.ui import app as appmod
 
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
-    monkeypatch.setattr(appmod, "_models_dir", lambda: tmp_path / "models")
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_models_dir", lambda: tmp_path / "models")
     monkeypatch.setattr(appmod.QMessageBox, "question",
                         staticmethod(lambda *_a, **_k: appmod.QMessageBox.Yes))
     win = appmod.VidGrabWindow()
@@ -1706,11 +1709,11 @@ def test_download_page_search_exact_format_and_job(qapp, tmp_path, monkeypatch) 
 
     from vidgrab.ui import app as appmod
 
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     results = [{"id": f"id{i}", "title": f"Song {i}", "uploader": "Chan", "duration": 61 + i,
                 "views": 1500, "url": f"https://www.youtube.com/watch?v=id{i}",
                 "thumbnail": ""} for i in range(3)]
-    monkeypatch.setattr(appmod, "search", lambda q, n=10, translate=None: results)
+    patch_ui(monkeypatch, "search", lambda q, n=10, translate=None: results)
 
     def run_dialog(dlg):  # the exact formats: Automatic + the one video format
         assert dlg.list.count() == 2
@@ -1783,7 +1786,7 @@ def test_ytdlp_update_in_settings(qapp, tmp_path, monkeypatch) -> None:
     """Checking finds a newer yt-dlp, the Download page says so, Update installs it."""
     from vidgrab.ui import app as appmod
 
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     monkeypatch.setenv("VIDGRAB_YTDLP_DIR", str(tmp_path / "ytdlp"))
     state = {"updated": None}
     monkeypatch.setattr(appmod.ytdlp_update, "check", lambda: {
@@ -1822,11 +1825,11 @@ def test_missing_ffmpeg_is_offered_once_and_fetched(qapp, tmp_path, monkeypatch)
     with progress, and the Studio / Download page carry on."""
     from vidgrab.ui import app as appmod
 
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     win = appmod.VidGrabWindow()
     try:
         state = {"ffmpeg": None, "asked": 0, "errors": []}
-        monkeypatch.setattr(appmod, "find_ffmpeg", lambda: state["ffmpeg"])
+        patch_ui(monkeypatch, "find_ffmpeg", lambda: state["ffmpeg"])
         monkeypatch.setattr(appmod.ffmpeg_fetch, "platform_key", lambda: "mac-arm64")
 
         def ask(*_a, **_k):
@@ -1948,7 +1951,7 @@ def test_studio_subtitle_files_menu(qapp, tmp_path, monkeypatch) -> None:
     from vidgrab.media.studio import SubtitleCue
     from vidgrab.ui import app as appmod
 
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     monkeypatch.setattr(appmod.QMessageBox, "question",
                         staticmethod(lambda *_a, **_k: appmod.QMessageBox.Yes))
     win = appmod.VidGrabWindow()
@@ -2004,7 +2007,7 @@ def test_studio_audio_cleanup_options(qapp, tmp_path, monkeypatch) -> None:
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     monkeypatch.setattr(appmod.QMessageBox, "question",
                         staticmethod(lambda *_a, **_k: appmod.QMessageBox.Discard))
     clip = tmp_path / "c.mp4"
@@ -2062,7 +2065,7 @@ def test_music_ducking_option(qapp, tmp_path, monkeypatch) -> None:
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     monkeypatch.setattr(appmod.QMessageBox, "question",
                         staticmethod(lambda *_a, **_k: appmod.QMessageBox.Discard))
     clip, song = tmp_path / "c.mp4", tmp_path / "s.mp3"
@@ -2112,7 +2115,7 @@ def test_font_choice_in_settings(qapp, tmp_path, monkeypatch) -> None:
 
     from vidgrab.ui import app as appmod
 
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     win = appmod.VidGrabWindow()
     try:
         assert win.setting("ui_font") == appmod.DEFAULT_UI_FONT == "jakarta"
@@ -2157,7 +2160,7 @@ def test_studio_tab_labels_are_not_cut_off(qapp, tmp_path, monkeypatch) -> None:
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     monkeypatch.setattr(appmod.QMessageBox, "question",
                         staticmethod(lambda *_a, **_k: appmod.QMessageBox.Discard))
     clip = tmp_path / "c.mp4"

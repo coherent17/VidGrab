@@ -6,6 +6,7 @@ import shutil
 import subprocess
 
 import pytest
+from conftest import patch_ui
 
 from vidgrab.media import studio
 
@@ -70,7 +71,7 @@ def test_stickers_draw_and_the_studio_adds_boxes_and_stickers(tmp_path, monkeypa
     from PySide6.QtGui import QImage
 
     assert QImage(paths["star"]).hasAlphaChannel()
-    monkeypatch.setattr(m, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     clip = tmp_path / "c.mp4"
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=10:duration=6",
                     "-f", "lavfi", "-i", "sine=duration=6", "-shortest", str(clip)], check=True)

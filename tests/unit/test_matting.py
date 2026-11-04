@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import patch_ui
 
 from vidgrab.ai import matting
 from vidgrab.media import effects, studio
@@ -71,7 +72,7 @@ def test_the_effects_tab_switch_turns_the_cutout_on_and_the_green_key_off(tmp_pa
     from vidgrab.ui import app as m
 
     QApplication.instance() or QApplication([])
-    monkeypatch.setattr(m, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     clip = tmp_path / "c.mp4"
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=10:duration=3",
                     "-f", "lavfi", "-i", "sine=duration=3", "-shortest", str(clip)], check=True)

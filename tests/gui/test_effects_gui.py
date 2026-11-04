@@ -8,6 +8,7 @@ import shutil
 import subprocess
 
 import pytest
+from conftest import patch_ui
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("SMOKE_GUI") != "1",
@@ -29,7 +30,7 @@ def studio_win(qapp, tmp_path, monkeypatch):
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     monkeypatch.setattr(appmod.QMessageBox, "question",
                         staticmethod(lambda *_a, **_k: appmod.QMessageBox.Discard))
     clip = tmp_path / "c.mp4"

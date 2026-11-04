@@ -7,6 +7,7 @@ import subprocess
 import time
 
 import pytest
+from conftest import patch_ui
 
 pytestmark = pytest.mark.skipif(os.environ.get("SMOKE_GUI") != "1", reason="set SMOKE_GUI=1 to enable")
 
@@ -33,7 +34,7 @@ def test_cuts_land_on_the_beat_and_undo_restores_them(qapp, tmp_path, monkeypatc
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
     pytest.importorskip("numpy")
-    monkeypatch.setattr(m, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     clips = []
     for n in (1, 2):
         p = tmp_path / f"c{n}.mp4"

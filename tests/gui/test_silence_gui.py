@@ -3,6 +3,7 @@ import shutil
 import subprocess
 
 import pytest
+from conftest import patch_ui
 from PySide6.QtWidgets import QApplication, QDialog
 
 pytestmark = [
@@ -31,7 +32,7 @@ def talk(tmp_path):
 
 def test_remove_silences_splits_the_clip(qapp, talk, monkeypatch):
     from vidgrab.ui import app as appmod
-    monkeypatch.setattr(appmod, "_config_dir", lambda: talk.parent)
+    patch_ui(monkeypatch, "_config_dir", lambda: talk.parent)
     win = appmod.VidGrabWindow()
     st = win._studio
     st.render_requested.disconnect()

@@ -1,6 +1,7 @@
 import os
 
 import pytest
+from conftest import patch_ui
 
 pytestmark = pytest.mark.skipif(os.environ.get("SMOKE_GUI") != "1", reason="set SMOKE_GUI=1 to enable")
 
@@ -15,7 +16,7 @@ def qapp():
 def test_import_fills_the_link_box(qapp, tmp_path, monkeypatch):
     from vidgrab.ui import app as appmod
 
-    monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     listing = tmp_path / "links.txt"
     listing.write_text("# playlist\nhttps://youtu.be/aaaaaaaaaaa\nhttps://youtu.be/bbbbbbbbbbb\n"
                        "https://youtu.be/aaaaaaaaaaa\n", encoding="utf-8")

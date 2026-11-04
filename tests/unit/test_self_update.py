@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 
 import pytest
+from conftest import patch_ui
 
 from vidgrab.core import self_update as su
 
@@ -101,7 +102,7 @@ def test_the_window_offers_update_now_only_when_it_can_install(tmp_path, monkeyp
     from vidgrab.ui import app as m
 
     QApplication.instance() or QApplication([])
-    monkeypatch.setattr(m, "_config_dir", lambda: tmp_path / "cfg")
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path / "cfg")
     w = m.VidGrabWindow()
     try:
         news = {"version": "9.0.0", "url": "u", "notes": "", "assets": {}}

@@ -7,6 +7,7 @@ import subprocess
 import time
 
 import pytest
+from conftest import patch_ui
 
 pytestmark = pytest.mark.skipif(os.environ.get("SMOKE_GUI") != "1", reason="set SMOKE_GUI=1 to enable")
 
@@ -27,7 +28,7 @@ def win(qapp, tmp_path, monkeypatch):
     cfg = tmp_path / "cfg"
     media = tmp_path / "media"
     media.mkdir()
-    monkeypatch.setattr(m, "_config_dir", lambda: cfg)
+    patch_ui(monkeypatch, "_config_dir", lambda: cfg)
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=15",
                     "-f", "lavfi", "-i", "sine", "-t", "3", str(media / "clip one.mp4")], check=True)
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine", "-t", "2",

@@ -5,6 +5,7 @@ import shutil
 import subprocess
 
 import pytest
+from conftest import patch_ui
 
 from vidgrab.media import effects, studio
 
@@ -60,7 +61,7 @@ def test_the_inspector_adds_edits_and_removes_keyframes_with_undo(tmp_path, monk
     from vidgrab.ui import app as m
 
     qapp = QApplication.instance() or QApplication([])
-    monkeypatch.setattr(m, "_config_dir", lambda: tmp_path)
+    patch_ui(monkeypatch, "_config_dir", lambda: tmp_path)
     clip = tmp_path / "c.mp4"
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=10:duration=10",
                     "-f", "lavfi", "-i", "sine=duration=10", "-shortest", str(clip)], check=True)

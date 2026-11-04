@@ -256,6 +256,18 @@ class ImageOverlay:
     fade: float = 0.0  # fade in / out (s)
     rotation: float = 0.0  # degrees, clockwise, around the centre
     motion: str = "none"  # slow zoom while shown: none | zoom_in | zoom_out (Ken Burns)
+    # a "blur" / "pixel" box hides what is under it (a plate, a face, a name): there is
+    # no picture then (path is ""), the box is `width` x `height` of the frame, centred
+    # on (x, y), and `strength` (0..1) says how hard it is hidden
+    kind: str = "image"  # image | blur | pixel
+    height: float = 0.2
+    strength: float = 0.6
+
+    def is_picture(self) -> bool:
+        return self.kind == "image"
+
+
+COVER_KINDS = ("blur", "pixel")  # the overlay kinds that cover part of the video
 
 
 def _songs(music: Music) -> list[BackgroundMusic]:
@@ -285,6 +297,7 @@ class _ResolvedClip:
     fx: dict = field(default_factory=dict)
     trf: str | None = None  # stabilising data file in the render's work folder
     lut: str | None = None  # .cube file in the render's work folder
+    matte: str | None = None  # grey matte video in the render's work folder (remove background)
 
     @property
     def out_duration(self) -> float:
@@ -1363,11 +1376,21 @@ def _canvas(clips: list[_ResolvedClip], resolution: str) -> tuple[int, int]:
 def _frame_filter(c: _ResolvedClip, width: int, height: int, bars: str = "black") -> str:
     """Scale (+ crop) one clip onto the output canvas. *bars* is the colour of
     the padding (``black@0`` keeps it see-through for a green-screen clip)."""
-    if c.fit == "fit" and c.zoom == 1.0:  # the whole picture, centred, with bars
+    if c.fit == "fit" and c.zoom == 1.0 and not c.fx.get("keys"):  # the whole picture, centred, with bars
         return (f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={bars}")
     # cover (fill) or contain (fit) a box `zoom` times the canvas, then cut the
     # canvas out of it at the pan point and pad whatever is still missing
+    keys = c.fx.get("keys")
+    if keys:  # zoom keyframes: cover the canvas, then zoom and aim frame by frame
+        zoom = effects.focus_expr(keys, c.start, 3)
+        aim = c.fx.get("follow") or keys  # a face path, when there is one, steers the crop
+        x = f"clip(({effects.focus_expr(aim, c.start, 1)})*iw-ow/2,0,iw-ow)"
+        y = f"clip(({effects.focus_expr(aim, c.start, 2)})*ih-oh/2,0,ih-oh)"
+        return (f"scale={width}:{height}:force_original_aspect_ratio=increase:force_divisible_by=2,"
+                f"scale=w='trunc(iw*({zoom})/2)*2':h='trunc(ih*({zoom})/2)*2':eval=frame,"
+                f"crop=w='min(iw,{width})':h='min(ih,{height})':x='{x}':y='{y}',"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={bars}")
     mode = "increase" if c.fit == "fill" else "decrease"
     zw, zh = _even(width * c.zoom), _even(height * c.zoom)
     x, y = f"(iw-ow)*{c.pan_x:.4f}", f"(ih-oh)*{c.pan_y:.4f}"
@@ -1430,6 +1453,29 @@ def _image_filter(img: ImageOverlay, frame_width: int) -> str:
     return chain
 
 
+def _cover_graph(img: ImageOverlay, k: int, vin: str, width: int, height: int) -> list[str]:
+    """Blur / pixelate the box of the frame between the overlay's start and end:
+    cut the box out of the picture, hide it, put it back."""
+    bw, bh = min(max(img.width, 0.01), 1.0), min(max(img.height, 0.01), 1.0)
+    strength = min(max(img.strength, 0.0), 1.0)
+    crop = (f"crop=w=trunc(iw*{bw:.4f}/2)*2:h=trunc(ih*{bh:.4f}/2)*2"
+            f":x='max(0,min(iw-ow,iw*{img.x:.4f}-ow/2))':y='max(0,min(ih-oh,ih*{img.y:.4f}-oh/2))'")
+    if img.kind == "pixel":
+        blocks = 4 + round(strength * 28)  # bigger blocks the stronger it is
+        hide = (f"scale=w='max(2,iw/{blocks})':h='max(2,ih/{blocks})',"
+                f"scale=w='iw*{blocks}':h='ih*{blocks}':flags=neighbor")
+    else:
+        sigma = max(3.0, min(width, height) * (0.006 + 0.04 * strength))
+        hide = f"gblur=sigma={sigma:.2f}:steps=2"
+    return [
+        f"{vin}split[cv{k}a][cv{k}b]",
+        f"[cv{k}b]{crop},{hide}[cb{k}]",
+        (f"[cv{k}a][cb{k}]overlay=x='max(0,min(main_w-overlay_w,main_w*{img.x:.4f}-overlay_w/2))'"
+         f":y='max(0,min(main_h-overlay_h,main_h*{img.y:.4f}-overlay_h/2))'"
+         f":enable='between(t,{img.start:.3f},{img.end:.3f})'[vo{k}]"),
+    ]
+
+
 def build_video_command(
     ffmpeg: str,
     clips: list[_ResolvedClip],
@@ -1476,8 +1522,9 @@ def build_video_command(
 
     # green-screen clips: what shows through them (a picture, or black)
     key_inputs: dict[int, int] = {}
+    matte_inputs: dict[int, int] = {}
     for i, c in enumerate(clips):
-        if not effects.key_filter(c.fx):
+        if not (effects.key_filter(c.fx) or c.matte):
             continue
         bg = c.fx.get("key_bg")
         if bg:
@@ -1487,10 +1534,17 @@ def build_video_command(
                     "-i", f"color=c=black:s={width}x{height}:r={fps}"]
         key_inputs[i] = next_input
         next_input += 1
+        if c.matte:
+            cmd += ["-i", str(c.matte)]
+            matte_inputs[i] = next_input
+            next_input += 1
 
     # pictures: one looped still per overlay, only as long as it is needed
     image_inputs: list[int] = []
     for img in images or []:
+        if not img.is_picture():  # a cover box has no file: it works on the video itself
+            image_inputs.append(-1)
+            continue
         cmd += ["-loop", "1", "-framerate", str(fps), "-t", f"{min(img.end, total):.3f}",
                 "-i", str(img.path)]
         image_inputs.append(next_input)
@@ -1516,11 +1570,21 @@ def build_video_command(
         # ffmpeg 7.0's setpts forgets the frame rate, which xfade requires:
         # restate it, then put every input on one timebase
         tail = f",fps={fps},settb=AVTB" if any(overlaps) else ""
-        head = (f"[{i}:v:0]{effects.source_chain(c.fx, trf_name=c.trf, lut_name=c.lut)}"
-                + (effects.key_filter(c.fx) + "," if keyed else ""))
-        if keyed:  # the clip, see-through where the colour was, over its background
+        key = effects.key_filter(c.fx)
+        head = f"[{i}:v:0]{effects.source_chain(c.fx, trf_name=c.trf, lut_name=c.lut)}" + (key + "," if key else "")
+        if keyed and i in matte_inputs:  # background removed: the matte is the clip's alpha
+            graph.append(f"{head}{_frame_filter(c, width, height)},setsar=1,{speed}"
+                         f"fps={fps},format=yuv420p,setpts=PTS-STARTPTS[kc{i}]")
+            # the matte goes through the same framing, speed and frame rate as the picture,
+            # softened a little and pushed towards 0 / 1 so the edge is clean
+            graph.append(f"[{matte_inputs[i]}:v]scale={c.width or width}:{c.height or height}:flags=bicubic,"
+                         f"{_frame_filter(c, width, height)},setsar=1,{speed}fps={fps},"
+                         f"gblur=sigma=1.2,lut=y='clip((val-70)*2.4,0,255)',format=gray,setpts=PTS-STARTPTS[km{i}]")
+            graph.append(f"[kc{i}][km{i}]alphamerge,format=yuva420p[k{i}]")
+        elif keyed:  # the clip, see-through where the colour was, over its background
             graph.append(f"{head}{_frame_filter(c, width, height, 'black@0')},setsar=1,{speed}"
                          f"fps={fps},format=yuva420p,setpts=PTS-STARTPTS[k{i}]")
+        if keyed:  # (either way) what shows through: the clip's background picture, or black
             graph.append(f"[{key_inputs[i]}:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
                          f"crop={width}:{height},setsar=1,fps={fps},format=yuv420p,setpts=PTS-STARTPTS[kb{i}]")
             graph.append(f"[kb{i}][k{i}]overlay=shortest=1,format=yuv420p,setpts=PTS-STARTPTS{tail}[v{i}]")
@@ -1557,7 +1621,11 @@ def build_video_command(
 
     vout = "[vc]"
     # pictures go under the subtitles, each only between its start and end
-    for k, (img, idx) in enumerate(zip(images or [], image_inputs)):
+    for k, (img, idx) in enumerate(zip(images or [], image_inputs, strict=True)):
+        if not img.is_picture():
+            graph.extend(_cover_graph(img, k, vout, width, height))
+            vout = f"[vo{k}]"
+            continue
         graph.append(f"[{idx}:v]{_image_filter(img, width)}[im{k}]")
         graph.append(
             f"{vout}[im{k}]overlay=x='main_w*{img.x:.4f}-overlay_w/2'"
@@ -1810,6 +1878,7 @@ def _prepare_effects(
     on_progress: ProgressCallback | None,
     on_log: LogCallback | None,
     translate: TranslateFn | None,
+    models_dir: str | Path | None = None,
 ) -> list[_ResolvedClip]:
     """Do what the effects need before the render: analyse shaky clips (one
     pass each, written to *work*) and copy colour-look files next to the
@@ -1824,7 +1893,19 @@ def _prepare_effects(
                 c = replace(c, lut=f"lut{k}.cube")
             elif on_log:
                 on_log(tr("File not found: {src}", src=lut))
-        if c.fx.get("stabilize") and c.has_video:
+        if c.fx.get("cutout") and c.has_video:
+            from vidgrab import matting  # (onnxruntime is optional)
+
+            if models_dir is None or not matting.available():
+                if on_log:
+                    on_log(tr("Removing the background needs the speech add-on (onnxruntime), which this "
+                              "installation doesn't have."))
+            else:
+                name = f"matte{k}.mkv"
+                matting.make_matte(c.path, c.start, c.start + c.duration, work / name, models_dir,
+                                   on_progress=on_progress, translate=translate)
+                c = replace(c, matte=name)
+        if c.fx.get("stabilize") and c.has_video and not c.matte:  # (the matte would not follow the shake fix)
             name = f"stab{k}.trf"
             _run_with_progress(
                 [ffmpeg, "-y", *_input_args(c), "-an", "-vf", effects.detect_filter(name),
@@ -1850,6 +1931,7 @@ def compose_video(
     gif_fps: int = 15,
     hardware: bool = False,
     normalize_loudness: bool = False,
+    models_dir: str | Path | None = None,
     on_progress: ProgressCallback | None = None,
     on_log: LogCallback | None = None,
     translate: TranslateFn | None = None,
@@ -1901,7 +1983,7 @@ def compose_video(
                 shutil.copy2(font, work / "fonts" / font.name)
                 fonts_name = "fonts"
         resolved = _prepare_effects(resolved, ffmpeg, work, on_progress=on_progress,
-                                    on_log=on_log, translate=translate)
+                                    on_log=on_log, translate=translate, models_dir=models_dir)
         # GIF / audio-only exports: render the video first, then convert it
         kind = out.suffix.lower()
         render_to = out if kind == ".mp4" else work / "render.mp4"

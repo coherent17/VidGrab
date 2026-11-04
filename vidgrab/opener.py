@@ -67,3 +67,29 @@ def open_path(path: str | Path, reveal: bool = False) -> bool:
         if code == 0 or Path(cmd[0]).name.lower() in ("explorer", "explorer.exe"):
             return True  # explorer exits 1 even when it worked
     return False
+
+
+def url_commands(url: str, *, system: str | None = None, wsl: bool | None = None) -> list[list[str]]:
+    """The command lines that open a web address in the default browser."""
+    system = system or sys.platform
+    if system == "darwin":
+        return [["open", url]]
+    if system.startswith("win"):
+        return [["cmd", "/c", "start", "", url]]
+    wsl = is_wsl() if wsl is None else wsl
+    if wsl:
+        return [[shutil.which("explorer.exe") or "explorer.exe", url]]
+    return [[exe, url] for exe in ("xdg-open", "gio", "kde-open") if shutil.which(exe)]
+
+
+def open_url(url: str) -> bool:
+    """Open *url* in the browser (Qt's QDesktopServices has no handler on WSL)."""
+    if not url.startswith(("https://", "http://")):
+        return False
+    for cmd in url_commands(url):
+        try:
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except OSError:
+            continue
+    return False

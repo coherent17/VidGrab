@@ -29,9 +29,11 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import asdict, astuple, dataclass, field, replace
 from pathlib import Path
 
@@ -76,6 +78,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMenu,
     QMessageBox,
     QPlainTextEdit,
@@ -92,7 +95,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab import cuda_runtime, effects, fx_preview, highlights, reframe
+from vidgrab import (
+    beats,
+    cuda_runtime,
+    effects,
+    fx_preview,
+    highlights,
+    reframe,
+    stickers,
+)
 from vidgrab.captions import DEFAULT_MODEL as DEFAULT_CAPTION_MODEL
 from vidgrab.captions import LANGUAGES as CAPTION_LANGUAGES
 from vidgrab.captions import MODELS as CAPTION_MODELS
@@ -112,6 +123,7 @@ from vidgrab.silence_dialog import SilenceDialog
 from vidgrab.split_dialog import SplitDialog
 from vidgrab.studio import (
     ANIMATIONS,
+    COVER_KINDS,
     IMAGE_EXTS,
     SPEED_RANGE,
     SUBTITLE_FONT_NAME,
@@ -304,6 +316,29 @@ class _BestTask(QRunnable):
             self._relay.done.emit(self._i, 0.0, 0.0, str(exc))
             return
         self._relay.done.emit(self._i, a, b, "")
+
+
+class _BeatRelay(QObject):
+    done = Signal(float, list, str)  # BPM, beat times on the montage timeline, error
+
+
+class _BeatTask(QRunnable):
+    """Find the beats of a song (Cut to the beat)."""
+
+    def __init__(self, relay: _BeatRelay, path: str, start: float, end: float | None, offset: float) -> None:
+        super().__init__()
+        self._relay, self._args, self._offset = relay, (path, start, end), offset
+
+    def run(self) -> None:
+        try:
+            found = beats.detect(*self._args)
+        except Exception as exc:  # noqa: BLE001 - shown to the user
+            self._relay.done.emit(0.0, [], str(exc))
+            return
+        if found is None:
+            self._relay.done.emit(0.0, [], "")
+            return
+        self._relay.done.emit(found.bpm, [round(self._offset + t, 3) for t in found.times], "")
 
 
 class ThumbCache(QObject):
@@ -1925,8 +1960,8 @@ class StudioPage(QWidget):
                                      "Add a subtitle line at the playhead")
         self.captions_btn = self._btn("Auto captions…", self.auto_captions,
                                       "Turn the speech in the clips into subtitle lines")
-        self.image_btn = self._btn("＋ Image…", self._browse_images,
-                                   "Show a picture over the video from the playhead")
+        self.image_btn = self._btn("＋ Image…", self._image_menu,
+                                   "Add a picture, a sticker, or a blur box over the video from the playhead")
         self.music_btn = self._btn("♪ Music…", self._browse_music, "Add background music")
         self.combine_btn = self._btn("Two videos…", self.combine_videos,
                                      "Play two videos at the same time, for example side by side")
@@ -2756,11 +2791,58 @@ class StudioPage(QWidget):
             "Keeps the speaker in frame when the picture is cropped. Works on this computer.",
             "hint")
         lay.addWidget(self.follow_hint)
+        self.keys_cap = self._label("ZOOM KEYFRAMES", "field_cap")
+        lay.addWidget(self.keys_cap)
+        self.keys_list = QListWidget()
+        self.keys_list.setMaximumHeight(92)
+        self.keys_list.currentRowChanged.connect(lambda _r: self._fill_key_fields())
+        lay.addWidget(self.keys_list)
+        krow = QHBoxLayout()
+        krow.setSpacing(6)
+        self.key_add_btn = self._btn("Add keyframe here", self._add_key,
+                                     "Zoom in (or out) from the playhead: the picture eases between keyframes")
+        self.key_del_btn = self._btn("Remove", self._remove_key, "Remove the selected keyframe")
+        krow.addWidget(self.key_add_btn)
+        krow.addWidget(self.key_del_btn)
+        lay.addLayout(krow)
+        self.key_form = QWidget()
+        kf = QFormLayout(self.key_form)
+        kf.setContentsMargins(0, 0, 0, 0)
+        kf.setSpacing(6)
+        self.key_time = QDoubleSpinBox()
+        self.key_time.setDecimals(2)
+        self.key_time.setSuffix(" s")
+        self.key_time.setRange(0.0, 99999.0)
+        self.key_zoom = QSpinBox()
+        self.key_zoom.setRange(100, 400)
+        self.key_zoom.setSuffix("%")
+        self.key_x = QSpinBox()
+        self.key_x.setRange(0, 100)
+        self.key_x.setSuffix("%")
+        self.key_y = QSpinBox()
+        self.key_y.setRange(0, 100)
+        self.key_y.setSuffix("%")
+        for w in (self.key_time, self.key_zoom, self.key_x, self.key_y):
+            w.setKeyboardTracking(False)
+            w.valueChanged.connect(lambda _v: self._edit_key())
+        kf.addRow(self._label("At (clip time):"), self.key_time)
+        kf.addRow(self._label("Zoom:"), self.key_zoom)
+        kf.addRow(self._label("Aim left to right:"), self.key_x)
+        kf.addRow(self._label("Aim top to bottom:"), self.key_y)
+        lay.addWidget(self.key_form)
+        self.keys_hint = self._label(
+            "Add a keyframe where the move should reach its zoom. Between two keyframes the "
+            "picture glides; before the first and after the last it holds still.", "hint")
+        lay.addWidget(self.keys_hint)
         self._follow_gen = 0
         self._best_pool = QThreadPool(self)
         self._best_pool.setMaxThreadCount(1)
         self._best_relay = _BestRelay(self)
         self._best_relay.done.connect(self._best_done)
+        self._beat_pool = QThreadPool(self)
+        self._beat_pool.setMaxThreadCount(1)
+        self._beat_relay = _BeatRelay(self)
+        self._beat_relay.done.connect(self._beat_done)
         self._follow_pool = QThreadPool(self)
         self._follow_pool.setMaxThreadCount(1)
         self._follow_cancel = threading.Event()
@@ -2863,6 +2945,19 @@ class StudioPage(QWidget):
         lut.addWidget(self.fx_lut_clear)
         lay.addLayout(lut)
 
+        lay.addWidget(self._label("REMOVE BACKGROUND", "field_cap"))
+        self.fx_cutout = QCheckBox()
+        self.fx_cutout.setCursor(QCursor(_HAND))
+        self._tr(self.fx_cutout, "Cut out the person (no green sheet needed)")
+        self._tr(self.fx_cutout, "Finds the person or main object in every frame and replaces everything "
+                 "behind it with the background picture below (black if none). Works best with one "
+                 "subject filling a good part of the picture. Done while rendering, so the preview "
+                 "does not show it; the Effects pictures do not either.", "setToolTip")
+        self.fx_cutout.toggled.connect(lambda on: self._fx_set("cutout", on))
+        lay.addWidget(self.fx_cutout)
+        lay.addWidget(self._label(
+            "Takes a while: about three times the length of the clip on a normal computer. "
+            "Needs the speech add-on; a small model downloads once.", "hint"))
         lay.addWidget(self._label("GREEN SCREEN", "field_cap"))
         self.fx_key = QCheckBox()
         self.fx_key.setCursor(QCursor(_HAND))
@@ -2930,8 +3025,14 @@ class StudioPage(QWidget):
             return
         fx = dict(clip.fx)
         fx[key] = value
-        if key == "key" and not value:
+        if key == "key" and not value and not fx.get("cutout"):
             fx["key_bg"] = ""
+        if key == "cutout" and not value and not fx.get("key"):
+            fx["key_bg"] = ""
+        if key == "cutout" and value:
+            fx["key"] = ""  # one way of cutting out at a time
+        if key == "key" and value:
+            fx["cutout"] = False
         clip.fx = effects.sanitize(fx)
         self._fill_clip_fx()
         self._fx_timer.start()
@@ -2972,6 +3073,7 @@ class StudioPage(QWidget):
             self.fx_stab.setChecked(fx["stabilize"])
             self.fx_smooth.setChecked(fx["smooth"])
             self.fx_key.setChecked(bool(fx["key"]))
+            self.fx_cutout.setChecked(bool(fx["cutout"]))
             for value, b in self.fx_key_btns.items():
                 b.setAutoExclusive(False)
                 b.setChecked(value == fx["key"])
@@ -2979,8 +3081,10 @@ class StudioPage(QWidget):
         finally:
             self._fx_busy = False
         on = bool(fx["key"])
-        for w in (*self.fx_key_widgets, self.fx_sliders["key_similarity"]):
+        for w in (self.fx_key_box, self.fx_sliders["key_similarity"]):
             w.setEnabled(on)
+        for w in (self.fx_bg_btn, self.fx_bg_clear):  # the picture behind works for both kinds of cut-out
+            w.setEnabled(on or bool(fx["cutout"]))
         self.fx_lut_clear.setVisible(bool(fx["lut"]))
         self.fx_lut_btn.setText(Path(fx["lut"]).name if fx["lut"] else self.t("Colour look file…"))
         self.fx_bg_clear.setVisible(bool(fx["key_bg"]))
@@ -3039,8 +3143,10 @@ class StudioPage(QWidget):
         self.trans_len.setValue(clip.transition_d)
         self.trans_len.blockSignals(False)
         self.trans_len.setEnabled(clip.transition != "none")
-        for w in (self.framing_cap, self.fit_box, self.zoom_row, self.framing_hint):
+        for w in (self.framing_cap, self.fit_box, self.zoom_row, self.framing_hint, self.keys_cap,
+                  self.keys_list, self.key_add_btn, self.key_del_btn, self.keys_hint):
             w.setVisible(clip.has_video)
+        self._fill_keys()
         for w in (self.sound_cap, self.sound_row, self.clip_denoise):
             w.setVisible(clip.has_audio)
         for w in (self.clip_mute, self.clip_vol, self.clip_denoise):
@@ -3201,6 +3307,88 @@ class StudioPage(QWidget):
             clip.zoom = round(value / 100, 2)
             self._framing_changed("zoom")
 
+    # zoom keyframes ---------------------------------------------------------------
+
+    def _clip_keys(self) -> list[list[float]]:
+        clip = self._sel_clip()
+        return [list(k) for k in clip.fx.get("keys", [])] if clip is not None else []
+
+    def _fill_keys(self) -> None:
+        keys = self._clip_keys()
+        clip = self._sel_clip()
+        start = clip.span()[0] if clip is not None else 0.0
+        row = self.keys_list.currentRow()
+        self.keys_list.blockSignals(True)
+        self.keys_list.clear()
+        for k in keys:
+            self.keys_list.addItem(f"{fmt_time(max(k[0] - start, 0.0))}  ·  {round(k[3] * 100)}%")
+        if keys:
+            self.keys_list.setCurrentRow(min(max(row, 0), len(keys) - 1))
+        self.keys_list.blockSignals(False)
+        self.key_del_btn.setEnabled(bool(keys))
+        self.key_form.setVisible(bool(keys) and clip is not None and clip.has_video)
+        self._fill_key_fields()
+
+    def _fill_key_fields(self) -> None:
+        keys, row = self._clip_keys(), self.keys_list.currentRow()
+        clip = self._sel_clip()
+        if clip is None or not 0 <= row < len(keys):
+            return
+        k = keys[row]
+        for w, v in ((self.key_time, max(k[0] - clip.span()[0], 0.0)), (self.key_zoom, round(k[3] * 100)),
+                     (self.key_x, round(k[1] * 100)), (self.key_y, round(k[2] * 100))):
+            w.blockSignals(True)
+            w.setValue(v)
+            w.blockSignals(False)
+
+    def _set_keys(self, keys: list[list[float]], kind: str = "") -> None:
+        clip = self._sel_clip()
+        if clip is None:
+            return
+        clip.fx = effects.sanitize({**clip.fx, "keys": keys})
+        clip.fit = "fill" if clip.fx.get("keys") else clip.fit  # a crop is what zooms
+        self._follow_changed()
+        if kind:
+            self._record(kind)
+
+    def _add_key(self) -> None:
+        clip = self._sel_clip()
+        if clip is None or not clip.has_video:
+            return
+        i = self._sel[1]
+        offset = self.track.offsets()[i]
+        local = min(max(self.preview.position() - offset, 0.0), clip.kept())
+        src = round(clip.span()[0] + local * clip.speed, 3)
+        keys = self._clip_keys()
+        zoom = keys[-1][3] if keys and keys[-1][3] > 1.0 else 1.6  # a first push in; later ones repeat the last
+        if any(abs(k[0] - src) < 0.05 for k in keys):
+            self.status.setText(self.t("There is a keyframe here already."))
+            return
+        if not keys:  # a move needs somewhere to start from: the picture as it is now
+            keys.append([clip.span()[0], 0.5, 0.5, 1.0])
+        keys.append([src, 0.5, 0.5, zoom])
+        keys.sort(key=lambda k: k[0])
+        self._set_keys(keys, "keys")
+        self.keys_list.setCurrentRow(next(n for n, k in enumerate(self._clip_keys()) if abs(k[0] - src) < 1e-3))
+
+    def _remove_key(self) -> None:
+        keys, row = self._clip_keys(), self.keys_list.currentRow()
+        if 0 <= row < len(keys):
+            del keys[row]
+            if len(keys) == 1 and keys[0][3] <= 1.0:  # only the start frame is left: no move at all
+                keys = []
+            self._set_keys(keys, "keys")
+
+    def _edit_key(self) -> None:
+        keys, row = self._clip_keys(), self.keys_list.currentRow()
+        clip = self._sel_clip()
+        if clip is None or not 0 <= row < len(keys):
+            return
+        keys[row] = [round(clip.span()[0] + self.key_time.value(), 3), self.key_x.value() / 100,
+                     self.key_y.value() / 100, self.key_zoom.value() / 100]
+        keys.sort(key=lambda k: k[0])
+        self._set_keys(keys, "keys")
+
     # follow the face --------------------------------------------------------------
 
     def _follow_face(self) -> None:
@@ -3324,6 +3512,13 @@ class StudioPage(QWidget):
         cut.addRow(self._label("Fade in / out:"), self.song_fade)
         lay.addLayout(cut)
 
+        lay.addWidget(self._label("CUT TO THE BEAT", "field_cap"))
+        self.beat_btn = self._btn("Cut clips to the beat", self.cut_to_beat,
+                                  "Moves each cut a little so it lands on this song's beat")
+        lay.addWidget(self.beat_btn)
+        lay.addWidget(self._label(
+            "Listens to the song and trims the clips so every cut lands on a beat. "
+            "Works with plain cuts (no transitions).", "hint"))
         lay.addWidget(self._label("ALL MUSIC", "field_cap"))
         self.orig_vol, ov = self._level(100)
         self.orig_vol.valueChanged.connect(lambda _v: (self._push_music(), self._record("orig_vol")))
@@ -3645,7 +3840,8 @@ class StudioPage(QWidget):
             list(self._clips),
             [(c.start, c.end, c.text) for c in self._cues] if self.is_video() else [],
             music if self.is_video() else None,
-            [(img.start, img.end, Path(img.path).name, self._image_thumb(img.path))
+            [(img.start, img.end, self._image_label(img),
+              self._image_thumb(img.path) if img.is_picture() else None)
              for img in self._images] if self.is_video() else [],
         )
         self._fit_timeline()
@@ -4461,7 +4657,8 @@ class StudioPage(QWidget):
         if paths:
             self.add_images(paths, at=at)
 
-    def add_images(self, paths: list[str], *, at: float | None = None) -> None:
+    def add_images(self, paths: list[str], *, at: float | None = None,
+                   tweak: Callable[[ImageOverlay], None] | None = None) -> None:
         """Add pictures from the playhead (or *at*), placed by what they look
         like: a cut-out with transparency (a logo, a sticker) goes small in a
         corner, a photo large in the middle. Several are shown one after another."""
@@ -4489,6 +4686,8 @@ class StudioPage(QWidget):
                 fit_w = min(0.8, 0.8 * frame_h / frame_w * pic.width() / max(1, pic.height()))
                 img.width = round(fit_w, 4)
                 img.fade = 0.3
+            if tweak is not None:
+                tweak(img)
             self._images.append(img)
             added = len(self._images) - 1
             t = img.end
@@ -4499,6 +4698,64 @@ class StudioPage(QWidget):
         self.select_image(added)
         self.preview.seek(self._images[added].start + 0.01)
         self._record()
+
+    def _image_label(self, img: ImageOverlay) -> str:
+        if img.kind == "blur":
+            return self.t("Blur")
+        if img.kind == "pixel":
+            return self.t("Pixelate")
+        stem = Path(img.path).stem
+        if stem.startswith("sticker-") and stem[8:] in stickers.NAMES:
+            return self.t(stickers.label(stem[8:]))
+        return Path(img.path).name
+
+    def _image_menu(self) -> None:
+        menu = QMenu(self)
+        menu.addAction(self.t("Picture from a file…"), self._browse_images)
+        menu.addSeparator()
+        menu.addAction(self.t("Blur box (hide a face or plate)"), lambda: self.add_cover("blur"))
+        menu.addAction(self.t("Pixelate box"), lambda: self.add_cover("pixel"))
+        menu.addSeparator()
+        sub = menu.addMenu(self.t("Sticker"))
+        for name in stickers.NAMES:
+            sub.addAction(self.t(stickers.label(name)), lambda n=name: self.add_sticker(n))
+        self._image_menu_obj = menu  # for tests
+        menu.exec(self.image_btn.mapToGlobal(self.image_btn.rect().bottomLeft()))
+
+    def add_cover(self, kind: str, *, at: float | None = None) -> None:
+        """A box that blurs / pixelates part of the picture from the playhead."""
+        total = self.track.total()
+        if total <= 0 or not self.is_video():
+            self.status.setText(self.t("Add at least one clip first."))
+            return
+        t = self.preview.position() if at is None else at
+        length = min(4.0, total)
+        start = round(min(max(0.0, t), max(0.0, total - length)), 2)
+        img = ImageOverlay("", start, round(min(start + length, total), 2), 0.5, 0.5, 0.3,
+                           kind=kind, height=0.2, strength=0.6)
+        self._images.append(img)
+        self._refresh_track()
+        self._push_images()
+        self.select_image(len(self._images) - 1)
+        self.preview.seek(img.start + 0.01)
+        self._record()
+
+    def add_sticker(self, name: str) -> None:
+        folder = Path(tempfile.gettempdir()) / "vidgrab-stickers"
+        target = self._autosave_path()
+        if target is not None:
+            folder = target.parent / "stickers"
+        try:
+            paths = stickers.ensure(folder)
+        except OSError as exc:
+            self.status.setText(str(exc))
+            return
+        def place(img: ImageOverlay) -> None:
+            img.width = 0.18  # stickers are punctuation: small, in the middle
+            img.x, img.y = 0.5, 0.5
+            img.fade = 0.2
+
+        self.add_images([paths[name]], tweak=place)
 
     def _first_video_size(self) -> tuple[int, int]:
         first = next((c for c in self._clips if c.has_video), None)
@@ -4543,6 +4800,8 @@ class StudioPage(QWidget):
                          rotation: float = 0.0) -> None:
         if 0 <= k < len(self._images):
             img = self._images[k]
+            if not img.is_picture() and img.width > 0:
+                img.height = round(min(max(img.height * width / img.width, 0.02), 1.0), 4)  # keeps its shape
             img.x, img.y, img.width, img.rotation = x, y, width, rotation
             self._sel = ("image", k)
             self._image_changed()
@@ -4580,17 +4839,29 @@ class StudioPage(QWidget):
         self.image_size.setRange(3, 200)
         self.image_size.valueChanged.connect(self._set_image_size)
         form.addRow(self._label("Size:"), srow)
+        self.image_height, hrow = self._level(20)
+        self.image_height.setRange(2, 100)
+        self.image_height.valueChanged.connect(self._set_image_height)
+        self.image_height_lbl = self._label("Height:")
+        form.addRow(self.image_height_lbl, hrow)
+        self.image_strength, trow = self._level(60)
+        self.image_strength.setRange(0, 100)
+        self.image_strength.valueChanged.connect(self._set_image_strength)
+        self.image_strength_lbl = self._label("Strength:")
+        form.addRow(self.image_strength_lbl, trow)
         self.image_opacity, orow = self._level(100)
         self.image_opacity.setRange(5, 100)
         self.image_opacity.valueChanged.connect(self._set_image_opacity)
-        form.addRow(self._label("Opacity:"), orow)
+        self.image_opacity_lbl = self._label("Opacity:")
+        form.addRow(self.image_opacity_lbl, orow)
         self.image_fade = QDoubleSpinBox()
         self.image_fade.setRange(0.0, 5.0)
         self.image_fade.setSingleStep(0.1)
         self.image_fade.setDecimals(1)
         self.image_fade.setSuffix(" s")
         self.image_fade.valueChanged.connect(self._set_image_fade)
-        form.addRow(self._label("Fade in / out:"), self.image_fade)
+        self.image_fade_lbl = self._label("Fade in / out:")
+        form.addRow(self.image_fade_lbl, self.image_fade)
         turn = QHBoxLayout()
         turn.setSpacing(6)
         self.image_rotation = QDoubleSpinBox()
@@ -4604,13 +4875,17 @@ class StudioPage(QWidget):
         for text, step, tip in (("↺ 90°", -90.0, "Turn left 90°"), ("↻ 90°", 90.0, "Turn right 90°")):
             b = self._btn(text, lambda _c=False, d=step: self._turn_image(d), tip)
             turn.addWidget(b)
-        form.addRow(self._label("Rotation:"), turn)
+        self.image_rotation_lbl = self._label("Rotation:")
+        form.addRow(self.image_rotation_lbl, turn)
+        self.image_form = form
         lay.addLayout(form)
-        lay.addWidget(self._label("MOVEMENT", "field_cap"))
+        self.image_move_cap = self._label("MOVEMENT", "field_cap")
+        lay.addWidget(self.image_move_cap)
         self.image_motion_btns: dict[str, QPushButton] = {}
-        lay.addWidget(self._choice_grid(
+        self.image_motion_grid = self._choice_grid(
             [("none", "Still"), ("zoom_in", "Zoom in"), ("zoom_out", "Zoom out")], 3,
-            self._set_image_motion, self.image_motion_btns))
+            self._set_image_motion, self.image_motion_btns)
+        lay.addWidget(self.image_motion_grid)
         lay.addWidget(self._label("POSITION", "field_cap"))
         pos_row = QHBoxLayout()
         pos_row.setSpacing(12)
@@ -4649,19 +4924,28 @@ class StudioPage(QWidget):
         if img is None:
             return
         self.image_name.setText(QFontMetricsF(self.image_name.font()).elidedText(
-            Path(img.path).name, Qt.ElideMiddle, max(120, self.insp.width() - 16)))
+            self._image_label(img), Qt.ElideMiddle, max(120, self.insp.width() - 16)))
         self.image_name.setToolTip(img.path)
+        cover = not img.is_picture()  # a blur / pixel box: height and strength, no picture options
+        for lbl, shown in ((self.image_height_lbl, cover), (self.image_strength_lbl, cover),
+                           (self.image_opacity_lbl, not cover), (self.image_fade_lbl, not cover),
+                           (self.image_rotation_lbl, not cover)):
+            self.image_form.setRowVisible(lbl, shown)
+        self.image_move_cap.setVisible(not cover)
+        self.image_motion_grid.setVisible(not cover)
         for key, value in (("start", img.start), ("end", img.end)):
             if not self.image_fields[key].hasFocus():
                 self.image_fields[key].setText(_fmt_precise(value))
         for w, v in ((self.image_size, round(img.width * 100)),
+                     (self.image_height, round(img.height * 100)),
+                     (self.image_strength, round(img.strength * 100)),
                      (self.image_opacity, round(img.opacity * 100)), (self.image_fade, img.fade),
                      (self.image_rotation, img.rotation)):
             w.blockSignals(True)
             w.setValue(v)
             w.blockSignals(False)
-        self._sync_level_label(self.image_size)
-        self._sync_level_label(self.image_opacity)
+        for w in (self.image_size, self.image_height, self.image_strength, self.image_opacity):
+            self._sync_level_label(w)
         for kind, b in self.image_motion_btns.items():
             b.setChecked(kind == img.motion)
 
@@ -4689,6 +4973,18 @@ class StudioPage(QWidget):
         if img is not None:
             img.width = value / 100
             self._image_changed("image_size")
+
+    def _set_image_height(self, value: int) -> None:
+        img = self._cur_image()
+        if img is not None:
+            img.height = value / 100
+            self._image_changed("image_height")
+
+    def _set_image_strength(self, value: int) -> None:
+        img = self._cur_image()
+        if img is not None:
+            img.strength = value / 100
+            self._image_changed("image_strength")
 
     def _set_image_opacity(self, value: int) -> None:
         img = self._cur_image()
@@ -4826,6 +5122,52 @@ class StudioPage(QWidget):
         self.select_clip(i)
         self.status.setText(self.t("Kept the best {n} seconds ({a} – {b}).", n=round(end - start),
                                    a=fmt_time(start), b=fmt_time(end)))
+
+    def _beat_song(self) -> _Song | None:
+        if self._sel and self._sel[0] == "music" and 0 <= self._sel[1] < len(self._songs):
+            return self._songs[self._sel[1]]
+        return self._songs[0] if self._songs else None
+
+    def cut_to_beat(self) -> None:
+        song = self._beat_song()
+        if song is None or len(self._clips) < 2 or not self.is_video():
+            self.status.setText(self.t("Add at least two clips and a song first."))
+            return
+        if any(c.transition != "none" for c in self._clips[1:]):
+            self.status.setText(self.t("Cut to the beat works with plain cuts: set the transitions to None first."))
+            return
+        if not beats.available():
+            self.status.setText(self.t("Beat finding needs the speech add-on (numpy), which this "
+                                       "installation doesn't have."))
+            return
+        self.beat_btn.setEnabled(False)
+        self.status.setText(self.t("Listening for the beat…"))
+        start, end = song.span()
+        self._beat_pool.start(_BeatTask(self._beat_relay, song.path, start, end, song.offset))
+
+    def _beat_done(self, bpm: float, times: list, err: str) -> None:
+        self.beat_btn.setEnabled(True)
+        if err or not times:
+            self.status.setText(self.t("Could not find a clear beat in this song.") if not err
+                                else self.t("Could not analyse the sound: {err}", err=err))
+            return
+        before = [c.kept() for c in self._clips]
+        after = beats.snap_durations(before, [t for t in times if t >= 0])
+        changed = 0
+        for clip, new in zip(self._clips, after, strict=True):
+            start = clip.span()[0]
+            new_end = round(start + new * clip.speed, 3)
+            if clip.length:
+                new_end = min(new_end, clip.length)
+            if abs(new_end - clip.span()[1]) > 0.01:
+                clip.end = new_end
+                changed += 1
+        if not changed:
+            self.status.setText(self.t("The cuts already sit on the beat ({bpm} BPM).", bpm=round(bpm)))
+            return
+        self._project_changed()
+        self._record("beat")
+        self.status.setText(self.t("Cut {n} clips to the beat ({bpm} BPM).", n=changed, bpm=round(bpm)))
 
     def cut_ranges(self, i: int, keeps: list[tuple[float, float]]) -> None:
         """Replace clip *i* by one clip per kept (start, end); only the first
@@ -5096,7 +5438,8 @@ class StudioPage(QWidget):
                        "denoise": c.denoise, "fx": effects.sanitize(c.fx)}
                       for c in self._clips],
             "subtitles": [asdict(c) for c in self._cues],
-            "images": [{**ref(img.path), **{k: v for k, v in asdict(img).items() if k != "path"}}
+            "images": [{**(ref(img.path) if img.is_picture() else {"path": ""}),
+                        **{k: v for k, v in asdict(img).items() if k != "path"}}
                        for img in self._images],
             "music": music,
             "music_options": {"original_volume": self.orig_vol.value(),
@@ -5226,8 +5569,10 @@ class StudioPage(QWidget):
         img_fields = set(ImageOverlay.__dataclass_fields__) - {"path"}
         images = []
         for m in data.get("images") or []:
-            found = find(m) if isinstance(m, dict) else ""
-            if found:
+            found = find(m) if isinstance(m, dict) and m.get("kind", "image") == "image" else ""
+            if isinstance(m, dict) and m.get("kind") in COVER_KINDS:  # a box has no file to find
+                images.append(astuple(ImageOverlay("", **{k: v for k, v in m.items() if k in img_fields})))
+            elif found:
                 images.append(astuple(ImageOverlay(found, **{k: v for k, v in m.items()
                                                              if k in img_fields})))
         self._load_state({"clips": clips, "cues": cues, "music": songs, "images": images,
@@ -5323,6 +5668,8 @@ class StudioPage(QWidget):
         self._follow_cancel.set()
         self._best_pool.clear()
         self._best_pool.waitForDone(3000)
+        self._beat_pool.clear()
+        self._beat_pool.waitForDone(3000)
         self._follow_pool.clear()
         self._follow_pool.waitForDone(3000)
         self.fx_pool.clear()
@@ -5606,6 +5953,7 @@ class StudioPage(QWidget):
                 "hardware": bool(self.host.setting("gpu_render"))
                 if hasattr(self.host, "setting") else False,
                 "normalize_loudness": self.loud_cb.isChecked(),
+                "models_dir": self.host.models_dir() if hasattr(self.host, "models_dir") else None,
             })
         else:
             ext = self.afmt.currentData() or ".mp3"

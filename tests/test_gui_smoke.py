@@ -1120,10 +1120,11 @@ def test_render_worker_passes_everything_to_compose_video(qapp, monkeypatch) -> 
                         lambda clips, out, **kw: got.update(kw, clips=clips) or out)
     kw = {"clips": [Clip("a.mp4")], "output_file": "o.mp4", "resolution": "720p",
           "subtitles": [SubtitleCue(0, 1, "x")], "music": [BackgroundMusic("m.mp3")],
-          "images": [ImageOverlay("i.png", 0, 1)], "render_quality": "high"}
+          "images": [ImageOverlay("i.png", 0, 1)], "render_quality": "high",
+          "models_dir": "/tmp/models"}
     worker = appmod._Worker("compose_video", **kw)
     worker.run()
-    for key in ("resolution", "subtitles", "music", "images"):
+    for key in ("resolution", "subtitles", "music", "images", "models_dir"):
         assert got[key] == kw[key], key
     assert got["quality"] == "high"
 

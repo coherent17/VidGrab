@@ -547,13 +547,13 @@ def test_video_command_uses_the_chosen_encoder() -> None:
 @requires_ffmpeg
 def test_compose_video_hardware_encoder_falls_back_to_the_cpu(tmp_path: Path, monkeypatch) -> None:
     from vidgrab.core.gpu import HwEncoder
-    from vidgrab.media import studio
+    from vidgrab.media import render
 
     a = _make(tmp_path / "a.mp4", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25",
               "-f", "lavfi", "-i", "sine=frequency=440", "-t", "2", "-shortest")
     asked: list[str] = []
     # a card whose driver doesn't answer: ffmpeg refuses the (unknown) encoder mid-render
-    monkeypatch.setattr(studio, "detect_encoder",
+    monkeypatch.setattr(render, "detect_encoder",
                         lambda ffmpeg: asked.append(ffmpeg) or HwEncoder("fake", "h264_nope", "Fake GPU"))
     log: list[str] = []
     out = compose_video([Clip(str(a))], tmp_path / "gpu.mp4", hardware=True, on_log=log.append)
@@ -585,11 +585,11 @@ def test_a_render_that_stops_answering_is_killed_not_waited_for(tmp_path: Path) 
 @requires_ffmpeg
 def test_only_the_graphics_card_attempt_has_a_stall_limit(tmp_path: Path, monkeypatch) -> None:
     from vidgrab.core.gpu import HwEncoder
-    from vidgrab.media import studio
+    from vidgrab.media import render, studio
 
     a = _make(tmp_path / "a.mp4", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25",
               "-f", "lavfi", "-i", "sine=frequency=440", "-t", "1", "-shortest")
-    monkeypatch.setattr(studio, "detect_encoder", lambda ffmpeg: HwEncoder("fake", "h264_nope", "Fake GPU"))
+    monkeypatch.setattr(render, "detect_encoder", lambda ffmpeg: HwEncoder("fake", "h264_nope", "Fake GPU"))
     seen: list[tuple[str, float | None]] = []
 
     def run(cmd, total, **kw):
@@ -597,7 +597,7 @@ def test_only_the_graphics_card_attempt_has_a_stall_limit(tmp_path: Path, monkey
         if len(seen) == 1:  # the card hangs and is given up on
             raise RuntimeError("ffmpeg stopped responding (no progress for 120 s).")
 
-    monkeypatch.setattr(studio, "_run_with_progress", run)
+    monkeypatch.setattr(render, "_run_with_progress", run)
     log: list[str] = []
     compose_video([Clip(str(a))], tmp_path / "o.mp4", hardware=True, on_log=log.append)
     assert seen == [("h264_nope", studio.HW_STALL_S), ("libx264", None)]

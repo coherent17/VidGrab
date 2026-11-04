@@ -633,6 +633,10 @@ QStatusBar {
     color: @TEXT_MUTED@;
     padding: 5px 12px;
 }
+QFrame#tb_sep {
+    background-color: @BORDER_HI@;
+    border: none;
+}
 QLabel#empty_title {
     font-size: 17px;
     font-weight: 800;

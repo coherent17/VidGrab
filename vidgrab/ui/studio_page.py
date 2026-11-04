@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import (
+    QEvent,
     QSize,
     Qt,
     QTimer,
@@ -141,6 +142,14 @@ class StudioPage(ProjectInspectorMixin, CueInspectorMixin, ClipInspectorMixin, M
         return self._tr(lbl, key)
 
     @staticmethod
+    def _tb_sep() -> QFrame:
+        """A thin line between groups of toolbar buttons."""
+        line = QFrame()
+        line.setObjectName("tb_sep")
+        line.setFixedSize(1, 24)
+        return line
+
+    @staticmethod
     def _panel() -> tuple[QWidget, QVBoxLayout]:
         w = QWidget()
         w.setObjectName("panel")
@@ -177,8 +186,19 @@ class StudioPage(ProjectInspectorMixin, CueInspectorMixin, ClipInspectorMixin, M
         top.setStretchFactor(0, 1)
         top.setStretchFactor(1, 0)
         top.setSizes([880, 350])
-        root.addWidget(top, stretch=1)
-        root.addWidget(self._build_timeline())
+        # picture + inspector above, timeline below, with a handle between them: pull it down
+        # to give the inspector more room, up to give the timeline more
+        self._split_touched = False
+        self._vsplit = QSplitter(Qt.Vertical)
+        self._vsplit.setChildrenCollapsible(False)
+        self._vsplit.setHandleWidth(8)
+        self._vsplit.addWidget(top)
+        timeline = self._build_timeline()
+        self._vsplit.addWidget(timeline)
+        self._vsplit.setStretchFactor(0, 1)
+        self._vsplit.setStretchFactor(1, 0)
+        self._vsplit.splitterMoved.connect(lambda *_a: setattr(self, "_split_touched", True))
+        root.addWidget(self._vsplit, stretch=1)
 
     def _build_toolbar(self) -> QWidget:
         bar = QWidget()
@@ -246,10 +266,13 @@ class StudioPage(ProjectInspectorMixin, CueInspectorMixin, ClipInspectorMixin, M
         panel, lay = self._panel()
         lay.setContentsMargins(8, 8, 8, 6)
         bar = FlowLayout(spacing=4)  # wraps to a second row in a narrow window
+        self._tl_panel, self._tl_bar = panel, bar
+        panel.installEventFilter(self)
         bar.addWidget(self._btn("＋ Media…", self._add_dialog, "Add video or music files"))
         self.split_btn = self._btn("✂ Split", self.split_clip,
                                    "Split the clip under the playhead in two (S)")
         bar.addWidget(self.split_btn)
+        bar.addWidget(self._tb_sep())
         self.add_sub_btn = self._btn("＋ Subtitle", self._add_cue,
                                      "Add a subtitle line at the playhead")
         self.captions_btn = self._btn("Auto captions…", self.auto_captions,
@@ -262,6 +285,7 @@ class StudioPage(ProjectInspectorMixin, CueInspectorMixin, ClipInspectorMixin, M
         for b in (self.add_sub_btn, self.captions_btn, self.image_btn, self.music_btn,
                   self.combine_btn):
             bar.addWidget(b)
+        bar.addWidget(self._tb_sep())
         for key, slot, tip in (("−", lambda: self.zoom_timeline(1 / 1.5), "Zoom out (Ctrl+−)"),
                                ("+", lambda: self.zoom_timeline(1.5), "Zoom in (Ctrl++)"),
                                ("Fit", self.fit_timeline, "Fit the whole project (Ctrl+0)")):
@@ -271,13 +295,18 @@ class StudioPage(ProjectInspectorMixin, CueInspectorMixin, ClipInspectorMixin, M
         keys = self._btn("?", self.show_shortcuts, "Keyboard shortcuts")
         keys.setFixedWidth(34)
         bar.addWidget(keys)
+        bar.addWidget(self._tb_sep())
         for key, slot, tip in (("▲", lambda: self._move_clip(-1), "Move up"),
                                ("▼", lambda: self._move_clip(1), "Move down"),
                                ("✕", self._delete_selected, "Delete selected (Del)")):
             b = self._btn(key, slot, tip)
             b.setFixedWidth(34)
             bar.addWidget(b)
-        lay.addLayout(bar)
+        self._tl_host = QWidget()  # its own widget, so its height can be pinned to what the rows need
+        self._tl_host.setLayout(bar)
+        bar.setContentsMargins(0, 0, 0, 0)
+        self._tl_host.installEventFilter(self)
+        lay.addWidget(self._tl_host)
         self.track = TrackTimeline()
         self.thumbs = ThumbCache(self)
         self.track.set_thumb_cache(self.thumbs)
@@ -338,7 +367,36 @@ class StudioPage(ProjectInspectorMixin, CueInspectorMixin, ClipInspectorMixin, M
 
     def _fit_timeline(self) -> None:
         """Show every row up to ~6 clips; beyond that the rows scroll."""
-        self.track_scroll.setFixedHeight(min(self.track.height(), 340) + 2)
+        natural = min(self.track.height(), 340) + 2
+        self.track_scroll.setMaximumHeight(natural)
+        self.track_scroll.setMinimumHeight(110)  # the splitter may shrink it; the rows then scroll
+        self._cap_timeline()
+
+    def _cap_timeline(self) -> None:
+        """The toolbar is exactly as tall as its rows and the timeline panel never taller than
+        toolbar + rows, so spare height goes to the picture and inspector above (the handle can
+        still make the timeline shorter)."""
+        if not hasattr(self, "_tl_host"):
+            return
+        bar_h = self._tl_bar.heightForWidth(max(self._tl_host.width(), 1))
+        if bar_h != self._tl_host.minimumHeight():
+            self._tl_host.setFixedHeight(bar_h)
+        lay = self._tl_panel.layout()
+        m = lay.contentsMargins()
+        cap = m.top() + m.bottom() + bar_h + lay.spacing() + self.track_scroll.maximumHeight()
+        if cap != self._tl_panel.maximumHeight():
+            self._tl_panel.setMaximumHeight(cap)
+        sizes = self._vsplit.sizes()
+        if not self._split_touched and len(sizes) == 2 and self.isVisible() and sizes[1] != cap:
+            total = sum(sizes)  # until the user drags the handle, the timeline shows all its rows
+            want = max(min(cap, total - 220), 0)
+            if want:
+                self._vsplit.setSizes([total - want, want])
+
+    def eventFilter(self, obj, event) -> bool:
+        if obj is getattr(self, "_tl_host", None) and event.type() == QEvent.Resize:
+            self._cap_timeline()  # the toolbar may wrap onto another row at a new width
+        return super().eventFilter(obj, event)
 
     # inspector -----------------------------------------------------------------
 

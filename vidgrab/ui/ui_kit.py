@@ -236,6 +236,11 @@ class FlowLayout(QLayout):
     def takeAt(self, index: int) -> QLayoutItem | None:
         return self._items.pop(index) if 0 <= index < len(self._items) else None
 
+    def expandingDirections(self) -> Qt.Orientation:
+        """Take only the room the rows need: QLayout's default asks for all spare space, which
+        a toolbar in a taller panel would swallow as an empty gap."""
+        return Qt.Orientation(0)
+
     def hasHeightForWidth(self) -> bool:
         return True
 

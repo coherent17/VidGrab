@@ -612,6 +612,37 @@ def _network_unreachable(exc: BaseException) -> bool:
     return any(k in text for k in _UNREACHABLE)
 
 
+# (words in the error text, plain-language explanation) — first match wins
+_FRIENDLY_ERRORS = (
+    (("not a bot", "confirm you\u2019re not a bot", "confirm you're not a bot"),
+     ("YouTube wants to check that you are not a robot. Wait a few minutes, or choose your browser under "
+      "Settings > Downloads > Use login of.")),
+    (("private video",), "This video is private."),
+    (("confirm your age", "age-restricted", "age restricted"),
+     "This video is age-restricted. Choose your browser under Settings > Downloads > Use login of."),
+    (("members-only", "members only", "join this channel"), "This video is for channel members only."),
+    (("not available in your country", "geo", "blocked it in your country"),
+     "This video is not available in your country."),
+    (("video unavailable", "has been removed", "no longer available", "account associated"),
+     "This video is unavailable or was removed."),
+    (("unsupported url",), "VidGrab cannot read videos from this address."),
+    (("http error 404", "404: not found"), "The page was not found. Check that the whole link was pasted."),
+    (("http error 429", "too many requests"), "Too many requests. Wait a few minutes and try again."),
+    (("name or service not known", "getaddrinfo", "timed out", "network is unreachable",
+      "connection refused", "temporary failure in name resolution"),
+     "No connection to the website. Check your internet and try again."),
+)
+
+
+def explain_error(exc: object, tr: TranslateFn) -> str:
+    """A plain-language sentence for a known yt-dlp failure, else ""."""
+    text = f"{exc}".lower()
+    for words, sentence in _FRIENDLY_ERRORS:
+        if any(w in text for w in words):
+            return tr(sentence)
+    return ""
+
+
 def _try_clients(attempt: Callable[[str, bool], object], log: LogCallback, tr: TranslateFn) -> object:
     """Run *attempt(client, ipv4)* with each player client in turn (full
     resolution first, then the reliable low-res one). After an "unreachable"
@@ -631,7 +662,10 @@ def _try_clients(attempt: Callable[[str, bool], object], log: LogCallback, tr: T
                 queue = [(client, True)] + [(c, True) for c, _v4 in queue]
                 continue
             log(tr("Download failed with {client} ({exc}); retrying.", client=client, exc=exc))
+    friendly = explain_error(last_exc, tr)
     msg = tr("Download failed: {exc}", exc=last_exc)
+    if friendly:  # the plain sentence first, the technical text after it
+        msg = friendly + "\n" + msg
     if COOKIES["browser"] and "cookie" in str(last_exc).lower():
         msg += " " + tr("Could not read the login of {browser}. Close {browser} and try again, "
                         "or choose another browser in Settings.", browser=COOKIES["browser"].capitalize())

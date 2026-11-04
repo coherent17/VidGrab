@@ -135,6 +135,7 @@ from vidgrab.studio import (
     transition_overlaps,
     waveform,
 )
+from vidgrab.ui_kit import FlowLayout
 
 _HAND = Qt.PointingHandCursor
 MIN_CLIP = 0.2  # shortest a clip can be trimmed to (s)
@@ -1915,8 +1916,7 @@ class StudioPage(QWidget):
     def _build_timeline(self) -> QWidget:
         panel, lay = self._panel()
         lay.setContentsMargins(8, 8, 8, 6)
-        bar = QHBoxLayout()
-        bar.setSpacing(6)
+        bar = FlowLayout(spacing=4)  # wraps to a second row in a narrow window
         bar.addWidget(self._btn("＋ Media…", self._add_dialog, "Add video or music files"))
         self.split_btn = self._btn("✂ Split", self.split_clip,
                                    "Split the clip under the playhead in two (S)")
@@ -1933,26 +1933,20 @@ class StudioPage(QWidget):
         for b in (self.add_sub_btn, self.captions_btn, self.image_btn, self.music_btn,
                   self.combine_btn):
             bar.addWidget(b)
-        bar.addStretch()
-        self.total_lbl = QLabel()
-        self.total_lbl.setObjectName("total_lbl")
-        bar.addWidget(self.total_lbl)
-        bar.addSpacing(8)
         for key, slot, tip in (("−", lambda: self.zoom_timeline(1 / 1.5), "Zoom out (Ctrl+−)"),
                                ("+", lambda: self.zoom_timeline(1.5), "Zoom in (Ctrl++)"),
                                ("Fit", self.fit_timeline, "Fit the whole project (Ctrl+0)")):
             b = self._btn(key, slot, tip)
-            b.setFixedWidth(40 if key != "Fit" else 52)
+            b.setFixedWidth(34 if key != "Fit" else 44)
             bar.addWidget(b)
         keys = self._btn("?", self.show_shortcuts, "Keyboard shortcuts")
-        keys.setFixedWidth(40)
+        keys.setFixedWidth(34)
         bar.addWidget(keys)
-        bar.addSpacing(8)
         for key, slot, tip in (("▲", lambda: self._move_clip(-1), "Move up"),
                                ("▼", lambda: self._move_clip(1), "Move down"),
                                ("✕", self._delete_selected, "Delete selected (Del)")):
             b = self._btn(key, slot, tip)
-            b.setFixedWidth(40)
+            b.setFixedWidth(34)
             bar.addWidget(b)
         lay.addLayout(bar)
         self.track = TrackTimeline()
@@ -2025,7 +2019,13 @@ class StudioPage(QWidget):
         panel.setMaximumWidth(440)
         self.insp_title = QLabel()
         self.insp_title.setObjectName("panel_title")
-        lay.addWidget(self.insp_title)
+        self.total_lbl = QLabel()  # "3 clips • 1:20", on the right of the panel title
+        self.total_lbl.setObjectName("total_lbl")
+        head = QHBoxLayout()
+        head.addWidget(self.insp_title)
+        head.addStretch()
+        head.addWidget(self.total_lbl)
+        lay.addLayout(head)
         self.insp = QStackedWidget()
         for build in (self._build_project_inspector, self._build_cue_inspector,
                       self._build_music_inspector, self._build_clip_inspector,

@@ -8,6 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFrame,
@@ -21,17 +22,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab import studio, tools
+from vidgrab import reframe, shorts, studio, tools
 from vidgrab.downloader import DownloadCancelled
 from vidgrab.ui_kit import rgba
 
-TOOLS = ["compress", "convert", "gif", "thumbnail", "audio"]
-_NAMES = {"compress": "Shrink to a size", "convert": "Convert", "gif": "Make a GIF",
+TOOLS = ["short", "compress", "convert", "gif", "thumbnail", "audio"]
+_NAMES = {"short": "Make a Short", "compress": "Shrink to a size", "convert": "Convert", "gif": "Make a GIF",
           "thumbnail": "Thumbnail", "audio": "Extract audio"}
-_BLURBS = {"compress": "Make a video fit a size limit", "convert": "Change the file format",
+_BLURBS = {"short": "A vertical clip with captions", "compress": "Make a video fit a size limit", "convert": "Change the file format",
            "gif": "Turn a few seconds into a GIF", "thumbnail": "Pick a frame and add a title",
            "audio": "Save just the sound"}
-_ICONS = {"compress": "download", "convert": "folder", "gif": "film", "thumbnail": "captions", "audio": "music"}
+_ICONS = {"short": "scissors", "compress": "download", "convert": "folder", "gif": "film", "thumbnail": "captions", "audio": "music"}
 _FILTER = "Media (*.mp4 *.mkv *.webm *.mov *.avi *.mp3 *.m4a *.opus *.wav *.flac *.ogg *.aac *.gif)"
 THUMB_W, THUMB_H = 1280, 720
 
@@ -64,6 +65,28 @@ class _Task(QRunnable):
             self._relay.done.emit("", str(exc) or exc.__class__.__name__)
 
 
+class _Job(QRunnable):
+    """A Python job (not one ffmpeg command): fn(progress, cancelled) -> output file."""
+
+    def __init__(self, relay: _Relay, fn, cancel: threading.Event) -> None:
+        super().__init__()
+        self._relay, self._fn, self._cancel = relay, fn, cancel
+
+    def run(self) -> None:
+        def progress(msg: str, pct: float | None) -> None:
+            if self._cancel.is_set():
+                raise DownloadCancelled("cancelled")
+            if pct is not None:
+                self._relay.progress.emit(msg, pct)
+
+        try:
+            self._relay.done.emit(str(self._fn(progress, self._cancel.is_set)), "")
+        except DownloadCancelled:
+            self._relay.done.emit("", "cancelled")
+        except Exception as exc:  # noqa: BLE001 - whatever failed, show it
+            self._relay.done.emit("", str(exc) or exc.__class__.__name__)
+
+
 def _spin(lo: float, hi: float, value: float, suffix: str = "", step: float = 1.0, dec: int = 1) -> QDoubleSpinBox:
     s = QDoubleSpinBox()
     s.setRange(lo, hi)
@@ -82,7 +105,7 @@ class ToolsPage(QWidget):
         super().__init__()
         self.host = host
         self._palette: dict[str, str] = {}
-        self._tool = "compress"
+        self._tool = "short"
         self._src = ""
         self._duration = 0.0
         self._out = ""
@@ -164,7 +187,7 @@ class ToolsPage(QWidget):
         cl.addLayout(foot)
         lay.addWidget(card, stretch=1)
         self.retranslate()
-        self.select_tool("compress")
+        self.select_tool("short")
 
     # ── option panels ──────────────────────────────────────────────────
 
@@ -195,6 +218,21 @@ class ToolsPage(QWidget):
             g.addWidget(self.shrink_lbl)
             g.addWidget(self.shrink_box)
             self._sync_size()
+        elif key == "short":
+            self.short_len = QComboBox()
+            for sec in shorts.LENGTHS:
+                self.short_len.addItem(f"{sec} s", sec)
+            self.short_len.setCurrentIndex(1)
+            self.short_lbl = QLabel()
+            self.short_follow = QCheckBox()
+            self.short_follow.setChecked(reframe.available())
+            self.short_follow.setEnabled(reframe.available())
+            self.short_caps = QCheckBox()
+            self.short_caps.setChecked(True)
+            self.short_note = QLabel()
+            self.short_note.setWordWrap(True)
+            for wd in (self.short_lbl, self.short_len, self.short_follow, self.short_caps, self.short_note):
+                g.addWidget(wd)
         elif key in ("convert", "audio"):
             combo = QComboBox()
             for f in (tools.CONVERT if key == "convert" else tools.AUDIO_TARGETS):
@@ -262,8 +300,14 @@ class ToolsPage(QWidget):
         for k, b in self.tiles.items():
             b.setText(f"{t(_NAMES[k])}\n{t(_BLURBS[k])}")
         self.browse.setText(t("Choose file…"))
+        self.file.setPlaceholderText(t("Choose a file, or drop one on this window"))
         self.show_btn.setText(t("Show in folder"))
         self.size_combo.setItemText(self.size_combo.count() - 1, t("Custom…"))
+        self.short_lbl.setText(t("Length of the Short"))
+        self.short_follow.setText(t("Keep the main face in the picture"))
+        self.short_caps.setText(t("Add word-by-word captions"))
+        self.short_note.setText(t("It picks the liveliest part, makes it vertical (9:16) and evens out the "
+                                  "sound. Captions need the speech model, which downloads once."))
         self.size_lbl.setText(t("Make the file about"))
         self.shrink_lbl.setText(t("Picture size"))
         self.shrink_box.setItemText(0, t("Lower the resolution when needed (recommended)"))
@@ -331,6 +375,9 @@ class ToolsPage(QWidget):
             if key == "thumbnail":
                 self._save_thumb()
                 return
+            if key == "short":
+                self._start_short(src)
+                return
             cmd, total = self._command(src)
         except (RuntimeError, OSError, ValueError, KeyError) as exc:
             self.status.setText(str(exc))
@@ -341,6 +388,28 @@ class ToolsPage(QWidget):
         self.status.setText(t("Working…"))
         self._refresh_ui()
         self._pool.start(_Task(self._relay, cmd, total, t("Working…"), self._cancel, self.host.t))
+
+    def _start_short(self, src: str) -> None:
+        t = self.host.t
+        out = tools.output_for(src, "short", ".mp4")
+        seconds, follow, caps = self.short_len.currentData(), self.short_follow.isChecked(), self.short_caps.isChecked()
+        models, gpu = self.host.models_dir(), self.host.use_gpu_captions()
+
+        def work(progress, cancelled):
+            try:
+                return shorts.make_short(src, out, seconds=seconds, follow=follow, with_captions=caps,
+                                         models_dir=models, gpu=gpu, on_progress=progress,
+                                         on_log=self.host.log, cancelled=cancelled, translate=t)
+            except BaseException:
+                out.unlink(missing_ok=True)
+                raise
+
+        self._cancel.clear()
+        self._running, self._out = True, ""
+        self.bar.setValue(0)
+        self.status.setText(t("Working…"))
+        self._refresh_ui()
+        self._pool.start(_Job(self._relay, work, self._cancel))
 
     def _command(self, src: str) -> tuple[list[str], float]:
         key, dur = self._tool, self._duration
@@ -360,6 +429,8 @@ class ToolsPage(QWidget):
 
     def _progress(self, msg: str, pct: float) -> None:
         self.bar.setValue(int(pct))
+        if self._tool == "short" and msg:
+            self.status.setText(msg)
 
     def _done(self, out: str, err: str) -> None:
         t = self.host.t

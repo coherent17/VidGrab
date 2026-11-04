@@ -76,3 +76,22 @@ def test_get_command_downloads_each_link(tmp_path, capsys, monkeypatch) -> None:
         cli.main(["get", "https://a/1", "https://a/2", "--mp3", "--quality", "720", "--out", str(tmp_path)])
     assert e.value.code == 0
     assert calls == [("https://a/1", str(tmp_path), "mp3", "720"), ("https://a/2", str(tmp_path), "mp3", "720")]
+
+
+def test_short_command_makes_a_vertical_file(tmp_path) -> None:
+    import shutil
+    import subprocess
+
+    import pytest
+
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        pytest.skip("needs ffmpeg")
+    from vidgrab import cli
+
+    src = tmp_path / "in.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=10:duration=4",
+                    "-f", "lavfi", "-i", "sine=duration=4", "-c:v", "libx264", "-c:a", "aac", "-shortest", str(src)],
+                   check=True)
+    assert "short" in cli.COMMANDS
+    assert cli.run_command(["short", str(src), "--seconds", "3", "--no-face", "--no-captions"]) == 0
+    assert (tmp_path / "in (short).mp4").is_file()

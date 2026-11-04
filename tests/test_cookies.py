@@ -68,3 +68,14 @@ def test_an_unreadable_login_is_left_out_so_everything_still_works(monkeypatch):
     assert calls == ["chrome", "chrome"]
     downloader._net_opts()
     assert calls == ["chrome", "chrome"]  # a working login is kept
+
+
+def test_known_download_errors_get_a_plain_sentence() -> None:
+    from vidgrab import downloader as d
+
+    ident = lambda s, **k: s.format(**k) if k else s
+    assert "not found" in d.explain_error("ERROR: HTTP Error 404: Not Found", ident)
+    assert "private" in d.explain_error("ERROR: Private video. Sign in", ident)
+    assert "No connection" in d.explain_error("getaddrinfo failed", ident)
+    assert "robot" in d.explain_error("Sign in to confirm you're not a bot", ident)
+    assert d.explain_error("something odd", ident) == ""

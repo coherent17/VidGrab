@@ -3,8 +3,9 @@ import subprocess
 
 import pytest
 
-from vidgrab import effects, reframe, studio
-from vidgrab.studio import Clip
+from vidgrab.ai import reframe
+from vidgrab.media import effects, studio
+from vidgrab.media.studio import Clip
 
 np = reframe.np
 pytestmark = pytest.mark.skipif(np is None, reason="needs numpy")

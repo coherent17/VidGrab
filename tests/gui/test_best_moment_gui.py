@@ -19,7 +19,7 @@ def qapp():
 
 
 def test_best_moment_keeps_the_loud_part(qapp, tmp_path, monkeypatch) -> None:
-    from vidgrab import app as m
+    from vidgrab.ui import app as m
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")

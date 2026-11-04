@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from vidgrab import downloader
+from vidgrab.core import downloader
 
 # Short, long-lived videos; try in order so the suite survives a single
 # video becoming unavailable.

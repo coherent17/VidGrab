@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from vidgrab import network
+from vidgrab.core import network
 
 
 def test_offline_when_no_tcp_path(monkeypatch) -> None:

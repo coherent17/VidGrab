@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from vidgrab import highlights as hl
+from vidgrab.ai import highlights as hl
 
 
 def test_best_window_picks_the_loud_stretch() -> None:

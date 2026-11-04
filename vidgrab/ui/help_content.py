@@ -5,7 +5,7 @@ the page ("download", "studio", "settings", …) the "Open it" button jumps to, 
 None. Bodies use only <p>, <ol>, <ul>, <li>, <b> and <i>."""
 from __future__ import annotations
 
-from vidgrab.fuzzy import FuzzyIndex
+from vidgrab.core.fuzzy import FuzzyIndex
 
 SECTIONS: dict[str, dict[str, str]] = {
     "start": {"en": "Getting started", "zh": "開始使用"},

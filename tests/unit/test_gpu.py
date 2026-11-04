@@ -7,8 +7,8 @@ import struct
 import subprocess
 from types import SimpleNamespace
 
-from vidgrab import gpu
-from vidgrab.gpu import HwEncoder
+from vidgrab.core import gpu
+from vidgrab.core.gpu import HwEncoder
 
 NVENC, QSV, AMF, VTB = gpu.CANDIDATES
 

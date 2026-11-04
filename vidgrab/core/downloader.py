@@ -19,7 +19,7 @@ from pathlib import Path
 import yt_dlp
 from yt_dlp.utils import parse_duration
 
-from vidgrab import ffmpeg_fetch
+from vidgrab.core import ffmpeg_fetch
 
 ProgressCallback = Callable[[str, float | None], None]
 LogCallback = Callable[[str], None]
@@ -220,12 +220,12 @@ def get_app_dir() -> Path:
     """Directory containing the app (or PyInstaller extract folder)."""
     if getattr(sys, "frozen", False):
         return Path(sys._MEIPASS)  # type: ignore[attr-defined]
-    return Path(__file__).resolve().parent.parent
+    return Path(__file__).resolve().parents[2]
 
 
 def package_dir() -> Path:
     """The vidgrab package itself: where a pip install keeps its assets."""
-    return Path(__file__).resolve().parent
+    return Path(__file__).resolve().parents[1]
 
 
 def asset_roots() -> list[Path]:
@@ -238,7 +238,7 @@ def get_bundle_dir() -> Path:
     """Directory next to the executable when frozen, else project root."""
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent.parent
+    return Path(__file__).resolve().parents[2]
 
 
 def default_output_dir() -> Path:

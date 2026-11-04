@@ -16,8 +16,8 @@ import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
-from vidgrab import studio
-from vidgrab.downloader import DownloadCancelled
+from vidgrab.core.downloader import DownloadCancelled
+from vidgrab.media import studio
 
 try:
     import numpy as np

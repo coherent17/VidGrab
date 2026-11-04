@@ -34,16 +34,16 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from vidgrab import cuda_runtime
-from vidgrab.downloader import (
+from vidgrab.ai import cuda_runtime
+from vidgrab.core.downloader import (
     DownloadCancelled,
     LogCallback,
     ProgressCallback,
     TranslateFn,
     _noop_tr,
 )
-from vidgrab.gpu import speech_threads
-from vidgrab.studio import SubtitleCue, _no_window, _require_ffmpeg
+from vidgrab.core.gpu import speech_threads
+from vidgrab.media.studio import SubtitleCue, _no_window, _require_ffmpeg
 
 # OpenVINO sends usage analytics to Google Analytics as soon as it is imported
 # (through its `openvino_telemetry` package). VidGrab keeps everything on this

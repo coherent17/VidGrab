@@ -11,7 +11,7 @@ import zipfile
 
 import pytest
 
-from vidgrab import ffmpeg_fetch as ff
+from vidgrab.core import ffmpeg_fetch as ff
 
 
 def _gz_pin(tmp_path, ffmpeg=b"FFMPEG", ffprobe=b"FFPROBE", bad_sha=False):

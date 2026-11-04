@@ -10,7 +10,7 @@ from pathlib import Path
 
 import yt_dlp
 
-from vidgrab import downloader
+from vidgrab.core import downloader
 
 FEED_SIZE = 15
 SEEN_LIMIT = 400

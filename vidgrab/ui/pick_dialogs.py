@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab.downloader import _fetch_thumbnail, _human_size
+from vidgrab.core.downloader import _fetch_thumbnail, _human_size
 
 _THUMB = QSize(112, 63)
 

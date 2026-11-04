@@ -9,7 +9,7 @@ from typing import ClassVar
 
 import pytest
 
-from vidgrab import downloader
+from vidgrab.core import downloader
 
 # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -579,7 +579,7 @@ def test_ytdl_options_playlist_outtmpl(tmp_path) -> None:
     assert opts["outtmpl"] == "%(playlist_index)02d - %(title)s.%(ext)s"
 
 def test_unreachable_network_retries_over_ipv4() -> None:
-    from vidgrab import downloader
+    from vidgrab.core import downloader
 
     calls = []
 

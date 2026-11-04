@@ -11,8 +11,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from vidgrab import captions, highlights, reframe, studio
-from vidgrab.downloader import DownloadCancelled
+from vidgrab.ai import captions, highlights, reframe
+from vidgrab.core.downloader import DownloadCancelled
+from vidgrab.media import studio
 
 LENGTHS = (15, 30, 60)  # seconds; Shorts, Reels and TikTok stop at 60
 CAPTION_Y = 0.74  # where the words sit on the tall frame (fraction of its height)
@@ -94,7 +95,7 @@ def make_short(src: str | Path, out: str | Path, *, seconds: float = 30, follow:
             log(tr("Could not follow the face ({exc}); using a centred crop.", exc=exc))
             keys = []
         if keys:
-            from vidgrab import effects
+            from vidgrab.media import effects
 
             clip.fx = effects.sanitize({"follow": keys})
     check()

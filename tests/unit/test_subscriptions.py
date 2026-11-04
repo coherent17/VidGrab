@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from vidgrab import subscriptions as sb
+from vidgrab.core import subscriptions as sb
 
 
 def test_save_load_and_add(tmp_path) -> None:
@@ -39,7 +39,7 @@ def test_parse_feed_and_new_markers() -> None:
 
 
 def test_feed_is_read_without_the_browser_login_first(monkeypatch) -> None:
-    from vidgrab import downloader
+    from vidgrab.core import downloader
 
     seen = []
 

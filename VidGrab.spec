@@ -9,7 +9,7 @@ flags) are bundled too.
 macOS builds a VidGrab.app (one folder, not one file: a one-file binary would
 unpack itself at every launch and can't be signed) and does *not* embed ffmpeg:
 the only static build with libass is not redistributable, so the app downloads
-the pinned one on first run (vidgrab/ffmpeg_fetch.py).
+the pinned one on first run (vidgrab/core/ffmpeg_fetch.py).
 """
 
 import os
@@ -95,16 +95,16 @@ a = Analysis(
         "certifi",
         "packaging",
         "vidgrab",
-        "vidgrab.app",
-        "vidgrab.captions",
-        "vidgrab.downloader",
-        "vidgrab.downloads_panel",
+        "vidgrab.ui.app",
+        "vidgrab.ai.captions",
+        "vidgrab.core.downloader",
+        "vidgrab.ui.downloads_panel",
         "vidgrab.i18n",
-        "vidgrab.jobs",
-        "vidgrab.network",
-        "vidgrab.preview",
-        "vidgrab.studio",
-        "vidgrab.studio_page",
+        "vidgrab.core.jobs",
+        "vidgrab.core.network",
+        "vidgrab.ui.preview",
+        "vidgrab.media.studio",
+        "vidgrab.ui.studio_page",
         "PySide6.QtCore",
         "PySide6.QtGui",
         "PySide6.QtMultimedia",
@@ -123,7 +123,7 @@ a = Analysis(
     excludes=[
         # PyAV bundles a second ffmpeg (~130 MB); captions decode with ours
         "av",
-        # OpenVINO's analytics client: never bundled (see vidgrab/captions.py)
+        # OpenVINO's analytics client: never bundled (see vidgrab/ai/captions.py)
         "openvino_telemetry",
         # PySide6 modules we don't use — keeps the bundle smaller
         "PySide6.Qt3DAnimation",

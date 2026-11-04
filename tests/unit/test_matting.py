@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from vidgrab import effects, matting, studio
+from vidgrab.ai import matting
+from vidgrab.media import effects, studio
 
 needs_ffmpeg = pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="needs ffmpeg")
 
@@ -67,7 +68,7 @@ def test_the_effects_tab_switch_turns_the_cutout_on_and_the_green_key_off(tmp_pa
         pytest.skip("set SMOKE_GUI=1 (and have ffmpeg) to enable")
     from PySide6.QtWidgets import QApplication
 
-    from vidgrab import app as m
+    from vidgrab.ui import app as m
 
     QApplication.instance() or QApplication([])
     monkeypatch.setattr(m, "_config_dir", lambda: tmp_path)

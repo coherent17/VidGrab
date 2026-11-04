@@ -95,33 +95,23 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab import (
-    beats,
-    cuda_runtime,
-    effects,
-    fx_preview,
-    highlights,
-    reframe,
-    stickers,
-)
-from vidgrab.captions import DEFAULT_MODEL as DEFAULT_CAPTION_MODEL
-from vidgrab.captions import LANGUAGES as CAPTION_LANGUAGES
-from vidgrab.captions import MODELS as CAPTION_MODELS
-from vidgrab.captions import (
+from vidgrab.ai import beats, cuda_runtime, highlights, reframe
+from vidgrab.ai.captions import DEFAULT_MODEL as DEFAULT_CAPTION_MODEL
+from vidgrab.ai.captions import LANGUAGES as CAPTION_LANGUAGES
+from vidgrab.ai.captions import MODELS as CAPTION_MODELS
+from vidgrab.ai.captions import (
     CaptionSource,
     detect_gpus,
     model_info,
     model_ready,
     speech_engines,
 )
-from vidgrab.captions import (
+from vidgrab.ai.captions import (
     installed as captions_installed,
 )
-from vidgrab.downloader import DownloadCancelled
-from vidgrab.preview import MusicBed, Segment, StudioPreview, TransitionMark, fmt_time
-from vidgrab.silence_dialog import SilenceDialog
-from vidgrab.split_dialog import SplitDialog
-from vidgrab.studio import (
+from vidgrab.core.downloader import DownloadCancelled
+from vidgrab.media import effects, fx_preview
+from vidgrab.media.studio import (
     ANIMATIONS,
     COVER_KINDS,
     IMAGE_EXTS,
@@ -147,7 +137,17 @@ from vidgrab.studio import (
     transition_overlaps,
     waveform,
 )
-from vidgrab.ui_kit import FlowLayout
+from vidgrab.ui import stickers
+from vidgrab.ui.preview import (
+    MusicBed,
+    Segment,
+    StudioPreview,
+    TransitionMark,
+    fmt_time,
+)
+from vidgrab.ui.silence_dialog import SilenceDialog
+from vidgrab.ui.split_dialog import SplitDialog
+from vidgrab.ui.ui_kit import FlowLayout
 
 _HAND = Qt.PointingHandCursor
 MIN_CLIP = 0.2  # shortest a clip can be trimmed to (s)

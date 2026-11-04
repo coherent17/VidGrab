@@ -1,4 +1,4 @@
-from vidgrab import downloader
+from vidgrab.core import downloader
 
 
 def _opts(fmt):

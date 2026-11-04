@@ -1,7 +1,8 @@
 import re
 
-from vidgrab import captions, studio
-from vidgrab.studio import SubtitleCue
+from vidgrab.ai import captions
+from vidgrab.media import studio
+from vidgrab.media.studio import SubtitleCue
 
 
 def _cue(anim):

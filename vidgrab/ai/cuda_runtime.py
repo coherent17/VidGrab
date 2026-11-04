@@ -22,7 +22,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-from vidgrab.downloader import ProgressCallback, TranslateFn, _noop_tr
+from vidgrab.core.downloader import ProgressCallback, TranslateFn, _noop_tr
 
 # platform -> ((wheel file, url, sha256, size in bytes) of cuBLAS, then cuDNN)
 PINS: dict[str, tuple[tuple[str, str, str, int], ...]] = {

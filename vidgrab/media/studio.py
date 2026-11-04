@@ -26,8 +26,7 @@ from pathlib import Path
 
 from yt_dlp.utils import parse_duration
 
-from vidgrab import effects
-from vidgrab.downloader import (
+from vidgrab.core.downloader import (
     DEFAULT_MP3_BITRATE,
     LogCallback,
     ProgressCallback,
@@ -37,7 +36,8 @@ from vidgrab.downloader import (
     asset_roots,
     find_ffmpeg,
 )
-from vidgrab.gpu import HwEncoder, detect_encoder, video_args
+from vidgrab.core.gpu import HwEncoder, detect_encoder, video_args
+from vidgrab.media import effects
 
 SAMPLE_RATE = 48000
 HW_STALL_S = 120.0  # a graphics-card render with no progress for this long is abandoned
@@ -1894,7 +1894,7 @@ def _prepare_effects(
             elif on_log:
                 on_log(tr("File not found: {src}", src=lut))
         if c.fx.get("cutout") and c.has_video:
-            from vidgrab import matting  # (onnxruntime is optional)
+            from vidgrab.ai import matting
 
             if models_dir is None or not matting.available():
                 if on_log:

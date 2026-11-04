@@ -8,7 +8,7 @@ import math
 import re
 import subprocess
 
-from vidgrab.downloader import find_ffmpeg
+from vidgrab.core.downloader import find_ffmpeg
 
 STEP = 0.5
 FLOOR_DB, TOP_DB = -50.0, -12.0  # quieter than the floor scores 0, as loud as the top 1

@@ -35,7 +35,8 @@ Installed with pip?
 
 def info() -> str:
     """What this installation has, for a bug report or a quick check."""
-    from vidgrab import captions, downloader, ffmpeg_fetch
+    from vidgrab.ai import captions
+    from vidgrab.core import downloader, ffmpeg_fetch
 
     ffmpeg = downloader.find_ffmpeg()
     try:
@@ -79,7 +80,9 @@ def run_command(argv: list[str]) -> int:
     """`vidgrab get|shrink|convert|gif|best …`; the exit code (0 = fine)."""
     from pathlib import Path
 
-    from vidgrab import downloader, highlights, studio, tools
+    from vidgrab.ai import highlights
+    from vidgrab.core import downloader, tools
+    from vidgrab.media import studio
 
     parser = argparse.ArgumentParser(prog=f"vidgrab {argv[0]}")
     cmd = argv[0]
@@ -118,7 +121,7 @@ def run_command(argv: list[str]) -> int:
             return 2
         dur = float(studio.probe_media(src).get("duration") or 0.0)
         if cmd == "short":
-            from vidgrab import captions, shorts
+            from vidgrab.ai import captions, shorts
 
             out = tools.output_for(src, "short", ".mp4")
             shorts.make_short(src, out, seconds=args.seconds, follow=not args.no_face,
@@ -156,7 +159,7 @@ def main(argv: list[str] | None = None) -> None:
         print(info())
         return
     sys.argv = [sys.argv[0], *(["--selftest"] if args.selftest else []), *rest]
-    from vidgrab.app import main as run_app
+    from vidgrab.ui.app import main as run_app
 
     run_app()
 

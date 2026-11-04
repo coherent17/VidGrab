@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from vidgrab.downloader import (
+from vidgrab.core.downloader import (
     DEFAULT_NAME,
     LogCallback,
     ProgressCallback,
@@ -21,7 +21,7 @@ from vidgrab.downloader import (
     download_playlist,
     fetch_subtitles,
 )
-from vidgrab.studio import Clip, compose_video, format_srt, parse_srt, retime_cues
+from vidgrab.media.studio import Clip, compose_video, format_srt, parse_srt, retime_cues
 
 MEDIA_SUFFIXES = {".mp4", ".mp3", ".m4a", ".opus", ".flac", ".wav", ".webm", ".mkv", ".ts"}
 

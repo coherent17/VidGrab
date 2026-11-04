@@ -25,7 +25,7 @@ def qapp():
 
 @pytest.fixture
 def studio_win(qapp, tmp_path, monkeypatch):
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
@@ -171,7 +171,7 @@ def _wait_frame(st, app, ok, seconds: float = 8.0):
 
 
 def test_player_shows_colour_effects(studio_win, qapp) -> None:
-    from vidgrab import fx_preview
+    from vidgrab.media import fx_preview
 
     if not fx_preview.available():
         pytest.skip("numpy not installed")
@@ -196,7 +196,7 @@ def test_player_shows_colour_effects(studio_win, qapp) -> None:
 def test_player_keys_green_over_the_background_picture(studio_win, qapp, tmp_path) -> None:
     from PySide6.QtGui import QColor, QImage
 
-    from vidgrab import fx_preview
+    from vidgrab.media import fx_preview
 
     if not fx_preview.available():
         pytest.skip("numpy not installed")
@@ -223,7 +223,7 @@ def test_follow_the_face_button(studio_win, qapp, monkeypatch) -> None:
 
     from PySide6.QtWidgets import QMessageBox
 
-    from vidgrab import reframe
+    from vidgrab.ai import reframe
 
     if not reframe.available():
         pytest.skip("numpy / onnxruntime not installed")
@@ -266,7 +266,7 @@ def test_follow_the_face_button(studio_win, qapp, monkeypatch) -> None:
 def test_preview_crop_follows_the_keys(studio_win, qapp) -> None:
     from PySide6.QtCore import QRectF
 
-    from vidgrab.preview import frame_geometry
+    from vidgrab.ui.preview import frame_geometry
 
     rect = QRectF(0, 0, 90, 160)
     src, _tgt = frame_geometry(640, 360, rect, "fill", 1.0, 0.5, 0.5, focus=(0.2, 0.5))

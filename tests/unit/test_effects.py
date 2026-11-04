@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from vidgrab import effects, studio
+from vidgrab.media import effects, studio
 
 needs_ffmpeg = pytest.mark.skipif(
     not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="ffmpeg / ffprobe not on PATH"

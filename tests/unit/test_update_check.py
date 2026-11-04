@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 
-from vidgrab import opener
-from vidgrab import update_check as uc
+from vidgrab.core import opener
+from vidgrab.core import update_check as uc
 
 
 class _Resp:

@@ -20,7 +20,7 @@ def qapp():
 
 @pytest.fixture
 def win(qapp, tmp_path, monkeypatch):
-    from vidgrab import app as m
+    from vidgrab.ui import app as m
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
@@ -113,7 +113,7 @@ def test_tools_make_a_short_renders_vertical_and_reports_progress(win, qapp, mon
     assert _wait(qapp, lambda: not tp._running, 60)
     out = media / "clip one (short).mp4"
     assert out.is_file() and tp.status.text().startswith("Done")
-    from vidgrab import studio
+    from vidgrab.media import studio
 
     assert studio.probe_media(out)["duration"] > 2
 
@@ -161,7 +161,7 @@ def test_library_opens_the_tool(win) -> None:
 
 
 def test_subscriptions_follow_feed_and_download(win, qapp, monkeypatch) -> None:
-    from vidgrab import subscriptions as sb
+    from vidgrab.core import subscriptions as sb
 
     w, m, _media = win
     items = [sb.FeedItem("a2", "New one", "https://y/a2", 65), sb.FeedItem("a1", "Old one", "https://y/a1", 5)]
@@ -196,7 +196,7 @@ def test_help_buttons_reach_the_new_pages(win) -> None:
 
 
 def test_subscriptions_guides_the_user_and_does_not_retry_forever(win, qapp, monkeypatch) -> None:
-    from vidgrab import subscriptions as sb
+    from vidgrab.core import subscriptions as sb
 
     w, _m, _media = win
     s = w._subs
@@ -243,8 +243,8 @@ def test_ctrl_v_pastes_into_the_focused_box_not_the_download_link(win, qapp) -> 
 
 
 def test_fuzzy_search_in_help_library_and_download_box(win, qapp) -> None:
-    from vidgrab.downloads_panel import DONE, DownloadItem
-    from vidgrab.jobs import DownloadJob
+    from vidgrab.core.jobs import DownloadJob
+    from vidgrab.ui.downloads_panel import DONE, DownloadItem
 
     w, m, _media = win
     # Library: a typo still finds the file, the popup offers the best names

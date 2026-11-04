@@ -4,7 +4,7 @@ import hashlib
 
 import pytest
 
-from vidgrab import self_update as su
+from vidgrab.core import self_update as su
 
 BODY = b"x" * (su.MIN_BYTES + 5)
 
@@ -98,7 +98,7 @@ def test_the_window_offers_update_now_only_when_it_can_install(tmp_path, monkeyp
         pytest.skip("set SMOKE_GUI=1 to enable")
     from PySide6.QtWidgets import QApplication
 
-    from vidgrab import app as m
+    from vidgrab.ui import app as m
 
     QApplication.instance() or QApplication([])
     monkeypatch.setattr(m, "_config_dir", lambda: tmp_path / "cfg")

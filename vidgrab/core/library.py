@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from vidgrab.fuzzy import FuzzyIndex
+from vidgrab.core.fuzzy import FuzzyIndex
 
 VIDEO = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
 AUDIO = {".mp3", ".m4a", ".opus", ".wav", ".flac", ".ogg", ".aac"}

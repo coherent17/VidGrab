@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from vidgrab import effects, studio
+from vidgrab.media import effects, studio
 
 needs_ffmpeg = pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="needs ffmpeg")
 
@@ -57,7 +57,7 @@ def test_the_inspector_adds_edits_and_removes_keyframes_with_undo(tmp_path, monk
         pytest.skip("set SMOKE_GUI=1 to enable")
     from PySide6.QtWidgets import QApplication
 
-    from vidgrab import app as m
+    from vidgrab.ui import app as m
 
     qapp = QApplication.instance() or QApplication([])
     monkeypatch.setattr(m, "_config_dir", lambda: tmp_path)

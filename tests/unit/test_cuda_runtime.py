@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from vidgrab import cuda_runtime as cr
+from vidgrab.ai import cuda_runtime as cr
 
 
 def _wheel(path: Path, members: dict[str, bytes]) -> tuple[str, str, int]:

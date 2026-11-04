@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from vidgrab import opener
+from vidgrab.core import opener
 
 
 def test_commands_per_platform() -> None:

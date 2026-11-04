@@ -5,7 +5,8 @@ import subprocess
 
 import pytest
 
-from vidgrab import highlights, shorts, studio
+from vidgrab.ai import highlights, shorts
+from vidgrab.media import studio
 
 needs_ffmpeg = pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="needs ffmpeg")
 
@@ -49,7 +50,7 @@ def test_make_short_finds_the_loud_part_and_renders_vertical(tmp_path) -> None:
 
 @needs_ffmpeg
 def test_make_short_can_be_cancelled(tmp_path) -> None:
-    from vidgrab.downloader import DownloadCancelled
+    from vidgrab.core.downloader import DownloadCancelled
 
     src = tmp_path / "a.mp4"
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=10:duration=5",

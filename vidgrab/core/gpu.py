@@ -59,7 +59,9 @@ def video_args(encoder: HwEncoder | None, preset: str, crf: int) -> list[str]:
 
 
 def _no_window() -> dict:
-    from vidgrab.studio import _no_window as no_window  # studio imports this module
+    from vidgrab.media.studio import (
+        _no_window as no_window,  # studio imports this module
+    )
 
     return no_window()
 

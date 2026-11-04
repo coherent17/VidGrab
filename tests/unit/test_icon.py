@@ -5,7 +5,7 @@ import struct
 import zlib
 from pathlib import Path
 
-from vidgrab.icon import generate
+from vidgrab.ui.icon import generate
 
 
 def _png_pixels(path: Path) -> tuple[int, int, list[bytes]]:

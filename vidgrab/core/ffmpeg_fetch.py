@@ -29,7 +29,7 @@ Progress = Callable[[int, int], None]  # bytes done, bytes expected (0 = unknown
 
 def load_pin() -> dict:
     """The pin: inside an installed package, or ffmpeg/pin.json in a checkout."""
-    here = Path(__file__).resolve().parent
+    here = Path(__file__).resolve().parents[1]  # the vidgrab package
     for path in (here / "ffmpeg_pin.json", here.parent / "ffmpeg" / "pin.json"):
         if path.is_file():
             return json.loads(path.read_text(encoding="utf-8"))

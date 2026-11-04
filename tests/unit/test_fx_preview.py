@@ -3,7 +3,7 @@ import subprocess
 
 import pytest
 
-from vidgrab import effects, fx_preview, studio
+from vidgrab.media import effects, fx_preview, studio
 
 pytestmark = pytest.mark.skipif(not fx_preview.available(), reason="needs numpy")
 np = fx_preview.np

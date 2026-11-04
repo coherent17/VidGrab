@@ -13,7 +13,7 @@ def qapp():
 
 
 def test_import_fills_the_link_box(qapp, tmp_path, monkeypatch):
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
     listing = tmp_path / "links.txt"

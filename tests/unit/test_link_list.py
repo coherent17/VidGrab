@@ -1,4 +1,4 @@
-from vidgrab.downloader import parse_link_list
+from vidgrab.core.downloader import parse_link_list
 
 
 def test_one_link_per_line_in_order_without_repeats():

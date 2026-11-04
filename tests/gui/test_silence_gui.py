@@ -30,7 +30,7 @@ def talk(tmp_path):
 
 
 def test_remove_silences_splits_the_clip(qapp, talk, monkeypatch):
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
     monkeypatch.setattr(appmod, "_config_dir", lambda: talk.parent)
     win = appmod.VidGrabWindow()
     st = win._studio

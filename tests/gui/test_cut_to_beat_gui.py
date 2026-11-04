@@ -27,8 +27,8 @@ def _wait(qapp, cond, seconds=20.0) -> bool:
 
 
 def test_cuts_land_on_the_beat_and_undo_restores_them(qapp, tmp_path, monkeypatch) -> None:
-    from vidgrab import app as m
-    from vidgrab import beats
+    from vidgrab.ai import beats
+    from vidgrab.ui import app as m
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")

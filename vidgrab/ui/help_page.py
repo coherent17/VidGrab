@@ -23,8 +23,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab import help_content
-from vidgrab.ui_kit import attach_suggestions, rgba
+from vidgrab.ui import help_content
+from vidgrab.ui.ui_kit import attach_suggestions, rgba
 
 _ID = Qt.UserRole
 _PAGE_NAMES = {"download": "Download", "studio": "Studio", "settings": "Settings", "library": "Library",

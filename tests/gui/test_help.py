@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from vidgrab import help_content
+from vidgrab.ui import help_content
 
 
 def test_every_topic_has_both_languages_and_a_known_section() -> None:
@@ -42,7 +42,7 @@ def qapp():
 
 @pytestmark_gui
 def test_help_page_in_the_window(qapp, tmp_path, monkeypatch) -> None:
-    from vidgrab import app as m
+    from vidgrab.ui import app as m
 
     monkeypatch.setattr(m, "_config_dir", lambda: tmp_path)
     w = m.VidGrabWindow()

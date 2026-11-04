@@ -36,8 +36,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab import effects, fx_preview
-from vidgrab.studio import (
+from vidgrab.media import effects, fx_preview
+from vidgrab.media.studio import (
     ANIM_IN,
     HIGHLIGHT,
     SUBTITLE_FONT_NAME,

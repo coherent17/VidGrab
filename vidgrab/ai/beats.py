@@ -11,7 +11,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
 
-from vidgrab.downloader import find_ffmpeg
+from vidgrab.core.downloader import find_ffmpeg
 
 RATE = 11025
 HOP = 512  # samples per frame: ~46 ms

@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 
-from vidgrab import studio
+from vidgrab.media import studio
 
 needs_ffmpeg = pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="needs ffmpeg")
 
@@ -61,8 +61,8 @@ def test_a_box_hides_its_area_only_while_it_is_on(tmp_path, kind) -> None:
 def test_stickers_draw_and_the_studio_adds_boxes_and_stickers(tmp_path, monkeypatch) -> None:
     from PySide6.QtWidgets import QApplication
 
-    from vidgrab import app as m
-    from vidgrab import stickers
+    from vidgrab.ui import app as m
+    from vidgrab.ui import stickers
 
     qapp = QApplication.instance() or QApplication([])
     paths = stickers.ensure(tmp_path / "st")

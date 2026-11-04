@@ -6,7 +6,7 @@ import wave
 
 import pytest
 
-from vidgrab import beats
+from vidgrab.ai import beats
 
 np = pytest.importorskip("numpy")
 

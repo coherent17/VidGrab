@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab import studio
+from vidgrab.media import studio
 
 # layout -> (button label, what it shows)
 LAYOUT_LABELS = {

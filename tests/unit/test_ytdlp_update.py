@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 import yt_dlp
 
-from vidgrab import ytdlp_update as up
 from vidgrab._version import __version__
+from vidgrab.core import ytdlp_update as up
 
 
 @pytest.fixture

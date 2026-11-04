@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab import studio
+from vidgrab.media import studio
 
 LEVEL_LABELS = {"silence": "Dead silence only", "quiet": "Quiet pauses", "faint": "Anything faint"}
 PAUSES = (0.4, 0.6, 1.0, 1.5)

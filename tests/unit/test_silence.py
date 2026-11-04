@@ -3,7 +3,7 @@ import subprocess
 
 import pytest
 
-from vidgrab import studio
+from vidgrab.media import studio
 
 pytestmark = pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
 

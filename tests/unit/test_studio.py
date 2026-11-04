@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from vidgrab import studio
-from vidgrab.studio import (
+from vidgrab.media import studio
+from vidgrab.media.studio import (
     BackgroundMusic,
     Clip,
     ImageOverlay,
@@ -99,7 +99,7 @@ def test_format_ass_anchor_fade_bold_font() -> None:
 
 
 def test_system_fonts_maps_families_to_files() -> None:
-    from vidgrab.studio import system_fonts
+    from vidgrab.media.studio import system_fonts
 
     for family, path in system_fonts().items():
         assert family and path.is_file()
@@ -301,7 +301,7 @@ def test_compose_video_mutes_a_clip(tmp_path: Path) -> None:
 
 @requires_ffmpeg
 def test_render_error_includes_ffmpeg_message(tmp_path: Path) -> None:
-    from vidgrab.studio import _run_with_progress
+    from vidgrab.media.studio import _run_with_progress
 
     with pytest.raises(RuntimeError) as err:
         _run_with_progress(["ffmpeg", "-v", "error", "-i", str(tmp_path / "missing.mp4"),
@@ -503,7 +503,7 @@ def test_compose_video_text_animations(tmp_path: Path) -> None:
 
 
 def test_speed_in_commands() -> None:
-    from vidgrab.studio import _atempo
+    from vidgrab.media.studio import _atempo
 
     assert _atempo(2.0) == "atempo=2" and _atempo(0.25) == "atempo=0.5,atempo=0.5"
     assert _atempo(4.0) == "atempo=2,atempo=2" and _atempo(1.5) == "atempo=1.5"
@@ -533,7 +533,7 @@ def test_compose_video_speed_and_export_formats(tmp_path: Path) -> None:
 
 
 def test_video_command_uses_the_chosen_encoder() -> None:
-    from vidgrab.gpu import CANDIDATES
+    from vidgrab.core.gpu import CANDIDATES
 
     qsv = next(e for e in CANDIDATES if e.key == "qsv")
     cmd, _ = build_video_command("ffmpeg", [_clip("a.mp4", 4)], Path("o.mp4"), encoder=qsv,
@@ -546,8 +546,8 @@ def test_video_command_uses_the_chosen_encoder() -> None:
 
 @requires_ffmpeg
 def test_compose_video_hardware_encoder_falls_back_to_the_cpu(tmp_path: Path, monkeypatch) -> None:
-    from vidgrab import studio
-    from vidgrab.gpu import HwEncoder
+    from vidgrab.core.gpu import HwEncoder
+    from vidgrab.media import studio
 
     a = _make(tmp_path / "a.mp4", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25",
               "-f", "lavfi", "-i", "sine=frequency=440", "-t", "2", "-shortest")
@@ -570,7 +570,7 @@ def test_compose_video_hardware_encoder_falls_back_to_the_cpu(tmp_path: Path, mo
 def test_a_render_that_stops_answering_is_killed_not_waited_for(tmp_path: Path) -> None:
     import time
 
-    from vidgrab.studio import _run_with_progress
+    from vidgrab.media.studio import _run_with_progress
 
     fake = tmp_path / "fake_ffmpeg"
     fake.write_text("#!/bin/sh\necho out_time_us=1000\nexec sleep 60\n")  # one line of progress, then silence
@@ -584,8 +584,8 @@ def test_a_render_that_stops_answering_is_killed_not_waited_for(tmp_path: Path) 
 
 @requires_ffmpeg
 def test_only_the_graphics_card_attempt_has_a_stall_limit(tmp_path: Path, monkeypatch) -> None:
-    from vidgrab import studio
-    from vidgrab.gpu import HwEncoder
+    from vidgrab.core.gpu import HwEncoder
+    from vidgrab.media import studio
 
     a = _make(tmp_path / "a.mp4", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25",
               "-f", "lavfi", "-i", "sine=frequency=440", "-t", "1", "-shortest")
@@ -605,7 +605,7 @@ def test_only_the_graphics_card_attempt_has_a_stall_limit(tmp_path: Path, monkey
 
 
 def test_subtitle_size_follows_the_shorter_side_of_the_frame() -> None:
-    from vidgrab.studio import subtitle_scale
+    from vidgrab.media.studio import subtitle_scale
 
     assert subtitle_scale(1920, 1080) == subtitle_scale(1080, 1920) == subtitle_scale(1080, 1080)
     assert subtitle_scale(1280, 720) == 720 / 288  # landscape is unchanged
@@ -640,7 +640,7 @@ def test_a_long_caption_wraps_inside_a_vertical_frame(tmp_path: Path) -> None:
 
 
 def test_wrap_breaks_cjk_and_words_the_same_for_preview_and_render() -> None:
-    from vidgrab.studio import text_advance, wrap_cue_text, wrap_line
+    from vidgrab.media.studio import text_advance, wrap_cue_text, wrap_line
 
     width = lambda part: len(part) * 10.0
     assert wrap_line("short", width, 100) == ["short"]

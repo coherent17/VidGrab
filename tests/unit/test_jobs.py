@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from vidgrab import jobs
-from vidgrab.jobs import DownloadJob, run_job
-from vidgrab.studio import SubtitleCue, retime_cues
+from vidgrab.core import jobs
+from vidgrab.core.jobs import DownloadJob, run_job
+from vidgrab.media.studio import SubtitleCue, retime_cues
 
 SRT = "1\n00:00:01,000 --> 00:00:03,000\nfirst\n\n2\n00:00:10,000 --> 00:00:12,000\nsecond\n"
 

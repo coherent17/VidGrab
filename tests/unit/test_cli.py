@@ -24,8 +24,8 @@ def test_version_and_help_print_and_exit(capsys):
 
 
 def test_info_reports_this_installation(capsys, monkeypatch):
-    monkeypatch.setattr("vidgrab.downloader.find_ffmpeg", lambda: None)
-    monkeypatch.setattr("vidgrab.captions.installed", lambda: False)
+    monkeypatch.setattr("vidgrab.core.downloader.find_ffmpeg", lambda: None)
+    monkeypatch.setattr("vidgrab.ai.captions.installed", lambda: False)
     cli.main(["--info"])
     out = capsys.readouterr().out
     assert out.splitlines()[0].split() == ["VidGrab", __version__]
@@ -34,7 +34,7 @@ def test_info_reports_this_installation(capsys, monkeypatch):
 
 def test_anything_else_starts_the_app_with_qt_options_kept(monkeypatch):
     started = {}
-    monkeypatch.setattr("vidgrab.app.main", lambda: started.update(argv=list(sys.argv)))
+    monkeypatch.setattr("vidgrab.ui.app.main", lambda: started.update(argv=list(sys.argv)))
     monkeypatch.setattr(sys, "argv", ["vidgrab"])
     cli.main(["--selftest", "-platform", "offscreen"])
     assert started["argv"] == ["vidgrab", "--selftest", "-platform", "offscreen"]
@@ -67,7 +67,7 @@ def test_command_line_tools(tmp_path, capsys, monkeypatch) -> None:
 
 
 def test_get_command_downloads_each_link(tmp_path, capsys, monkeypatch) -> None:
-    from vidgrab import downloader
+    from vidgrab.core import downloader
 
     calls = []
     monkeypatch.setattr(downloader, "download", lambda url, out, fmt, **kw: calls.append((url, str(out), fmt, kw.get("quality")))

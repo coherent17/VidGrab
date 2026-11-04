@@ -12,8 +12,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from vidgrab import captions
-from vidgrab.captions import (
+from vidgrab.ai import captions
+from vidgrab.ai.captions import (
     CaptionSource,
     Word,
     is_hallucination,
@@ -21,7 +21,7 @@ from vidgrab.captions import (
     split_lines,
     tidy_punctuation,
 )
-from vidgrab.downloader import DownloadCancelled
+from vidgrab.core.downloader import DownloadCancelled
 
 
 def words(*items: tuple[float, float, str]) -> list[Word]:
@@ -281,7 +281,7 @@ def test_openvino_never_loads_its_telemetry() -> None:
         "import sys, socket\n"
         "def no_network(*a, **k): raise AssertionError('network used: %r' % (a,))\n"
         "socket.socket.connect = no_network\n"
-        "from vidgrab import captions\n"
+        "from vidgrab.ai import captions\n"
         "import openvino as ov\n"
         "ov.Core().available_devices\n"
         "import openvino_genai, openvino_tokenizers\n"
@@ -295,7 +295,7 @@ def test_openvino_never_loads_its_telemetry() -> None:
 
 
 def test_nvidia_waits_for_its_download_when_an_intel_gpu_can_start_now(monkeypatch, tmp_path) -> None:
-    from vidgrab import cuda_runtime
+    from vidgrab.ai import cuda_runtime
 
     monkeypatch.setattr(captions, "detect_gpus", lambda timeout=20.0: [CUDA, INTEL])
     monkeypatch.setattr(cuda_runtime, "runtime_ready", lambda models_dir: False)
@@ -312,7 +312,7 @@ def test_nvidia_waits_for_its_download_when_an_intel_gpu_can_start_now(monkeypat
 
 
 def test_cuda_engine_gets_its_libraries_before_the_model(monkeypatch, tmp_path) -> None:
-    from vidgrab import cuda_runtime
+    from vidgrab.ai import cuda_runtime
 
     order: list[str] = []
     monkeypatch.setattr(cuda_runtime, "ensure_runtime", lambda *a, **k: order.append("libs"))
@@ -401,7 +401,7 @@ def test_model_download_failures_are_friendly_and_leave_no_half_files(monkeypatc
     import json as jsonlib
     import urllib.error
 
-    from vidgrab.downloader import DownloadCancelled
+    from vidgrab.core.downloader import DownloadCancelled
 
     def offline(*_a, **_k):
         raise urllib.error.URLError("no network")

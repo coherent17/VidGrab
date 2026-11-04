@@ -20,10 +20,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab import library
-from vidgrab.downloads_panel import human_size
-from vidgrab.studio_page import ThumbCache
-from vidgrab.ui_kit import Chips, attach_suggestions, chip_css
+from vidgrab.core import library
+from vidgrab.ui.downloads_panel import human_size
+from vidgrab.ui.studio_page import ThumbCache
+from vidgrab.ui.ui_kit import Chips, attach_suggestions, chip_css
 
 _PATH = Qt.UserRole
 _KIND_ICON = {"video": "film", "audio": "music", "image": "captions"}

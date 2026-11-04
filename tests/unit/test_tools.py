@@ -8,7 +8,8 @@ import time
 
 import pytest
 
-from vidgrab import library, studio, tools
+from vidgrab.core import library, tools
+from vidgrab.media import studio
 
 needs_ffmpeg = pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
                                   reason="ffmpeg / ffprobe not on PATH")

@@ -26,10 +26,10 @@ def qapp():
 
 def test_window_constructs_and_destroys(qapp, monkeypatch) -> None:
     monkeypatch.setattr(
-        "vidgrab.app.check_internet",
+        "vidgrab.ui.app.check_internet",
         lambda timeout=2.5: type("S", (), {"online": True, "reason": "mock"})(),
     )
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     win = appmod.VidGrabWindow()
     try:
@@ -48,7 +48,7 @@ def test_window_constructs_and_destroys(qapp, monkeypatch) -> None:
 
 
 def test_theme_toggle(qapp, tmp_path, monkeypatch) -> None:
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
     appmod._save_config("dark")
@@ -65,7 +65,7 @@ def test_theme_toggle(qapp, tmp_path, monkeypatch) -> None:
 
 
 def test_lang_toggle(qapp, tmp_path, monkeypatch) -> None:
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
     appmod._save_config("dark", "en")
@@ -90,13 +90,13 @@ def test_bundled_fonts_register(qapp) -> None:
 
     from PySide6.QtGui import QFontDatabase
 
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     appmod._register_bundled_fonts()
     families = set(QFontDatabase.families())
     assert "Noto Sans CJK TC" in families, "bundled font not registered"
 
-    assets = Path(appmod.__file__).resolve().parent.parent / "assets"
+    assets = Path(appmod.__file__).resolve().parents[2] / "assets"
     assert (assets / "NotoSansTC-Regular.otf").is_file(), "font asset missing"
 
 def test_studio_page(qapp, tmp_path, monkeypatch) -> None:
@@ -106,7 +106,7 @@ def test_studio_page(qapp, tmp_path, monkeypatch) -> None:
     import shutil
     import subprocess
 
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
     win = appmod.VidGrabWindow()
@@ -222,7 +222,7 @@ def test_timeline_handles_trim_clip(qapp) -> None:
     from PySide6.QtCore import QPoint, Qt
     from PySide6.QtTest import QTest
 
-    from vidgrab.studio_page import TrackTimeline, _MediaClip
+    from vidgrab.ui.studio_page import TrackTimeline, _MediaClip
 
     tl = TrackTimeline()
     tl.resize(900, 300)
@@ -248,8 +248,8 @@ def test_preview_canvas_drag_positions_subtitle(qapp) -> None:
     from PySide6.QtCore import QPoint, Qt
     from PySide6.QtTest import QTest
 
-    from vidgrab.preview import VideoCanvas
-    from vidgrab.studio import SubtitleCue
+    from vidgrab.media.studio import SubtitleCue
+    from vidgrab.ui.preview import VideoCanvas
 
     canvas = VideoCanvas()
     canvas.resize(640, 360)
@@ -275,7 +275,7 @@ def test_dialogs_follow_theme(qapp, tmp_path, monkeypatch) -> None:
     palette, which must track the theme or they render half dark / half light."""
     from PySide6.QtGui import QPalette
 
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
     win = appmod.VidGrabWindow()
@@ -298,12 +298,12 @@ def test_download_queue_history_and_send_to_studio(qapp, tmp_path, monkeypatch) 
     import shutil
     import subprocess
 
-    from vidgrab import app as appmod
-    from vidgrab.downloads_panel import DONE, load_history
+    from vidgrab.ui import app as appmod
+    from vidgrab.ui.downloads_panel import DONE, load_history
 
     monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
     monkeypatch.setattr(
-        "vidgrab.app.check_internet",
+        "vidgrab.ui.app.check_internet",
         lambda timeout=2.5: type("S", (), {"online": True, "reason": "mock"})(),
     )
     have_ff = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
@@ -357,7 +357,7 @@ def test_download_queue_history_and_send_to_studio(qapp, tmp_path, monkeypatch) 
 
 def test_connection_is_rechecked(qapp, tmp_path, monkeypatch) -> None:
     """The online check repeats: fast while offline, slower while online."""
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
     win = appmod.VidGrabWindow()
@@ -380,7 +380,7 @@ def test_multiple_links_preview_and_queue(qapp, tmp_path, monkeypatch) -> None:
     """Pasting several links lists each one (details fetched once, cached),
     a link can be dropped with its \u2715, and Download queues the rest
     using the cached titles and each playlist's own choice."""
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
     monkeypatch.setattr(appmod, "find_ffmpeg", lambda: "ffmpeg")
@@ -431,7 +431,7 @@ def test_settings_defaults_presets_and_storage(qapp, tmp_path, monkeypatch) -> N
     the Studio; subtitle presets round-trip; storage tools work."""
     import json
 
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
     (tmp_path / "config.json").write_text(json.dumps({"theme": "light", "lang": "en"}))
@@ -504,7 +504,7 @@ def test_studio_undo_projects_split_zoom(qapp, tmp_path, monkeypatch) -> None:
     from PySide6.QtGui import QWheelEvent
     from PySide6.QtWidgets import QApplication
 
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
@@ -614,7 +614,7 @@ def test_trim_is_clamped_to_the_source(qapp, tmp_path, monkeypatch) -> None:
     import shutil
     import subprocess
 
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
@@ -638,7 +638,7 @@ def test_studio_transitions_and_framing(qapp, tmp_path, monkeypatch) -> None:
     import shutil
     import subprocess
 
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
@@ -727,7 +727,7 @@ def test_precise_trimming(qapp, tmp_path, monkeypatch) -> None:
     from PySide6.QtCore import QEventLoop, QPoint, Qt, QTimer
     from PySide6.QtTest import QTest
 
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
@@ -797,7 +797,7 @@ def test_preview_waits_for_the_new_source_before_seeking(qapp) -> None:
     """A stale "loaded" status from the previous file must not use up the
     seek for the new one (the playhead then sat still while the source
     played from 0:00)."""
-    from vidgrab.preview import QT_MULTIMEDIA_OK, QMediaPlayer, StudioPreview
+    from vidgrab.ui.preview import QT_MULTIMEDIA_OK, QMediaPlayer, StudioPreview
 
     if not QT_MULTIMEDIA_OK:
         pytest.skip("QtMultimedia not available")
@@ -818,7 +818,7 @@ def test_preview_waits_for_the_new_source_before_seeking(qapp) -> None:
 
 def test_preview_newest_seek_wins_while_loading(qapp, tmp_path) -> None:
     """Two quick jumps while a file is still loading: the second must win."""
-    from vidgrab.preview import QT_MULTIMEDIA_OK, Segment, StudioPreview
+    from vidgrab.ui.preview import QT_MULTIMEDIA_OK, Segment, StudioPreview
 
     if not QT_MULTIMEDIA_OK:
         pytest.skip("QtMultimedia not available")
@@ -839,8 +839,8 @@ def test_music_cut_offset_and_preview_bed(qapp, tmp_path, monkeypatch) -> None:
 
     from PySide6.QtCore import QPointF
 
-    from vidgrab import app as appmod
-    from vidgrab.preview import MusicBed
+    from vidgrab.ui import app as appmod
+    from vidgrab.ui.preview import MusicBed
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
@@ -911,7 +911,7 @@ def test_several_background_songs(qapp, tmp_path, monkeypatch) -> None:
     import shutil
     import subprocess
 
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
@@ -988,7 +988,7 @@ def test_several_background_songs(qapp, tmp_path, monkeypatch) -> None:
 def test_overlapping_subtitles_stack_into_lanes(qapp) -> None:
     from PySide6.QtCore import QPointF
 
-    from vidgrab.studio_page import TrackTimeline
+    from vidgrab.ui.studio_page import TrackTimeline
 
     tl = TrackTimeline()
     tl.resize(900, 300)
@@ -1014,7 +1014,7 @@ def test_image_overlays(qapp, tmp_path, monkeypatch) -> None:
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QColor, QImage
 
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
@@ -1100,7 +1100,7 @@ def test_image_overlays(qapp, tmp_path, monkeypatch) -> None:
 
 def test_headless_runs_make_no_sound(qapp) -> None:
     """Tests and scripts run offscreen: no chime, preview players muted."""
-    from vidgrab.preview import QT_MULTIMEDIA_OK, MusicBed, StudioPreview
+    from vidgrab.ui.preview import QT_MULTIMEDIA_OK, MusicBed, StudioPreview
 
     if not QT_MULTIMEDIA_OK:
         pytest.skip("QtMultimedia not available")
@@ -1112,8 +1112,8 @@ def test_headless_runs_make_no_sound(qapp) -> None:
 
 def test_render_worker_passes_everything_to_compose_video(qapp, monkeypatch) -> None:
     """The Studio's render request must reach the renderer whole (images were dropped)."""
-    from vidgrab import app as appmod
-    from vidgrab.studio import BackgroundMusic, Clip, ImageOverlay, SubtitleCue
+    from vidgrab.media.studio import BackgroundMusic, Clip, ImageOverlay, SubtitleCue
+    from vidgrab.ui import app as appmod
 
     got = {}
     monkeypatch.setattr(appmod, "compose_video",
@@ -1134,7 +1134,7 @@ def test_preview_draws_transitions(qapp) -> None:
     frames the way ffmpeg's xfade does."""
     from PySide6.QtGui import QColor, QImage
 
-    from vidgrab.preview import TransitionMark, VideoCanvas
+    from vidgrab.ui.preview import TransitionMark, VideoCanvas
 
     red, blue = QImage(160, 90, QImage.Format_RGB32), QImage(160, 90, QImage.Format_RGB32)
     red.fill(QColor("#ff0000"))
@@ -1175,8 +1175,8 @@ def test_studio_34_features(qapp, tmp_path, monkeypatch) -> None:
     from PySide6.QtCore import QRectF
     from PySide6.QtGui import QColor, QImage
 
-    from vidgrab import app as appmod
-    from vidgrab.studio import SubtitleCue
+    from vidgrab.media.studio import SubtitleCue
+    from vidgrab.ui import app as appmod
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
@@ -1315,8 +1315,8 @@ def test_studio_auto_captions(qapp, tmp_path, monkeypatch) -> None:
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QDialog
 
-    from vidgrab import app as appmod
-    from vidgrab.studio import SubtitleCue
+    from vidgrab.media.studio import SubtitleCue
+    from vidgrab.ui import app as appmod
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
@@ -1417,9 +1417,9 @@ def test_hardware_switches(qapp, tmp_path, monkeypatch) -> None:
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QDialog
 
-    from vidgrab import app as appmod
-    from vidgrab import captions
-    from vidgrab.gpu import CANDIDATES
+    from vidgrab.ai import captions
+    from vidgrab.core.gpu import CANDIDATES
+    from vidgrab.ui import app as appmod
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
@@ -1479,7 +1479,7 @@ def test_hardware_switches(qapp, tmp_path, monkeypatch) -> None:
 
 def test_speech_models_storage_row(qapp, tmp_path, monkeypatch) -> None:
     """Settings -> Storage shows the downloaded speech models and deletes them."""
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path / "cfg")
     models = tmp_path / "models"
@@ -1509,9 +1509,9 @@ def test_speech_models_storage_row(qapp, tmp_path, monkeypatch) -> None:
 def test_hardware_probe_checks_video_and_captions(qapp, tmp_path, monkeypatch) -> None:
     """The Settings status lines both leave "Checking this computer…": the
     startup probe must look for the captions GPU too, not only the encoder."""
-    from vidgrab import app as appmod
-    from vidgrab import captions
-    from vidgrab.gpu import CANDIDATES
+    from vidgrab.ai import captions
+    from vidgrab.core.gpu import CANDIDATES
+    from vidgrab.ui import app as appmod
 
     qsv = next(e for e in CANDIDATES if e.key == "qsv")
     intel = captions.SpeechGpu("openvino", "GPU", "Intel Arc 140T GPU")
@@ -1545,7 +1545,7 @@ def test_closing_with_stuck_threads_neither_crashes_nor_hangs(qapp, tmp_path, mo
 
     from PySide6.QtCore import QThread
 
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     class Stuck(QThread):
         _task = "transcribe"
@@ -1595,7 +1595,7 @@ def test_studio_two_videos_at_once(qapp, tmp_path, monkeypatch) -> None:
 
     from PySide6.QtWidgets import QDialog
 
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
@@ -1662,8 +1662,8 @@ def _wait(qapp, cond, seconds: float = 10.0) -> None:
 
 def test_settings_tabs_and_network(qapp, tmp_path, monkeypatch) -> None:
     """Settings is three tabs; the Network card reaches the downloader."""
-    from vidgrab import app as appmod
-    from vidgrab import downloader
+    from vidgrab.core import downloader
+    from vidgrab.ui import app as appmod
 
     monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
     monkeypatch.setattr(appmod, "_models_dir", lambda: tmp_path / "models")
@@ -1704,7 +1704,7 @@ def test_download_page_search_exact_format_and_job(qapp, tmp_path, monkeypatch) 
     format end up on the queued job."""
     from PySide6.QtWidgets import QDialog
 
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
     results = [{"id": f"id{i}", "title": f"Song {i}", "uploader": "Chan", "duration": 61 + i,
@@ -1781,7 +1781,7 @@ def test_download_page_search_exact_format_and_job(qapp, tmp_path, monkeypatch) 
 
 def test_ytdlp_update_in_settings(qapp, tmp_path, monkeypatch) -> None:
     """Checking finds a newer yt-dlp, the Download page says so, Update installs it."""
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
     monkeypatch.setenv("VIDGRAB_YTDLP_DIR", str(tmp_path / "ytdlp"))
@@ -1820,7 +1820,7 @@ def test_ytdlp_update_in_settings(qapp, tmp_path, monkeypatch) -> None:
 def test_missing_ffmpeg_is_offered_once_and_fetched(qapp, tmp_path, monkeypatch) -> None:
     """The macOS app and a pip install have no ffmpeg: the app asks, downloads
     with progress, and the Studio / Download page carry on."""
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
     win = appmod.VidGrabWindow()
@@ -1883,7 +1883,7 @@ def test_pressing_enter_again_never_destroys_a_running_search(qapp, tmp_path) ->
     import threading
     import time
 
-    from vidgrab import pick_dialogs
+    from vidgrab.ui import pick_dialogs
 
     release = threading.Event()
     started: list[str] = []
@@ -1924,7 +1924,7 @@ def test_pressing_enter_again_never_destroys_a_running_search(qapp, tmp_path) ->
 def test_shutdown_reports_a_search_that_will_not_stop(qapp, tmp_path) -> None:
     import threading
 
-    from vidgrab import pick_dialogs
+    from vidgrab.ui import pick_dialogs
 
     release = threading.Event()
     panel = pick_dialogs.SearchPanel(lambda s, **k: s.format(**k) if k else s, tmp_path)
@@ -1945,8 +1945,8 @@ def test_studio_subtitle_files_menu(qapp, tmp_path, monkeypatch) -> None:
     """Project -> Subtitles: export as srt / vtt / txt, copy the transcript, import again."""
     from PySide6.QtWidgets import QApplication
 
-    from vidgrab import app as appmod
-    from vidgrab.studio import SubtitleCue
+    from vidgrab.media.studio import SubtitleCue
+    from vidgrab.ui import app as appmod
 
     monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
     monkeypatch.setattr(appmod.QMessageBox, "question",
@@ -2000,7 +2000,7 @@ def test_studio_audio_cleanup_options(qapp, tmp_path, monkeypatch) -> None:
     import shutil
     import subprocess
 
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
@@ -2058,7 +2058,7 @@ def test_music_ducking_option(qapp, tmp_path, monkeypatch) -> None:
     import shutil
     import subprocess
 
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")
@@ -2110,7 +2110,7 @@ def test_font_choice_in_settings(qapp, tmp_path, monkeypatch) -> None:
     every bundled one out of it; each name is listed in its own typeface."""
     from PySide6.QtCore import Qt
 
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     monkeypatch.setattr(appmod, "_config_dir", lambda: tmp_path)
     win = appmod.VidGrabWindow()
@@ -2137,7 +2137,7 @@ def test_font_choice_in_settings(qapp, tmp_path, monkeypatch) -> None:
 
 
 def test_every_bundled_font_file_exists() -> None:
-    from vidgrab import app as appmod
+    from vidgrab.ui import app as appmod
 
     for name in appmod._BUNDLED_FONTS:
         if name.endswith(".ttf"):
@@ -2152,8 +2152,8 @@ def test_studio_tab_labels_are_not_cut_off(qapp, tmp_path, monkeypatch) -> None:
 
     from PySide6.QtGui import QFont, QFontMetrics
 
-    from vidgrab import app as appmod
-    from vidgrab.studio import SubtitleCue
+    from vidgrab.media.studio import SubtitleCue
+    from vidgrab.ui import app as appmod
 
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         pytest.skip("ffmpeg / ffprobe not on PATH")

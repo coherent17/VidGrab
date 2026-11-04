@@ -5,8 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from vidgrab import studio
-from vidgrab.downloader import find_ffmpeg
+from vidgrab.core.downloader import find_ffmpeg
+from vidgrab.media import studio
 
 AUDIO_KBPS = 128
 MIN_VIDEO_KBPS = 80

@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from vidgrab import suggest
+from vidgrab.core import suggest
 
 
 class _Resp:
@@ -67,7 +67,7 @@ def qapp():
 
 @pytestmark_gui
 def test_download_box_shows_youtube_suggestions_while_typing_and_a_pick_searches(qapp, tmp_path, monkeypatch) -> None:
-    from vidgrab import app as m
+    from vidgrab.ui import app as m
 
     monkeypatch.setattr(m, "_config_dir", lambda: tmp_path)
     asked = []
@@ -111,7 +111,7 @@ def test_download_box_shows_youtube_suggestions_while_typing_and_a_pick_searches
 
 @pytestmark_gui
 def test_the_list_goes_away_on_a_choice_and_late_answers_do_not_bring_it_back(qapp, tmp_path, monkeypatch) -> None:
-    from vidgrab import app as m
+    from vidgrab.ui import app as m
 
     monkeypatch.setattr(m, "_config_dir", lambda: tmp_path)
 
@@ -160,7 +160,7 @@ def test_keyboard_choice_searches_once_closes_the_list_and_it_comes_back(qapp, t
     from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest
 
-    from vidgrab import app as m
+    from vidgrab.ui import app as m
 
     monkeypatch.setattr(m, "_config_dir", lambda: tmp_path)
     monkeypatch.setattr(suggest, "youtube_suggestions", lambda q, **kw: [f"{q} girl", f"{q} jazz"])
@@ -203,7 +203,7 @@ def test_keyboard_choice_searches_once_closes_the_list_and_it_comes_back(qapp, t
 def test_a_closed_combo_list_or_menu_repaints_the_window(qapp, monkeypatch) -> None:
     from PySide6.QtWidgets import QComboBox, QMenu, QWidget
 
-    from vidgrab import app as m
+    from vidgrab.ui import app as m
 
     m._install_wheel_guard()
     painted = []

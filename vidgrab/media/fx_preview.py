@@ -5,7 +5,7 @@ clean-up, sharpen, LUTs and slow motion are left out. Qt-free; `available()` is
 False when numpy is not installed (it comes with the captions packages)."""
 from __future__ import annotations
 
-from vidgrab import effects
+from vidgrab.media import effects
 
 try:
     import numpy as np

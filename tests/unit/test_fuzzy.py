@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from vidgrab import fuzzy
-from vidgrab.fuzzy import FuzzyIndex, Trie
+from vidgrab.core import fuzzy
+from vidgrab.core.fuzzy import FuzzyIndex, Trie
 
 
 def test_trie_prefix_and_typo_walks() -> None:

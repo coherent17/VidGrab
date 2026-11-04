@@ -22,9 +22,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab import reframe, shorts, studio, tools
-from vidgrab.downloader import DownloadCancelled
-from vidgrab.ui_kit import rgba
+from vidgrab.ai import reframe, shorts
+from vidgrab.core import tools
+from vidgrab.core.downloader import DownloadCancelled
+from vidgrab.media import studio
+from vidgrab.ui.ui_kit import rgba
 
 TOOLS = ["short", "compress", "convert", "gif", "thumbnail", "audio"]
 _NAMES = {"short": "Make a Short", "compress": "Shrink to a size", "convert": "Convert", "gif": "Make a GIF",

@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab.jobs import MEDIA_SUFFIXES, DownloadJob
+from vidgrab.core.jobs import MEDIA_SUFFIXES, DownloadJob
 
 HISTORY_LIMIT = 100
 THUMB = QSize(112, 63)

@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vidgrab import subscriptions as sb
+from vidgrab.core import subscriptions as sb
 
 _SUB = Qt.UserRole
 _VID = Qt.UserRole + 1

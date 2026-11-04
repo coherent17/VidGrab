@@ -371,9 +371,7 @@ class StudioPage(ProjectInspectorMixin, CueInspectorMixin, ClipInspectorMixin, M
         area.setWidgetResizable(True)
         area.setFrameShape(QFrame.NoFrame)
         area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        area.viewport().setAutoFillBackground(False)
-        area.setStyleSheet("QScrollArea { background: transparent; }")
-        page.setAutoFillBackground(False)
+        area.setObjectName("page_scroll")  # the theme makes it, its viewport and the page see-through
         area.setWidget(page)
         return area
 
@@ -569,6 +567,7 @@ class StudioPage(ProjectInspectorMixin, CueInspectorMixin, ClipInspectorMixin, M
         )
         self.preview.set_texts(
             empty=t("Add clips to start"), audio="♪", guides=t("Guides"),
+            play_tip=t("Play / pause") + "  (Space)",
             guides_tip=t("Show the safe area and centre lines (dragged text and pictures "
                          "always snap to them; hold Alt to place freely)"))
         self._fill(self.res, [

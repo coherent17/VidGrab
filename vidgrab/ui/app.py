@@ -765,6 +765,8 @@ class VidGrabWindow(SettingsMixin, UpdatesMixin, DownloadPageMixin, QMainWindow)
             self._net_lbl.setText("\u25cf " + t("checking\u2026"))
             self._label_pill(self._net_lbl, "#f59e0b")
         self._refresh_btn()
+        self._refresh_archive()  # labels built from a count / version stay English until refreshed
+        self._refresh_ytdlp()
 
     # ── about ──────────────────────────────────────────────────────────
 

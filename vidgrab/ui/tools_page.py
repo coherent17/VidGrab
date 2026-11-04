@@ -301,6 +301,9 @@ class ToolsPage(QWidget):
         t = self.host.t
         for k, b in self.tiles.items():
             b.setText(f"{t(_NAMES[k])}\n{t(_BLURBS[k])}")
+        if getattr(self, "_tool", None) in _NAMES:  # the open tool's heading (it stayed English after a language change)
+            self.title.setText(t(_NAMES[self._tool]))
+            self.blurb.setText(t(_BLURBS[self._tool]))
         self.browse.setText(t("Choose file…"))
         self.file.setPlaceholderText(t("Choose a file, or drop one on this window"))
         self.show_btn.setText(t("Show in folder"))

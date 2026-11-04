@@ -602,7 +602,7 @@ TRANS: dict[str, dict[str, str]] = {
     "Before": "Before",
     "After": "After",
     "Shown above and in the render, not in the player.": "Shown above and in the render, not in the player.",
-     "The player shows colour and green screen; clean-up, stabilising and slow motion show above and in the render.": "播放器會顯示色彩與綠幕；降噪、穩定畫面與慢動作顯示在上方圖片和輸出的影片中。",
+     "The player shows colour and green screen; clean-up, stabilising and slow motion show above and in the render.": "The player shows colour and green screen; clean-up, stabilising and slow motion show above and in the render.",
     "LOOK": "LOOK",
     "ADJUST": "ADJUST",
     "CLEAN UP": "CLEAN UP",

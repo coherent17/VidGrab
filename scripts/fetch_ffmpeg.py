@@ -4,7 +4,7 @@ Usage: python scripts/fetch_ffmpeg.py [linux|win|mac-arm64|mac-x64]   (default: 
 
 The archive's SHA-256 must match the pin, so every build, CI job and developer
 machine runs the exact same binaries. Does nothing when the pinned version is
-already in place (ffmpeg/<platform>/VERSION). The work is in vidgrab/ffmpeg_fetch.py,
+already in place (ffmpeg/<platform>/VERSION). The work is in vidgrab/core/ffmpeg_fetch.py,
 which the app also uses to fetch ffmpeg on first run.
 """
 
@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from vidgrab import ffmpeg_fetch
+from vidgrab.core import ffmpeg_fetch
 
 
 def main() -> None:

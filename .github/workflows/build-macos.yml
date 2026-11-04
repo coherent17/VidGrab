@@ -2,7 +2,7 @@ name: Build macOS app
 
 # A VidGrab.app per CPU (Apple silicon and Intel), zipped. ffmpeg is not inside it:
 # the only static build with libass is not redistributable, so the app downloads
-# the pinned one on first run (vidgrab/ffmpeg_fetch.py). It is not signed or
+# the pinned one on first run (vidgrab/core/ffmpeg_fetch.py). It is not signed or
 # notarized: the first launch needs right-click -> Open.
 on:
   workflow_call:
@@ -54,7 +54,7 @@ jobs:
 
       # Studio relies on libass (subtitles), amix and acrossfade
       - name: Test Studio against the pinned ffmpeg
-        run: PATH="$PWD/ffmpeg/mac:$PATH" python -m pytest tests/test_studio.py -v
+        run: PATH="$PWD/ffmpeg/mac:$PATH" python -m pytest tests/unit/test_studio.py -v
 
       - name: Make the app icon
         run: |

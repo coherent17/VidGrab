@@ -143,7 +143,9 @@ jobs:
           "$PY" -m pip install dist/*.whl
           cd "$RUNNER_TEMP"   # not the checkout: the installed package must be what runs
           "$PY" -c "
-          from vidgrab import app, ffmpeg_fetch, studio
+          from vidgrab.core import ffmpeg_fetch
+          from vidgrab.media import studio
+          from vidgrab.ui import drawing as app
           assert app._asset('icon.png').is_file() and app._asset('flags', 'us.png').is_file()
           assert studio._subtitle_font() is not None
           assert ffmpeg_fetch.load_pin()['files']

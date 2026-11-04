@@ -37,7 +37,7 @@ build: ## build the self-contained binary for the current OS (Linux here)
 	$(PY) scripts/write_version_info.py
 	$(PY) -m PyInstaller VidGrab.spec --noconfirm
 
-icon: ## regenerate assets/icon.{png,ico} + docs/icon.png from vidgrab/icon.py
+icon: ## regenerate assets/icon.{png,ico} + docs/icon.png from vidgrab/ui/icon.py
 	@[ -x $(PY) ] || $(MAKE) setup
 	$(PY) scripts/generate_icon.py
 

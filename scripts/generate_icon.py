@@ -1,6 +1,6 @@
 """Generate the VidGrab brand icon.
 
-Reads the drawing logic from `vidgrab/icon.py` (single source of truth) and
+Reads the drawing logic from `vidgrab/ui/icon.py` (single source of truth) and
 writes:
 
   assets/icon.ico   16/32/48/64/128/256 PNG-in-ICO (Windows exe resource)
@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT))
 def main() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-    from vidgrab.icon import generate
+    from vidgrab.ui.icon import generate
 
     assets = ROOT / "assets"
     assets.mkdir(exist_ok=True)

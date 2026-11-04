@@ -254,8 +254,9 @@ class StudioPreview(QWidget):
         )
 
     def set_texts(self, *, empty: str, audio: str, guides: str = "Guides",
-                  guides_tip: str = "") -> None:
+                  guides_tip: str = "", play_tip: str = "") -> None:
         self._texts = {"empty": empty, "audio": audio}
+        self.play_btn.setToolTip(play_tip)
         self.guides_btn.setText(guides)
         self.guides_btn.setToolTip(guides_tip)
         self._update_placeholder()

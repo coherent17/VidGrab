@@ -325,7 +325,7 @@ def test_settings_counts_and_versions_follow_a_language_change(win) -> None:
 
 
 def test_library_grid_view_is_remembered_and_keeps_every_file(win) -> None:
-    w, _m, media = win
+    w, _m, _media = win
     lib = w._library
     lib.refresh()
     n = lib.list.count()

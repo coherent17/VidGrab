@@ -150,10 +150,19 @@ def make_matte(src: str | Path, start: float, end: float, out_file: str | Path, 
         if writer.wait(timeout=120) != 0 or done == 0 or not out_file.is_file():
             raise RuntimeError(tr("Could not cut out the background of this clip."))
     except BaseException:
+        _stop(reader, writer)  # Windows can't delete a file ffmpeg still has open
         out_file.unlink(missing_ok=True)
         raise
     finally:
-        for proc in (reader, writer):
-            if proc.poll() is None:
-                proc.kill()
+        _stop(reader, writer)
     return out_file
+
+
+def _stop(*procs: subprocess.Popen) -> None:
+    for proc in procs:
+        if proc.poll() is None:
+            proc.kill()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass

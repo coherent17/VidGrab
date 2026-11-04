@@ -124,6 +124,7 @@ from vidgrab.ui.theme import (  # noqa: F401
     DARK_QSS,
     LIGHT_QSS,
 )
+from vidgrab.ui.toast import ToastHost
 from vidgrab.ui.tools_page import ToolsPage
 from vidgrab.ui.updates import UpdatesMixin
 from vidgrab.ui.workers import (
@@ -271,6 +272,7 @@ class VidGrabWindow(SettingsMixin, UpdatesMixin, DownloadPageMixin, QMainWindow)
         self._i18n_widgets: list[tuple[QWidget, str, str]] = []
         self._finished_since_idle = 0
         self._theme = cfg["theme"]
+        self._toasts = ToastHost(self, _PALETTES[self._theme])
         self._lang = cfg["lang"]
         self._t = make_translator(self._lang)
         self._busy = False
@@ -528,10 +530,15 @@ class VidGrabWindow(SettingsMixin, UpdatesMixin, DownloadPageMixin, QMainWindow)
 
     # downloads-finished notification -------------------------------------------
 
+    def toast(self, text: str, kind: str = "ok", action=None):
+        """A message that slides in at the bottom right and goes away by itself."""
+        return self._toasts.show(text, kind, action)
+
     def _notify_downloads_done(self, count: int) -> None:
         if not self.setting("notify"):
             return
         msg = self._t("{n} downloads finished.", n=count)
+        self.toast(msg, "ok", (self._t("Open folder"), lambda: self.reveal(str(self.default_output_dir()))))
         self._statusbar.showMessage(msg, 10000)
         QApplication.alert(self)  # flash the taskbar entry
         if _QT_MULTIMEDIA_OK:
@@ -632,6 +639,8 @@ class VidGrabWindow(SettingsMixin, UpdatesMixin, DownloadPageMixin, QMainWindow)
             self._studio.apply_theme(
                 self._theme, _PALETTES[self._theme], _CARD_ACCENTS[self._theme]
             )
+        if hasattr(self, "_toasts"):
+            self._toasts.apply_theme(_PALETTES[self._theme])
         if hasattr(self, "_help"):
             self._help.apply_theme(_PALETTES[self._theme])
             for page in (self._library, self._tools, self._subs):
@@ -1077,10 +1086,11 @@ class VidGrabWindow(SettingsMixin, UpdatesMixin, DownloadPageMixin, QMainWindow)
         self._set_busy(False)
         files = list(result) if isinstance(result, (tuple, list)) else [str(result)]
         self._studio.finish(True)
-        QMessageBox.information(
-            self, self._t("Success"),
-            self._t("Saved to:\n{paths}", paths="\n".join(str(f) for f in files)),
-        )
+        first = str(files[0]) if files else ""
+        text = (self._t("Saved: {name}", name=Path(first).name) if len(files) == 1
+                else self._t("Saved {n} files", n=len(files)))
+        self.toast(text, "ok", (self._t("Show in folder"), lambda: self.reveal(first)) if first else None)
+        self._append_log("Saved: " + ", ".join(str(f) for f in files))
 
     def _on_cancelled(self) -> None:
         self._set_busy(False)

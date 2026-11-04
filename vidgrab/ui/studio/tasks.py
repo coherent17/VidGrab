@@ -27,12 +27,12 @@ class _ThumbRelay(QObject):
 
 
 class _ThumbTask(QRunnable):
-    def __init__(self, relay: _ThumbRelay, path: str, at: float) -> None:
+    def __init__(self, relay: _ThumbRelay, path: str, at: float, height: int = 72) -> None:
         super().__init__()
-        self._relay, self._path, self._at = relay, path, at
+        self._relay, self._path, self._at, self._height = relay, path, at, height
 
     def run(self) -> None:
-        png = thumbnail_png(self._path, self._at)
+        png = thumbnail_png(self._path, self._at, self._height)
         self._relay.done.emit(self._path, self._at, QImage.fromData(png) if png else QImage())
 
 
@@ -132,8 +132,9 @@ class ThumbCache(QObject):
     LIMIT = 1200  # frames kept (~10 KB each)
     MAX_PENDING = 48
 
-    def __init__(self, parent: QObject | None = None) -> None:
+    def __init__(self, parent: QObject | None = None, height: int = 72) -> None:
         super().__init__(parent)
+        self._height = height  # pixel height of the frames (the Library's grid wants bigger ones)
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(2)
         self._relay = _ThumbRelay(self)
@@ -151,7 +152,7 @@ class ThumbCache(QObject):
             return img
         if key not in self._pending and len(self._pending) < self.MAX_PENDING:
             self._pending.add(key)
-            self._pool.start(_ThumbTask(self._relay, path, key[1]))
+            self._pool.start(_ThumbTask(self._relay, path, key[1], self._height))
         return None
 
     def nearest(self, path: str, at: float) -> QImage | None:

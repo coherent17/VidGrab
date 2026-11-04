@@ -322,3 +322,16 @@ def test_settings_counts_and_versions_follow_a_language_change(win) -> None:
     w._apply_language()
     assert "videos remembered" not in w._archive_lbl.text()
     assert "built in" not in w._ytdlp_lbl.text()
+
+
+def test_library_grid_view_is_remembered_and_keeps_every_file(win) -> None:
+    w, _m, media = win
+    lib = w._library
+    lib.refresh()
+    n = lib.list.count()
+    assert n >= 2 and lib.view == "list"
+    lib.set_view("grid")
+    assert lib.view == "grid" and lib.list.count() == n and lib.view_btns["grid"].isChecked()
+    assert w.setting("library_view") == "grid"
+    lib.set_view("list")
+    assert lib.list.count() == n and w.setting("library_view") == "list"

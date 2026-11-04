@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListView,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -27,7 +28,8 @@ from vidgrab.ui.ui_kit import Chips, EmptyState, attach_suggestions, chip_css
 
 _PATH = Qt.UserRole
 _KIND_ICON = {"video": "film", "audio": "music", "image": "captions"}
-THUMB = QSize(128, 72)
+THUMB = QSize(128, 72)  # list rows
+GRID_THUMB = QSize(208, 117)  # grid cards
 
 
 def ago(mtime: float, t) -> str:
@@ -52,7 +54,7 @@ class LibraryPage(QWidget):
         self._palette: dict[str, str] = {}
         self._entries: list[library.Entry] = []
         self._finder = library.Finder([])
-        self._thumbs = ThumbCache(self)
+        self._thumbs = ThumbCache(self, height=GRID_THUMB.height() + 7)  # one size serves both views
         self._thumbs.updated.connect(self._paint_thumbs)
 
         lay = QVBoxLayout(self)
@@ -73,6 +75,16 @@ class LibraryPage(QWidget):
         top.addWidget(self.chips, stretch=1)
         self.folder_lbl = QLabel()
         top.addWidget(self.folder_lbl)
+        self.view_btns: dict[str, QPushButton] = {}
+        for mode in ("list", "grid"):  # how the files are laid out
+            b = QPushButton()
+            b.setObjectName("secondary")
+            b.setCheckable(True)
+            b.setAutoExclusive(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _c=False, m=mode: self.set_view(m))
+            top.addWidget(b)
+            self.view_btns[mode] = b
         self.refresh_btn = QPushButton()
         self.refresh_btn.setObjectName("secondary")
         self.refresh_btn.clicked.connect(self.refresh)
@@ -117,6 +129,8 @@ class LibraryPage(QWidget):
         lay.addLayout(bar)
         self.retranslate()
         self._selection()
+        saved = self.host.setting("library_view") if hasattr(self.host, "setting") else "list"
+        self.set_view(saved if saved in ("list", "grid") else "list", save=False)
 
     # ── look ───────────────────────────────────────────────────────────
 
@@ -126,6 +140,7 @@ class LibraryPage(QWidget):
             chip_css(p)
             + f"QFrame#lib_card {{ background:{p['SURFACE']}; border:1px solid {p['BORDER']}; border-radius:14px; }}"
             + "QListWidget#lib_list { background:transparent; border:none; outline:none; }"
+            + f"QPushButton#secondary:checked {{ border:1px solid {p['ACCENT']}; color:{p['ACCENT_HI']}; }}"
             + f"QListWidget#lib_list::item {{ padding:6px 8px; border-radius:10px; color:{p['TEXT']}; }}"
             + f"QListWidget#lib_list::item:hover {{ background:{p['SURFACE_HI']}; }}"
             + f"QListWidget#lib_list::item:selected {{ background:{p['SEL']}; color:{p['TEXT']}; }}")
@@ -140,6 +155,8 @@ class LibraryPage(QWidget):
         for k, label in (("all", "All"), ("video", "Videos"), ("audio", "Music"), ("image", "Pictures")):
             self.chips.buttons[k].setText(t(label))
         self.refresh_btn.setText(t("Refresh"))
+        self.view_btns["list"].setText(t("List"))
+        self.view_btns["grid"].setText(t("Grid"))
         for k, label in (("open", "Open"), ("reveal", "Show in folder"), ("studio", "Send to Studio"),
                          ("tools", "Compress / convert…"), ("delete", "Delete")):
             self.actions[k].setText(t(label))
@@ -154,18 +171,44 @@ class LibraryPage(QWidget):
         self.folder_lbl.setText(str(folder))
         self._fill()
 
+    @property
+    def view(self) -> str:
+        return "grid" if getattr(self, "_view", "list") == "grid" else "list"
+
+    def set_view(self, mode: str, *, save: bool = True) -> None:
+        """"list": one row per file; "grid": cards with large pictures."""
+        self._view = "grid" if mode == "grid" else "list"
+        self.view_btns[self._view].setChecked(True)
+        grid = self._view == "grid"
+        self.list.setViewMode(QListView.IconMode if grid else QListView.ListMode)
+        self.list.setIconSize(GRID_THUMB if grid else THUMB)
+        self.list.setGridSize(QSize(GRID_THUMB.width() + 30, GRID_THUMB.height() + 74) if grid else QSize())
+        self.list.setWrapping(grid)
+        self.list.setResizeMode(QListView.Adjust)
+        self.list.setMovement(QListView.Static)
+        self.list.setWordWrap(grid)
+        self.list.setTextElideMode(Qt.ElideMiddle)
+        self.list.setSpacing(10 if grid else 2)
+        if save and hasattr(self.host, "set_setting"):
+            self.host.set_setting("library_view", self._view)
+        self._fill()
+
+    def _thumb_size(self) -> QSize:
+        return GRID_THUMB if self.view == "grid" else THUMB
+
     def _placeholder(self, kind: str) -> QIcon:
-        pm = QPixmap(THUMB)
+        size = self._thumb_size()
+        pm = QPixmap(size)
         pm.fill(Qt.transparent)
         p = QPainter(pm)
         p.setRenderHint(QPainter.Antialiasing)
         p.setBrush(QColor(self._palette.get("SURFACE_HI", "#1c1e3c")))
         p.setPen(Qt.NoPen)
-        p.drawRoundedRect(0, 0, THUMB.width(), THUMB.height(), 8, 8)
+        p.drawRoundedRect(0, 0, size.width(), size.height(), 8, 8)
         p.end()
         glyph = self.host.icon(_KIND_ICON[kind], self._palette.get("TEXT_MUTED", "#7b80aa"), 28).pixmap(28, 28)
         p = QPainter(pm)
-        p.drawPixmap((THUMB.width() - 28) // 2, (THUMB.height() - 28) // 2, glyph)
+        p.drawPixmap((size.width() - 28) // 2, (size.height() - 28) // 2, glyph)
         p.end()
         return QIcon(pm)
 
@@ -180,7 +223,8 @@ class LibraryPage(QWidget):
                                    f"{t({'video': 'Video', 'audio': 'Music', 'image': 'Picture'}[e.kind])}")
             item.setData(_PATH, e.path)
             item.setToolTip(e.path)
-            item.setSizeHint(QSize(100, THUMB.height() + 16))
+            if self.view == "list":
+                item.setSizeHint(QSize(100, THUMB.height() + 16))
             self.list.addItem(item)
             if e.path in keep:
                 item.setSelected(True)
@@ -207,13 +251,13 @@ class LibraryPage(QWidget):
             if img is not None and not img.isNull():
                 item.setIcon(QIcon(self._cover(img)))
 
-    @staticmethod
-    def _cover(img: QImage) -> QPixmap:
-        pm = QPixmap(THUMB)
+    def _cover(self, img: QImage) -> QPixmap:
+        size = self._thumb_size()
+        pm = QPixmap(size)
         pm.fill(Qt.black)
-        scaled = QPixmap.fromImage(img).scaled(THUMB, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        scaled = QPixmap.fromImage(img).scaled(size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         p = QPainter(pm)
-        p.drawPixmap((THUMB.width() - scaled.width()) // 2, (THUMB.height() - scaled.height()) // 2, scaled)
+        p.drawPixmap((size.width() - scaled.width()) // 2, (size.height() - scaled.height()) // 2, scaled)
         p.end()
         return pm
 

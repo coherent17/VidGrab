@@ -148,6 +148,9 @@ class HistoryMixin:
         name = Path(self._project_path).stem if self._project_path else self.t("Untitled project")
         self.project_lbl.setText(f"{name} \u2022" if self.is_dirty() else name)
         self.project_lbl.setToolTip(self._project_path)
+        if hasattr(self.host, "setWindowTitle"):  # the title bar names the open project
+            shown = Path(self._project_path).stem if self._project_path else (name if self.is_dirty() else "")
+            self.host.setWindowTitle(f"{shown}{' •' if self.is_dirty() else ''} — VidGrab" if shown else "VidGrab")
 
     def _fill_project_menu(self) -> None:
         m = self.project_menu

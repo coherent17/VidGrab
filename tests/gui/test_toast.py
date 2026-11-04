@@ -75,3 +75,49 @@ def test_a_toast_goes_away_by_itself(win, monkeypatch) -> None:
     except RuntimeError:  # already deleted, which is what closing does
         gone = True
     assert gone
+
+
+def test_the_command_palette_finds_and_runs_things(win) -> None:
+    win.open_palette()
+    dlg = win._palette_dlg
+    dlg.box.setText("libr")  # a page by a few letters
+    assert dlg.list.count() >= 1 and "ibrary" in dlg.list.item(0).text()
+    dlg._run(dlg.list.item(0))
+    _pump(0.3)
+    assert win._stack.currentIndex() == 2
+
+    win.open_palette()
+    dlg = win._palette_dlg
+    dlg.box.setText("short")  # a tool, by name: opens the Tools page on it
+    assert any("Short" in dlg.list.item(i).text() for i in range(dlg.list.count()))
+    first = next(i for i in range(dlg.list.count()) if "Short" in dlg.list.item(i).text())
+    dlg._run(dlg.list.item(first))
+    _pump(0.3)
+    assert win._stack.currentIndex() == 3 and win._tools._tool == "short"
+
+
+def test_the_theme_list_can_follow_the_system(win, monkeypatch) -> None:
+    from vidgrab.ui import app as m
+
+    monkeypatch.setattr(m.VidGrabWindow, "_system_theme", staticmethod(lambda: "light"))
+    win._theme_chosen("auto")
+    assert win.setting("theme_auto") is True and win._theme == "light"
+    assert win._theme_combo.currentData() == "auto"
+    win._theme_chosen("dark")  # picking one by hand ends it
+    assert win.setting("theme_auto") is False and win._theme == "dark"
+    assert win._theme_combo.currentData() == "dark"
+
+
+def test_the_title_bar_names_the_open_project(win, tmp_path) -> None:
+    assert win.windowTitle() == "VidGrab"
+    win._studio._project_path = str(tmp_path / "holiday.vgproj")
+    win._studio._update_project_ui()
+    assert win.windowTitle().startswith("holiday") and win.windowTitle().endswith("VidGrab")
+
+
+def test_the_welcome_tip_shows_once(win) -> None:
+    assert win.setting("welcome_shown") is False
+    win._welcome()
+    assert len(win._toasts.active()) == 1 and win.setting("welcome_shown") is True
+    win._welcome()  # not again
+    assert len(win._toasts.active()) == 1

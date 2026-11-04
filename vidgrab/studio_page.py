@@ -2065,9 +2065,23 @@ class StudioPage(QWidget):
         for build in (self._build_project_inspector, self._build_cue_inspector,
                       self._build_music_inspector, self._build_clip_inspector,
                       self._build_image_inspector):
-            self.insp.addWidget(build())
+            self.insp.addWidget(self._scrolled(build()))
         lay.addWidget(self.insp, stretch=1)
         return panel
+
+    @staticmethod
+    def _scrolled(page: QWidget) -> QScrollArea:
+        """An inspector page that scrolls up and down when the window is short (so the
+        window can be as low as a 768-pixel laptop screen) and looks the same when it fits."""
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setFrameShape(QFrame.NoFrame)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        area.viewport().setAutoFillBackground(False)
+        area.setStyleSheet("QScrollArea { background: transparent; }")
+        page.setAutoFillBackground(False)
+        area.setWidget(page)
+        return area
 
     @staticmethod
     def _page() -> tuple[QWidget, QVBoxLayout]:

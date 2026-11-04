@@ -120,6 +120,9 @@ class SubscriptionsPage(QWidget):
         self.all_btn.clicked.connect(lambda: self._tick(True))
         self.get_btn = QPushButton()
         self.get_btn.setObjectName("primary")
+        self.get_btn.setProperty("compact", True)  # same height as the buttons beside it
+        for b in (self.new_btn, self.all_btn, self.get_btn):
+            b.setMinimumHeight(38)
         self.get_btn.clicked.connect(self._download)
         foot.addWidget(self.new_btn)
         foot.addWidget(self.all_btn)

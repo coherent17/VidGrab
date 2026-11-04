@@ -104,6 +104,9 @@ class LibraryPage(QWidget):
         for key in ("open", "reveal", "studio", "tools", "delete"):
             b = QPushButton()
             b.setObjectName("primary" if key == "studio" else "secondary")
+            if key == "studio":  # the main action, but the same height as its neighbours
+                b.setProperty("compact", True)
+            b.setMinimumHeight(36)
             b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(lambda _c=False, k=key: self._act(k))
             bar.addWidget(b)

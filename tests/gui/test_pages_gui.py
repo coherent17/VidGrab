@@ -208,7 +208,7 @@ def test_subscriptions_guides_the_user_and_does_not_retry_forever(win, qapp, mon
         raise RuntimeError("HTTP 404")
 
     monkeypatch.setattr(sb, "fetch", boom)
-    assert "Paste a channel" in s.status.text() or "How it works" in s.status.text()
+    assert "Paste a channel" in s.empty.text.text() and s.empty.isVisibleTo(s)
     s.add_btn.click()  # empty box
     assert "https://" in s.status.text() and not s.subs
     s.url.setText("https://www.youtube.com/watch?v=abc")
@@ -299,3 +299,52 @@ def test_suggestions_pop_up_while_typing(win, qapp) -> None:
     box.textEdited.emit("https://youtube.com/watch?v=x")
     qapp.processEvents()
     assert not popup.isVisible()  # a link gets no suggestions
+
+
+def test_the_open_tools_heading_follows_a_language_change(win) -> None:
+    from vidgrab.i18n import make_translator
+
+    w, _m, _media = win
+    w._tools.select_tool("short")
+    w._lang = "zh"
+    w._t = make_translator("zh")
+    w._apply_language()
+    assert w._tools.title.text() == w._t("Make a Short") != "Make a Short"
+    assert w._tools.blurb.text() == w._t("A vertical clip with captions")
+
+
+def test_settings_counts_and_versions_follow_a_language_change(win) -> None:
+    from vidgrab.i18n import make_translator
+
+    w, _m, _media = win
+    w._lang = "zh"
+    w._t = make_translator("zh")
+    w._apply_language()
+    assert "videos remembered" not in w._archive_lbl.text()
+    assert "built in" not in w._ytdlp_lbl.text()
+
+
+def test_library_grid_view_is_remembered_and_keeps_every_file(win) -> None:
+    w, _m, _media = win
+    lib = w._library
+    lib.refresh()
+    n = lib.list.count()
+    assert n >= 2 and lib.view == "list"
+    lib.set_view("grid")
+    assert lib.view == "grid" and lib.list.count() == n and lib.view_btns["grid"].isChecked()
+    assert w.setting("library_view") == "grid"
+    lib.set_view("list")
+    assert lib.list.count() == n and w.setting("library_view") == "list"
+
+
+def test_library_shows_how_long_each_file_is(win, qapp) -> None:
+    w, _m, _media = win
+    lib = w._library
+    lib.refresh()
+    assert _wait(qapp, lambda: len([p for p, d in lib._durations.items() if d]) >= 2, 15)
+    clips = [lib.list.item(i) for i in range(lib.list.count())]
+    assert clips and all(not it.icon().isNull() for it in clips)
+    from vidgrab.ui.library_page import clock
+
+    assert clock(0.4) == "0:00" and clock(187) == "3:07" and clock(3729) == "1:02:09"
+    assert lib.view_btns["list"].isChecked() != lib.view_btns["grid"].isChecked()

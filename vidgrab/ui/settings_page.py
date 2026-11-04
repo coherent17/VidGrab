@@ -114,7 +114,7 @@ class SettingsMixin:
         self._theme_combo = QComboBox()
         self._theme_combo.setCursor(QCursor(_HAND))
         self._theme_combo.activated.connect(
-            lambda _i: self._set_theme(self._theme_combo.currentData() or "dark")
+            lambda _i: self._theme_chosen(self._theme_combo.currentData() or "dark")
         )
         self._lang_combo = QComboBox()
         self._lang_combo.setCursor(QCursor(_HAND))
@@ -189,11 +189,14 @@ class SettingsMixin:
         self._set_sub.setChecked(bool(self.setting("sub_enabled")))
         self._set_sub.toggled.connect(lambda on: self._default_changed("sub_enabled", on))
         self._trw(self._set_sub, "Download subtitles")
-        sub_row = QHBoxLayout()
+        sub_row = QVBoxLayout()  # the checkbox, then its two lists (side by side they cut "Traditional Chinese")
         sub_row.setSpacing(8)
         sub_row.addWidget(self._set_sub)
-        sub_row.addWidget(self._set_sub_lang, stretch=1)
-        sub_row.addWidget(self._set_sub_mode, stretch=1)
+        sub_lists = QHBoxLayout()
+        sub_lists.setSpacing(8)
+        sub_lists.addWidget(self._set_sub_lang, stretch=1)
+        sub_lists.addWidget(self._set_sub_mode, stretch=1)
+        sub_row.addLayout(sub_lists)
         form.addRow(self._trw(QLabel(), "Subtitles:"), sub_row)
         form.addRow(self._trw(QLabel(), "File names:"), self._set_name)
         self._set_name_example = QLabel()
@@ -449,7 +452,7 @@ class SettingsMixin:
     def _fill_settings_combos(self) -> None:
         t = self._t
         fill = StudioPage._fill
-        fill(self._theme_combo, [(t("Dark"), "dark"), (t("Light"), "light")])
+        fill(self._theme_combo, [(t("Dark"), "dark"), (t("Light"), "light"), (t("Match my system"), "auto")])
         fill(self._font_combo, [*((family, key) for key, family in UI_FONTS.items()),
                                 (t("System default"), "system")])
         for i in range(self._font_combo.count()):  # each name in its own typeface
@@ -457,7 +460,7 @@ class SettingsMixin:
             if family:
                 self._font_combo.setItemData(i, QFont(family), Qt.FontRole)
         self._font_combo.setCurrentIndex(max(0, self._font_combo.findData(self.setting("ui_font"))))
-        self._theme_combo.setCurrentIndex(max(0, self._theme_combo.findData(self._theme)))
+        self._theme_combo.setCurrentIndex(max(0, self._theme_combo.findData(self._theme_choice())))
         fill(self._set_fmt, [("MP4", "mp4"), ("MP3", "mp3"), ("MP4 + MP3", "both")])
         fill(self._set_vq, [(t("Best available"), "")] + [(label, token) for label, token in (
             ("4K (2160p)", "2160p"), ("1440p (QHD)", "1440p"), ("1080p (FHD)", "1080p"),

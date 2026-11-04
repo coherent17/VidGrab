@@ -29,6 +29,7 @@ def _models_dir() -> Path:
 # every persisted setting with its default; config.json may hold any subset
 DEFAULT_SETTINGS: dict = {
     "theme": "dark",
+    "theme_auto": False,  # follow the system's light / dark setting
     "lang": "en",
     "out_dir": "",  # "" = ~/Downloads/VidGrab
     "fmt": "mp4",  # mp4 | mp3 | both
@@ -57,6 +58,8 @@ DEFAULT_SETTINGS: dict = {
     "cookies_browser": "",  # borrow this browser's login ("" = none)
     "online_suggest": True,  # offer YouTube's own search suggestions while typing in the link box
     "recent_searches": [],  # what was typed into the link box to search YouTube, newest first
+    "welcome_shown": False,  # the one-time tip on the first start
+    "library_view": "list",  # Library: "list" or "grid"
     "update_check": True,  # tell me when a newer VidGrab is out (one quiet request to github.com)
     "ytdlp_check": True,  # look for a newer yt-dlp when the app starts
     "ui_font": "jakarta",  # a key of UI_FONTS (bundled), or "system" (the computer's own font)

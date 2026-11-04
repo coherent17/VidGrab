@@ -18,6 +18,7 @@ from PySide6.QtGui import (
     QCursor,
     QDesktopServices,
     QFont,
+    QGuiApplication,
     QIcon,
 )
 
@@ -56,6 +57,7 @@ from vidgrab.core.downloader import (
 from vidgrab.core.network import ConnectionStatus
 from vidgrab.i18n import make_translator
 from vidgrab.ui.chrome import (
+    _NAV_ITEMS,
     _PAGE_HEADERS,
     PAGE_DOWNLOAD,
     PAGE_HELP,
@@ -112,6 +114,7 @@ from vidgrab.ui.fonts import (  # noqa: F401
 from vidgrab.ui.help_page import HelpPage
 from vidgrab.ui.helpers import _chime_path, _versions
 from vidgrab.ui.library_page import LibraryPage
+from vidgrab.ui.palette import CommandPalette
 from vidgrab.ui.pick_dialogs import shutdown_threads
 from vidgrab.ui.preview import QT_MULTIMEDIA_OK as _QT_MULTIMEDIA_OK
 from vidgrab.ui.settings_page import SettingsMixin
@@ -124,7 +127,10 @@ from vidgrab.ui.theme import (  # noqa: F401
     DARK_QSS,
     LIGHT_QSS,
 )
-from vidgrab.ui.tools_page import ToolsPage
+from vidgrab.ui.toast import ToastHost
+from vidgrab.ui.tools_page import _NAMES as _TOOL_NAMES
+from vidgrab.ui.tools_page import TOOLS, ToolsPage
+from vidgrab.ui.tour import Tour
 from vidgrab.ui.updates import UpdatesMixin
 from vidgrab.ui.workers import (
     _STUCK,
@@ -270,7 +276,8 @@ class VidGrabWindow(SettingsMixin, UpdatesMixin, DownloadPageMixin, QMainWindow)
         self._settings = cfg
         self._i18n_widgets: list[tuple[QWidget, str, str]] = []
         self._finished_since_idle = 0
-        self._theme = cfg["theme"]
+        self._theme = self._system_theme() or cfg["theme"] if cfg.get("theme_auto") else cfg["theme"]
+        self._toasts = ToastHost(self, _PALETTES[self._theme])
         self._lang = cfg["lang"]
         self._t = make_translator(self._lang)
         self._busy = False
@@ -317,6 +324,7 @@ class VidGrabWindow(SettingsMixin, UpdatesMixin, DownloadPageMixin, QMainWindow)
             QTimer.singleShot(1200, self.probe_hardware)
             if not find_ffmpeg():  # the macOS app / a pip install: fetch it once
                 QTimer.singleShot(900, self._offer_ffmpeg)
+            QTimer.singleShot(1500, self._welcome)
             if getattr(sys, "frozen", False):
                 self_update.cleanup()  # the version this one replaced, or a half download
             if self.setting("update_check"):
@@ -528,10 +536,53 @@ class VidGrabWindow(SettingsMixin, UpdatesMixin, DownloadPageMixin, QMainWindow)
 
     # downloads-finished notification -------------------------------------------
 
+    def _welcome(self) -> None:
+        """First start only: the short tour."""
+        if self.setting("welcome_shown"):
+            return
+        self.start_tour()
+
+    def start_tour(self) -> None:
+        """A card beside the sidebar that walks through the pages (also in the palette)."""
+        if getattr(self, "_tour", None) is None:
+            self._tour = Tour(self, self._tour_steps, self._tour_labels, self._sidebar.select,
+                              lambda i: self._sidebar._buttons[i], _PALETTES[self._theme], self._tour_done)
+        self._tour.start()
+
+    def _tour_steps(self) -> list:
+        t = self._t
+        return [
+            (PAGE_DOWNLOAD, t("Download anything"),
+             t("Paste a link, or type words to search YouTube. Pick MP4 or Audio and press Download.")),
+            (PAGE_STUDIO, t("Make a video"),
+             t("Add clips, trim them on the timeline, add subtitles and music, then press Render. "
+               "Drag the handle above the timeline to give the panels more room.")),
+            (PAGE_LIBRARY, t("Find your files"),
+             t("Everything you downloaded and made, as a list or a grid. Select a file to open it, "
+               "send it to the Studio or shrink it.")),
+            (PAGE_TOOLS, t("One-click tools"),
+             t("Make a Short, shrink a video to a size, convert, GIF, thumbnail, extract audio: "
+               "no Studio needed.")),
+            (PAGE_HELP, t("Need a hand?"),
+             t("Press Ctrl+K to jump anywhere or run an action, and F1 for the Help guide.")),
+        ]
+
+    def _tour_labels(self) -> dict[str, str]:
+        return {"next": self._t("Next"), "skip": self._t("Skip the tour"), "done": self._t("Got it")}
+
+    def _tour_done(self) -> None:
+        self.set_setting("welcome_shown", True)
+        self._sidebar.select(PAGE_DOWNLOAD)
+
+    def toast(self, text: str, kind: str = "ok", action=None):
+        """A message that slides in at the bottom right and goes away by itself."""
+        return self._toasts.show(text, kind, action)
+
     def _notify_downloads_done(self, count: int) -> None:
         if not self.setting("notify"):
             return
         msg = self._t("{n} downloads finished.", n=count)
+        self.toast(msg, "ok", (self._t("Open folder"), lambda: self.reveal(str(self.default_output_dir()))))
         self._statusbar.showMessage(msg, 10000)
         QApplication.alert(self)  # flash the taskbar entry
         if _QT_MULTIMEDIA_OK:
@@ -632,12 +683,42 @@ class VidGrabWindow(SettingsMixin, UpdatesMixin, DownloadPageMixin, QMainWindow)
             self._studio.apply_theme(
                 self._theme, _PALETTES[self._theme], _CARD_ACCENTS[self._theme]
             )
+        if hasattr(self, "_toasts"):
+            self._toasts.apply_theme(_PALETTES[self._theme])
+        if getattr(self, "_tour", None) is not None:
+            self._tour.apply_theme(_PALETTES[self._theme])
+        if hasattr(self, "_info_empty"):
+            self._info_empty.apply_theme(_PALETTES[self._theme])
         if hasattr(self, "_help"):
             self._help.apply_theme(_PALETTES[self._theme])
             for page in (self._library, self._tools, self._subs):
                 page.apply_theme(_PALETTES[self._theme])
 
+    @staticmethod
+    def _system_theme() -> str | None:
+        """"dark" / "light" as the operating system says (None when it doesn't, e.g. offscreen)."""
+        try:
+            scheme = QGuiApplication.styleHints().colorScheme()
+        except (AttributeError, RuntimeError):
+            return None
+        return {Qt.ColorScheme.Dark: "dark", Qt.ColorScheme.Light: "light"}.get(scheme)
+
+    def _theme_choice(self) -> str:
+        """What the Theme list shows: a fixed theme, or "auto" while following the system."""
+        return "auto" if self.setting("theme_auto") else self._theme
+
+    def _theme_chosen(self, value: str) -> None:
+        self.set_setting("theme_auto", value == "auto")
+        if value == "auto":
+            name = self._system_theme()
+            if name:
+                self._set_theme(name)
+        else:
+            self._set_theme(value)
+        self._theme_combo.setCurrentIndex(max(0, self._theme_combo.findData(self._theme_choice())))
+
     def _toggle_theme(self) -> None:
+        self.set_setting("theme_auto", False)  # picking one by hand ends "match my system"
         self._set_theme("light" if self._theme == "dark" else "dark")
 
     def _set_theme(self, name: str) -> None:
@@ -646,7 +727,7 @@ class VidGrabWindow(SettingsMixin, UpdatesMixin, DownloadPageMixin, QMainWindow)
         self._theme = name
         self._apply_theme()
         self._theme_combo.blockSignals(True)
-        self._theme_combo.setCurrentIndex(max(0, self._theme_combo.findData(self._theme)))
+        self._theme_combo.setCurrentIndex(max(0, self._theme_combo.findData(self._theme_choice())))
         self._theme_combo.blockSignals(False)
         self._apply_language()
         _save_config(self._theme, self._lang)
@@ -704,6 +785,11 @@ class VidGrabWindow(SettingsMixin, UpdatesMixin, DownloadPageMixin, QMainWindow)
             self._info_meta.setText(
                 t("Paste a link to see its details\u2026")
             )
+            self._sync_info_empty()
+        self._info_empty.set_texts(t("Paste a link to begin"), t(
+            "A YouTube video, playlist or channel, or just type words to search."))
+        self._info_empty.buttons.itemAt(0).widget().setText(t("Paste from clipboard"))
+        self._info_empty.buttons.itemAt(1).widget().setText(t("Type to search"))
         self._hflip.setText(t("Horizontal"))
         self._vflip.setText(t("Vertical"))
         self._mp4.setText(t("MP4 (video)"))
@@ -765,6 +851,8 @@ class VidGrabWindow(SettingsMixin, UpdatesMixin, DownloadPageMixin, QMainWindow)
             self._net_lbl.setText("\u25cf " + t("checking\u2026"))
             self._label_pill(self._net_lbl, "#f59e0b")
         self._refresh_btn()
+        self._refresh_archive()  # labels built from a count / version stay English until refreshed
+        self._refresh_ytdlp()
 
     # ── about ──────────────────────────────────────────────────────────
 
@@ -1075,10 +1163,11 @@ class VidGrabWindow(SettingsMixin, UpdatesMixin, DownloadPageMixin, QMainWindow)
         self._set_busy(False)
         files = list(result) if isinstance(result, (tuple, list)) else [str(result)]
         self._studio.finish(True)
-        QMessageBox.information(
-            self, self._t("Success"),
-            self._t("Saved to:\n{paths}", paths="\n".join(str(f) for f in files)),
-        )
+        first = str(files[0]) if files else ""
+        text = (self._t("Saved: {name}", name=Path(first).name) if len(files) == 1
+                else self._t("Saved {n} files", n=len(files)))
+        self.toast(text, "ok", (self._t("Show in folder"), lambda: self.reveal(first)) if first else None)
+        self._append_log("Saved: " + ", ".join(str(f) for f in files))
 
     def _on_cancelled(self) -> None:
         self._set_busy(False)
@@ -1098,6 +1187,36 @@ class VidGrabWindow(SettingsMixin, UpdatesMixin, DownloadPageMixin, QMainWindow)
 
         QShortcut(QKeySequence("Ctrl+V"), self, self._paste_url)
         QShortcut(QKeySequence("F1"), self, lambda: self._sidebar.select(PAGE_HELP))
+        QShortcut(QKeySequence("Ctrl+K"), self, self.open_palette)
+        try:  # the system switched between light and dark while we were open
+            QGuiApplication.styleHints().colorSchemeChanged.connect(
+                lambda *_a: self.setting("theme_auto") and self._system_theme() and self._set_theme(self._system_theme()))
+        except (AttributeError, RuntimeError):
+            pass
+
+    def _palette_commands(self) -> list[tuple[str, object]]:
+        """Everything the command palette (Ctrl+K) can do, in the current language."""
+        t = self._t
+        cmds: list[tuple[str, object]] = []
+        for idx, (_kind, name) in enumerate(_NAV_ITEMS):
+            cmds.append((t("Go to {page}", page=t(name)), lambda i=idx: self._sidebar.select(i)))
+        for key in TOOLS:
+            cmds.append((t(_TOOL_NAMES[key]), lambda k=key: (self._sidebar.select(PAGE_TOOLS), self._tools.select_tool(k))))
+        cmds += [
+            (t("Add clips to the Studio…"), lambda: (self._sidebar.select(PAGE_STUDIO), self._studio._add_dialog())),
+            (t("Paste a link from the clipboard"), lambda: (self._sidebar.select(PAGE_DOWNLOAD), self._paste_url())),
+            (t("Open the downloads folder"), lambda: self.open_path(str(self.default_output_dir()))),
+            (t("Switch between dark and light"), self._toggle_theme),
+            (t("Keyboard shortcuts"), lambda: (self._sidebar.select(PAGE_STUDIO), self._studio.show_shortcuts())),
+            (t("Take the tour"), self.start_tour),
+        ]
+        return cmds
+
+    def open_palette(self) -> None:
+        """Ctrl+K: a box to type what you want to do or where to go."""
+        dlg = CommandPalette(self, self._palette_commands(), self._t("Type a page or an action…"))
+        dlg.popup()
+        self._palette_dlg = dlg
 
     # ── close ──────────────────────────────────────────────────────────
 

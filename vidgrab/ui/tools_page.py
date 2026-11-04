@@ -26,6 +26,7 @@ from vidgrab.ai import reframe, shorts
 from vidgrab.core import tools
 from vidgrab.core.downloader import DownloadCancelled
 from vidgrab.media import studio
+from vidgrab.ui.tokens import PAGE_MARGINS
 from vidgrab.ui.ui_kit import rgba
 
 TOOLS = ["short", "compress", "convert", "gif", "thumbnail", "audio"]
@@ -123,7 +124,7 @@ class ToolsPage(QWidget):
         self._shot.timeout.connect(self._update_thumb)
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(24, 12, 24, 12)
+        lay.setContentsMargins(*PAGE_MARGINS)
         lay.setSpacing(18)
         left = QVBoxLayout()
         left.setSpacing(10)
@@ -301,6 +302,9 @@ class ToolsPage(QWidget):
         t = self.host.t
         for k, b in self.tiles.items():
             b.setText(f"{t(_NAMES[k])}\n{t(_BLURBS[k])}")
+        if getattr(self, "_tool", None) in _NAMES:  # the open tool's heading (it stayed English after a language change)
+            self.title.setText(t(_NAMES[self._tool]))
+            self.blurb.setText(t(_BLURBS[self._tool]))
         self.browse.setText(t("Choose file…"))
         self.file.setPlaceholderText(t("Choose a file, or drop one on this window"))
         self.show_btn.setText(t("Show in folder"))

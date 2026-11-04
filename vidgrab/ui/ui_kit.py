@@ -15,14 +15,16 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout,
+    QLabel,
     QLayout,
     QLayoutItem,
     QLineEdit,
     QListWidget,
     QPushButton,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -234,6 +236,11 @@ class FlowLayout(QLayout):
     def takeAt(self, index: int) -> QLayoutItem | None:
         return self._items.pop(index) if 0 <= index < len(self._items) else None
 
+    def expandingDirections(self) -> Qt.Orientation:
+        """Take only the room the rows need: QLayout's default asks for all spare space, which
+        a toolbar in a taller panel would swallow as an empty gap."""
+        return Qt.Orientation(0)
+
     def hasHeightForWidth(self) -> bool:
         return True
 
@@ -269,3 +276,57 @@ class FlowLayout(QLayout):
             x += hint.width() + self._gap
             row_h = max(row_h, hint.height())
         return y + row_h - rect.y() + m.bottom()
+
+
+class EmptyState(QWidget):
+    """What a page shows when it has nothing yet: a picture, a short title, one line of help
+    and (optionally) buttons for the first step. `icon_fn(color)` draws the picture."""
+
+    def __init__(self, icon_fn: Callable[[str], QPixmap] | None = None, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._icon_fn = icon_fn
+        self._color = "#7b80aa"
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 16, 24, 16)
+        lay.setSpacing(8)
+        lay.addStretch(1)
+        self.icon = QLabel()
+        self.icon.setAlignment(Qt.AlignCenter)
+        self.icon.setVisible(icon_fn is not None)
+        lay.addWidget(self.icon)
+        self.title = QLabel()
+        self.title.setObjectName("empty_title")
+        self.title.setAlignment(Qt.AlignCenter)
+        self.title.setWordWrap(True)
+        lay.addWidget(self.title)
+        self.text = QLabel()
+        self.text.setObjectName("hint")
+        self.text.setAlignment(Qt.AlignCenter)
+        self.text.setWordWrap(True)
+        lay.addWidget(self.text)
+        self.buttons = QHBoxLayout()
+        self.buttons.setSpacing(8)
+        self.buttons.setAlignment(Qt.AlignCenter)
+        lay.addSpacing(6)
+        lay.addLayout(self.buttons)
+        lay.addStretch(2)
+
+    def set_texts(self, title: str, text: str) -> None:
+        self.title.setText(title)
+        self.text.setText(text)
+
+    def add_button(self, label: str, slot: Callable[[], None], *, primary: bool = False) -> QPushButton:
+        b = QPushButton(label)
+        b.setObjectName("primary" if primary else "secondary")
+        if primary:
+            b.setProperty("compact", True)
+        b.setMinimumHeight(36)
+        b.setCursor(Qt.PointingHandCursor)
+        b.clicked.connect(lambda _c=False: slot())
+        self.buttons.addWidget(b)
+        return b
+
+    def apply_theme(self, p: dict[str, str]) -> None:
+        self._color = p["TEXT_MUTED"]
+        if self._icon_fn is not None:
+            self.icon.setPixmap(self._icon_fn(self._color))

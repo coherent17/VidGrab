@@ -53,3 +53,13 @@ def test_new_feature_keys_are_translated_everywhere() -> None:
     for lang in TRANS:
         for key in new_keys:
             assert key in TRANS[lang], f"{lang} missing {key!r}"
+
+def test_the_english_table_has_no_chinese_text() -> None:
+    """A translation pasted into the `en` table once showed Chinese in the English UI."""
+    import re
+
+    from vidgrab.i18n import TRANS
+
+    cjk = re.compile(r"[一-鿿]")
+    bad = [k for k, v in TRANS["en"].items() if cjk.search(v) and not cjk.search(k)]
+    assert not bad, bad

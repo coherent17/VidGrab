@@ -65,7 +65,7 @@ QWidget#sidebar {
     border-right: 1px solid @BORDER@;
 }
 QLabel#brand_title {
-    font-size: 21px;
+    font-size: 22px;
     font-weight: 800;
     color: @TEXT@;
 }
@@ -194,7 +194,7 @@ QPlainTextEdit {
     border: 1px solid @BORDER@;
     border-radius: 9px;
     padding: 6px 8px;
-    font-size: 14px;
+    font-size: 13px;
     color: @TEXT@;
     selection-background-color: @ACCENT@;
 }
@@ -632,6 +632,32 @@ QStatusBar {
     font-size: 11px;
     color: @TEXT_MUTED@;
     padding: 5px 12px;
+}
+QDialog#palette {
+    background-color: @POPUP@;
+    border: 1px solid @EDGE@;
+}
+QListWidget#pal_list {
+    background: transparent;
+    border: none;
+    outline: none;
+}
+QListWidget#pal_list::item {
+    padding: 7px 10px;
+    border-radius: 8px;
+}
+QListWidget#pal_list::item:selected {
+    background-color: @SEL@;
+    color: @TEXT@;
+}
+QFrame#tb_sep {
+    background-color: @BORDER_HI@;
+    border: none;
+}
+QLabel#empty_title {
+    font-size: 17px;
+    font-weight: 800;
+    color: @TEXT@;
 }
 QScrollArea#page_scroll {
     background: transparent;

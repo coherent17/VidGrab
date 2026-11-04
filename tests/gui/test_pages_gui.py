@@ -335,3 +335,16 @@ def test_library_grid_view_is_remembered_and_keeps_every_file(win) -> None:
     assert w.setting("library_view") == "grid"
     lib.set_view("list")
     assert lib.list.count() == n and w.setting("library_view") == "list"
+
+
+def test_library_shows_how_long_each_file_is(win, qapp) -> None:
+    w, _m, _media = win
+    lib = w._library
+    lib.refresh()
+    assert _wait(qapp, lambda: len([p for p, d in lib._durations.items() if d]) >= 2, 15)
+    clips = [lib.list.item(i) for i in range(lib.list.count())]
+    assert clips and all(not it.icon().isNull() for it in clips)
+    from vidgrab.ui.library_page import clock
+
+    assert clock(0.4) == "0:00" and clock(187) == "3:07" and clock(3729) == "1:02:09"
+    assert lib.view_btns["list"].isChecked() != lib.view_btns["grid"].isChecked()

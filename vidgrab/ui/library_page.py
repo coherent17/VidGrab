@@ -2,11 +2,12 @@
 one-click Open / Show in folder / Send to Studio / Compress / Delete."""
 from __future__ import annotations
 
+import math
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
+from PySide6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from vidgrab.core import library
+from vidgrab.media.probe import probe_media
 from vidgrab.ui.downloads_panel import human_size
 from vidgrab.ui.studio_page import ThumbCache
 from vidgrab.ui.ui_kit import Chips, EmptyState, attach_suggestions, chip_css
@@ -30,6 +32,33 @@ _PATH = Qt.UserRole
 _KIND_ICON = {"video": "film", "audio": "music", "image": "captions"}
 THUMB = QSize(128, 72)  # list rows
 GRID_THUMB = QSize(208, 117)  # grid cards
+
+
+def clock(seconds: float) -> str:
+    """3:07 or 1:02:09, for the badge on a picture."""
+    s = round(seconds)
+    h, rest = divmod(s, 3600)
+    m, sec = divmod(rest, 60)
+    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
+
+
+class _DurRelay(QObject):
+    done = Signal(str, float)
+
+
+class _DurTask(QRunnable):
+    """How long a file is, read in the background (one ffprobe each)."""
+
+    def __init__(self, relay: _DurRelay, path: str) -> None:
+        super().__init__()
+        self._relay, self._path = relay, path
+
+    def run(self) -> None:
+        try:
+            seconds = float(probe_media(self._path).get("duration") or 0.0)
+        except (RuntimeError, OSError, ValueError):
+            seconds = 0.0
+        self._relay.done.emit(self._path, seconds)
 
 
 def ago(mtime: float, t) -> str:
@@ -56,6 +85,16 @@ class LibraryPage(QWidget):
         self._finder = library.Finder([])
         self._thumbs = ThumbCache(self, height=GRID_THUMB.height() + 7)  # one size serves both views
         self._thumbs.updated.connect(self._paint_thumbs)
+        self._durations: dict[str, float] = {}  # seconds, 0 = unknown
+        self._asked: set[str] = set()
+        self._dur_pool = QThreadPool(self)
+        self._dur_pool.setMaxThreadCount(2)
+        self._dur_relay = _DurRelay(self)
+        self._dur_relay.done.connect(self._got_duration)
+        self._phase = 0.0  # the shimmer on pictures that are still loading
+        self._shimmer = QTimer(self)
+        self._shimmer.setInterval(110)
+        self._shimmer.timeout.connect(self._tick_shimmer)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(24, 12, 24, 12)
@@ -178,7 +217,8 @@ class LibraryPage(QWidget):
     def set_view(self, mode: str, *, save: bool = True) -> None:
         """"list": one row per file; "grid": cards with large pictures."""
         self._view = "grid" if mode == "grid" else "list"
-        self.view_btns[self._view].setChecked(True)
+        for key, btn in self.view_btns.items():
+            btn.setChecked(key == self._view)
         grid = self._view == "grid"
         self.list.setViewMode(QListView.IconMode if grid else QListView.ListMode)
         self.list.setIconSize(GRID_THUMB if grid else THUMB)
@@ -196,13 +236,16 @@ class LibraryPage(QWidget):
     def _thumb_size(self) -> QSize:
         return GRID_THUMB if self.view == "grid" else THUMB
 
-    def _placeholder(self, kind: str) -> QIcon:
+    def _placeholder(self, kind: str, glow: float = 0.0) -> QIcon:
         size = self._thumb_size()
         pm = QPixmap(size)
         pm.fill(Qt.transparent)
         p = QPainter(pm)
         p.setRenderHint(QPainter.Antialiasing)
-        p.setBrush(QColor(self._palette.get("SURFACE_HI", "#1c1e3c")))
+        base = QColor(self._palette.get("SURFACE_HI", "#1c1e3c"))
+        if glow:  # a soft pulse while the real picture is on its way
+            base = base.lighter(100 + int(22 * glow))
+        p.setBrush(base)
         p.setPen(Qt.NoPen)
         p.drawRoundedRect(0, 0, size.width(), size.height(), 8, 8)
         p.end()
@@ -242,14 +285,74 @@ class LibraryPage(QWidget):
         self._selection()
 
     def _paint_thumbs(self) -> None:
+        waiting = False
         for i in range(self.list.count()):
             item = self.list.item(i)
             path = item.data(_PATH)
-            if library.kind_of(path) != "video":
+            kind = library.kind_of(path)
+            if kind in ("video", "audio"):
+                self._want_duration(path)
+            if kind != "video":
+                if kind == "audio":
+                    item.setIcon(QIcon(self._badged(self._placeholder("audio").pixmap(self._thumb_size()), path)))
                 continue
             img = self._thumbs.frame(path, 1.0, 1.0)
             if img is not None and not img.isNull():
-                item.setIcon(QIcon(self._cover(img)))
+                item.setIcon(QIcon(self._badged(self._cover(img), path)))
+            else:
+                waiting = True
+        if waiting and not self._shimmer.isActive():
+            self._shimmer.start()
+        elif not waiting:
+            self._shimmer.stop()
+
+    def _tick_shimmer(self) -> None:
+        """Pulse the placeholder of every video whose frame has not arrived yet."""
+        self._phase += 0.35
+        glow = 0.5 + 0.5 * math.sin(self._phase)
+        waiting = False
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            path = item.data(_PATH)
+            if library.kind_of(path) == "video" and self._thumbs.frame(path, 1.0, 1.0) is None:
+                item.setIcon(QIcon(self._placeholder("video", glow).pixmap(self._thumb_size())))
+                waiting = True
+        if not waiting:
+            self._shimmer.stop()
+
+    def _want_duration(self, path: str) -> None:
+        if path not in self._asked:
+            self._asked.add(path)
+            self._dur_pool.start(_DurTask(self._dur_relay, path))
+
+    def _got_duration(self, path: str, seconds: float) -> None:
+        self._durations[path] = seconds
+        if seconds:
+            self._paint_thumbs()
+
+    def _badged(self, pm: QPixmap, path: str) -> QPixmap:
+        """The picture with its length in a small dark pill at the bottom right."""
+        seconds = self._durations.get(path, 0.0)
+        if not seconds:
+            return pm
+        out = QPixmap(pm)
+        p = QPainter(out)
+        p.setRenderHint(QPainter.Antialiasing)
+        font = QFont(p.font())
+        font.setPixelSize(11)
+        font.setBold(True)
+        p.setFont(font)
+        text = clock(seconds)
+        w = p.fontMetrics().horizontalAdvance(text) + 12
+        h = 18
+        x, y = out.width() - w - 6, out.height() - h - 6
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(0, 0, 0, 175))
+        p.drawRoundedRect(x, y, w, h, 6, 6)
+        p.setPen(QColor("#ffffff"))
+        p.drawText(x, y, w, h, Qt.AlignCenter, text)
+        p.end()
+        return out
 
     def _cover(self, img: QImage) -> QPixmap:
         size = self._thumb_size()
@@ -295,4 +398,6 @@ class LibraryPage(QWidget):
                 self.refresh()
 
     def shutdown(self) -> None:
+        self._shimmer.stop()
+        self._dur_pool.clear()
         self._thumbs.shutdown()

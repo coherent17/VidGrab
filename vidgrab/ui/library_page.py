@@ -26,6 +26,7 @@ from vidgrab.core import library
 from vidgrab.media.probe import probe_media
 from vidgrab.ui.downloads_panel import human_size
 from vidgrab.ui.studio_page import ThumbCache
+from vidgrab.ui.tokens import PAGE_MARGINS
 from vidgrab.ui.ui_kit import Chips, EmptyState, attach_suggestions, chip_css
 
 _PATH = Qt.UserRole
@@ -97,7 +98,7 @@ class LibraryPage(QWidget):
         self._shimmer.timeout.connect(self._tick_shimmer)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 12, 24, 12)
+        lay.setContentsMargins(*PAGE_MARGINS)
         lay.setSpacing(10)
         top = QHBoxLayout()
         top.setSpacing(12)

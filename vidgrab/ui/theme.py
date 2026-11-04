@@ -65,7 +65,7 @@ QWidget#sidebar {
     border-right: 1px solid @BORDER@;
 }
 QLabel#brand_title {
-    font-size: 21px;
+    font-size: 22px;
     font-weight: 800;
     color: @TEXT@;
 }
@@ -194,7 +194,7 @@ QPlainTextEdit {
     border: 1px solid @BORDER@;
     border-radius: 9px;
     padding: 6px 8px;
-    font-size: 14px;
+    font-size: 13px;
     color: @TEXT@;
     selection-background-color: @ACCENT@;
 }

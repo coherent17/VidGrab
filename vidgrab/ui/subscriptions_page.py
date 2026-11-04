@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from vidgrab.core import subscriptions as sb
+from vidgrab.ui.tokens import PAGE_MARGINS
 from vidgrab.ui.ui_kit import EmptyState
 
 _SUB = Qt.UserRole
@@ -68,7 +69,7 @@ class SubscriptionsPage(QWidget):
         self._relay.done.connect(self._fetched)
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(24, 12, 24, 12)
+        lay.setContentsMargins(*PAGE_MARGINS)
         lay.setSpacing(18)
         left = QVBoxLayout()
         left.setSpacing(8)

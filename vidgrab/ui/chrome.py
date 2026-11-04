@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 from PySide6.QtCore import (
+    QEasingCurve,
     QEvent,
     QObject,
+    QPoint,
+    QPropertyAnimation,
     QSize,
     Qt,
     QTimer,
@@ -141,18 +144,41 @@ class _Sidebar(QWidget):
 
 
 class _FadeStack(QStackedWidget):
-    """QStackedWidget for the main pages.
+    """QStackedWidget for the main pages: the new page slides up a few pixels as it appears.
 
-    Pages switch instantly. A per-page opacity fade was removed: a
-    QGraphicsOpacityEffect over the stack forces a software compositing
-    pass that can draw all pages on top of one another (and destroy
-    performance) on systems with broken GL."""
+    Only the page's *position* is animated. A per-page opacity fade was removed on purpose:
+    a QGraphicsOpacityEffect over the stack forces a software compositing pass that can draw
+    all pages on top of one another (and destroy performance) on systems with broken GL."""
+
+    SLIDE_PX = 14
+    SLIDE_MS = 170
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        # not under test / scripts (offscreen), where a page should simply be where it is
+        self.slide_enabled = QApplication.platformName() != "offscreen"
+        self._anim: QPropertyAnimation | None = None
 
     def setCurrentIndex(self, idx: int) -> None:
+        before = self.currentIndex()
         super().setCurrentIndex(idx)
+        page = self.currentWidget()
+        if self._anim is not None:
+            self._anim.stop()
+            self._anim = None
+        if page is None:
+            return
+        page.move(0, 0)
+        if not self.slide_enabled or idx == before or not self.isVisible() or before < 0:
+            return
+        anim = QPropertyAnimation(page, b"pos", self)
+        anim.setDuration(self.SLIDE_MS)
+        anim.setStartValue(QPoint(0, self.SLIDE_PX))
+        anim.setEndValue(QPoint(0, 0))
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.finished.connect(lambda w=page: w.move(0, 0))  # always end exactly in place
+        self._anim = anim
+        anim.start()
 
 
 class _WheelGuard(QObject):

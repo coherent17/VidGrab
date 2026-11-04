@@ -26,6 +26,7 @@ from vidgrab.ai import reframe, shorts
 from vidgrab.core import tools
 from vidgrab.core.downloader import DownloadCancelled
 from vidgrab.media import studio
+from vidgrab.ui.tokens import PAGE_MARGINS
 from vidgrab.ui.ui_kit import rgba
 
 TOOLS = ["short", "compress", "convert", "gif", "thumbnail", "audio"]
@@ -123,7 +124,7 @@ class ToolsPage(QWidget):
         self._shot.timeout.connect(self._update_thumb)
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(24, 12, 24, 12)
+        lay.setContentsMargins(*PAGE_MARGINS)
         lay.setSpacing(18)
         left = QVBoxLayout()
         left.setSpacing(10)

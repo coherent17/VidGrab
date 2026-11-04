@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from vidgrab.ui import help_content
+from vidgrab.ui.tokens import PAGE_MARGINS
 from vidgrab.ui.ui_kit import attach_suggestions, rgba
 
 _ID = Qt.UserRole
@@ -87,7 +88,7 @@ class HelpPage(QWidget):
                         for tid, sec, page, title, body in help_content.TOPICS}
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(24, 12, 24, 12)
+        outer.setContentsMargins(*PAGE_MARGINS)
         self.stack = QStackedWidget()
         outer.addWidget(self.stack)
         self.stack.addWidget(self._build_home())

@@ -121,3 +121,18 @@ def test_the_welcome_tip_shows_once(win) -> None:
     assert len(win._toasts.active()) == 1 and win.setting("welcome_shown") is True
     win._welcome()  # not again
     assert len(win._toasts.active()) == 1
+
+
+def test_a_page_slides_in_and_ends_exactly_in_place(win) -> None:
+    stack = win._stack
+    stack.slide_enabled = True  # off under offscreen by default
+    stack.setCurrentIndex(2)
+    _pump(0.05)
+    page = stack.currentWidget()
+    assert page.pos().y() >= 0  # on its way (or already there)
+    _pump(0.4)
+    assert page.pos().x() == 0 and page.pos().y() == 0
+    stack.setCurrentIndex(0)  # a quick second switch must not leave a page off-centre
+    stack.setCurrentIndex(1)
+    _pump(0.4)
+    assert stack.currentWidget().pos().y() == 0

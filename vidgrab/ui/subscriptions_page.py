@@ -2,6 +2,8 @@
 videos (new ones marked) and a button that sends the ticked ones to the downloader."""
 from __future__ import annotations
 
+import re
+
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
@@ -17,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from vidgrab.core import subscriptions as sb
+from vidgrab.ui.ui_kit import EmptyState
 
 _SUB = Qt.UserRole
 _VID = Qt.UserRole + 1
@@ -111,6 +114,8 @@ class SubscriptionsPage(QWidget):
         self.feed.setObjectName("sub_feed")
         self.feed.setFrameShape(QFrame.NoFrame)
         cl.addWidget(self.feed, stretch=1)
+        self.empty = EmptyState(lambda c: self.host.icon("rss", c, 56).pixmap(56, 56))
+        cl.addWidget(self.empty, stretch=1)
         foot = QHBoxLayout()
         self.new_btn = QPushButton()
         self.new_btn.setObjectName("secondary")
@@ -137,6 +142,7 @@ class SubscriptionsPage(QWidget):
 
     def apply_theme(self, p: dict[str, str]) -> None:
         self._palette = p
+        self.empty.apply_theme(p)
         self.setStyleSheet(
             f"QFrame#sub_card {{ background:{p['SURFACE']}; border:1px solid {p['BORDER']}; border-radius:16px; }}"
             f"QListWidget#sub_feed {{ background:transparent; border:none; outline:none; }}"
@@ -257,13 +263,19 @@ class SubscriptionsPage(QWidget):
         t = self.host.t
         sub = self._current()
         self.feed.clear()
-        self.title.setText(sub.title or sub.url if sub else t("Follow a channel to see its newest videos here"))
+        self.title.setText(sub.title or sub.url if sub else "")
+        self.empty.setVisible(sub is None)  # nothing followed yet (or none picked): three steps instead of a blank card
+        self.feed.setVisible(sub is not None)
         for w in (self.refresh_btn, self.new_btn, self.all_btn, self.get_btn):
             w.setEnabled(sub is not None)
         self.remove_btn.setEnabled(sub is not None)
         if sub is None:
-            self.status.setText(t("How it works: 1. Paste a channel or playlist link on the left. "
-                                  "2. Press Follow. 3. Tick videos and press Download ticked."))
+            steps = t("How it works: 1. Paste a channel or playlist link on the left. "
+                      "2. Press Follow. 3. Tick videos and press Download ticked.")
+            steps = re.sub(r"(?<=[:：])\s*(?=1\.)", "\n", re.sub(r"(?<=[.。])\s*(?=\d\.)", "\n", steps))
+            body = steps.partition("\n")[2]
+            self.empty.set_texts(t("Follow a channel to see its newest videos here"), body)
+            self.status.setText("")
             return
         items = self._feeds.get(sub.url)
         if items is None:

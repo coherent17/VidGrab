@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from vidgrab.core.jobs import MEDIA_SUFFIXES, DownloadJob
+from vidgrab.ui.ui_kit import EmptyState
 
 HISTORY_LIMIT = 100
 THUMB = QSize(112, 63)
@@ -243,18 +244,15 @@ class DownloadsPanel(QWidget):
         self.list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
         self.list.setMinimumHeight(THUMB.height() + 24)  # one row; the rest scroll
         lay.addWidget(self.list, stretch=1)
-        self.empty = QLabel()
-        self.empty.setObjectName("hint")
-        self.empty.setAlignment(Qt.AlignCenter)
-        self.empty.setWordWrap(True)
+        self.empty = EmptyState(lambda c: self._icon("download").pixmap(28, 28))
+        self.empty.apply_theme({"TEXT_MUTED": "#7b80aa"})
         lay.addWidget(self.empty, stretch=1)
         self._sync_empty()
 
     def set_translator(self, t) -> None:
         self._t = t
-        self.empty.setText(t(
-            "Downloads you start appear here. Paste several links at once to queue "
-            "them; finished files can be opened or sent to the Studio."))
+        self.empty.set_texts(t("No downloads yet"), t(
+            "Paste several links at once to queue them; finished files can be opened or sent to the Studio."))
         for _item, row in self._rows.values():
             row._t = t
             row.refresh()

@@ -208,7 +208,7 @@ def test_subscriptions_guides_the_user_and_does_not_retry_forever(win, qapp, mon
         raise RuntimeError("HTTP 404")
 
     monkeypatch.setattr(sb, "fetch", boom)
-    assert "Paste a channel" in s.status.text() or "How it works" in s.status.text()
+    assert "Paste a channel" in s.empty.text.text() and s.empty.isVisibleTo(s)
     s.add_btn.click()  # empty box
     assert "https://" in s.status.text() and not s.subs
     s.url.setText("https://www.youtube.com/watch?v=abc")

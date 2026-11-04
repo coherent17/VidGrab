@@ -641,6 +641,8 @@ class VidGrabWindow(SettingsMixin, UpdatesMixin, DownloadPageMixin, QMainWindow)
             )
         if hasattr(self, "_toasts"):
             self._toasts.apply_theme(_PALETTES[self._theme])
+        if hasattr(self, "_info_empty"):
+            self._info_empty.apply_theme(_PALETTES[self._theme])
         if hasattr(self, "_help"):
             self._help.apply_theme(_PALETTES[self._theme])
             for page in (self._library, self._tools, self._subs):
@@ -713,6 +715,11 @@ class VidGrabWindow(SettingsMixin, UpdatesMixin, DownloadPageMixin, QMainWindow)
             self._info_meta.setText(
                 t("Paste a link to see its details\u2026")
             )
+            self._sync_info_empty()
+        self._info_empty.set_texts(t("Paste a link to begin"), t(
+            "A YouTube video, playlist or channel, or just type words to search."))
+        self._info_empty.buttons.itemAt(0).widget().setText(t("Paste from clipboard"))
+        self._info_empty.buttons.itemAt(1).widget().setText(t("Type to search"))
         self._hflip.setText(t("Horizontal"))
         self._vflip.setText(t("Vertical"))
         self._mp4.setText(t("MP4 (video)"))

@@ -59,3 +59,19 @@ def test_toasts_stack_without_overlapping_and_repeats_merge(win) -> None:
     for _ in range(8):
         win.toast(f"msg {_}")
     assert len(win._toasts.active()) <= win._toasts.MAX
+
+
+def test_a_toast_goes_away_by_itself(win, monkeypatch) -> None:
+    from vidgrab.ui import toast
+
+    monkeypatch.setattr(toast, "LINGER_MS", {"ok": 250, "info": 250, "error": 250})
+    t = win.toast("done", "ok")
+    _pump(0.2)
+    assert t.isVisible()
+    _pump(1.0)
+    assert not win._toasts.active()
+    try:
+        gone = not t.isVisible()
+    except RuntimeError:  # already deleted, which is what closing does
+        gone = True
+    assert gone

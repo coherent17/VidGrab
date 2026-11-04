@@ -73,7 +73,7 @@ from vidgrab.ui.downloads_panel import (
 from vidgrab.ui.drawing import _HAND, _icon
 from vidgrab.ui.helpers import _fmt_count, _fmt_duration, _thumb_cache_dir
 from vidgrab.ui.pick_dialogs import FormatDialog, SearchPanel
-from vidgrab.ui.ui_kit import attach_suggestions
+from vidgrab.ui.ui_kit import EmptyState, attach_suggestions
 from vidgrab.ui.widgets import (
     _SUB_LANGUAGES,
     _build_filter,
@@ -193,6 +193,10 @@ class DownloadPageMixin:
         self._link_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
         mvl.addWidget(self._link_list, stretch=1)
         self._info_stack.addWidget(multi)
+        self._info_empty = EmptyState(lambda c: self.icon("download", c, 56).pixmap(56, 56))
+        self._info_empty.add_button("", self._paste_url, primary=True)
+        self._info_empty.add_button("", lambda: (self._url.setFocus(), self._url.selectAll()))
+        ivl.addWidget(self._info_empty, stretch=1)
         self._info_thumb = QLabel()
         self._info_thumb.setObjectName("info_thumb")
         self._info_thumb.setFixedSize(_THUMB_SIZE)
@@ -425,12 +429,14 @@ class DownloadPageMixin:
             self._probe_data = None
             self._reset_info_card()
             self._info_meta.setText(self._t("Press Enter to search YouTube for “{q}”", q=url))
+            self._sync_info_empty()
             return
         if not url or self._internet_online is not True:
             if not url:
                 self._reset_info_card()
             return
         self._info_meta.setText(self._t("Loading\u2026"))
+        self._sync_info_empty()
         token = self._probe_token
         worker = _Worker(
             "probe",
@@ -519,6 +525,15 @@ class DownloadPageMixin:
         self._info_thumb.setPixmap(QPixmap())
         self._playlist_cb.hide()
         self._info_meta.setText(msg)
+        self._sync_info_empty()
+
+    def _sync_info_empty(self) -> None:
+        """The video card shows a "paste a link" invitation until there is something to show."""
+        empty = not self._info_name.text() and self._info_meta.text() == self._t(
+            "Paste a link to see its details\u2026")
+        self._info_empty.setVisible(empty)
+        for w in (self._info_thumb, self._info_name, self._info_meta):
+            w.setVisible(not empty)
 
     def _reset_info_card(self) -> None:
         self._probe_data = None
@@ -529,6 +544,7 @@ class DownloadPageMixin:
         self._info_meta.setText(
             self._t("Paste a link to see its details\u2026")
         )
+        self._sync_info_empty()
         self._live_cb.hide()
         self._exact_pick = None
         self._exact_btn.setEnabled(False)
@@ -580,6 +596,7 @@ class DownloadPageMixin:
         self._live_cb.setVisible(live)
         self._pick_formats(result)
         self._info_meta.setText("  \u00b7  ".join(meta))
+        self._sync_info_empty()
         self._info_thumb.setPixmap(QPixmap())
         thumb = result.get("thumbnail_local")
         if thumb and Path(thumb).is_file():

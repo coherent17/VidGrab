@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 from vidgrab.core import library
 from vidgrab.ui.downloads_panel import human_size
 from vidgrab.ui.studio_page import ThumbCache
-from vidgrab.ui.ui_kit import Chips, attach_suggestions, chip_css
+from vidgrab.ui.ui_kit import Chips, EmptyState, attach_suggestions, chip_css
 
 _PATH = Qt.UserRole
 _KIND_ICON = {"video": "film", "audio": "music", "image": "captions"}
@@ -92,9 +92,9 @@ class LibraryPage(QWidget):
         self.list.itemSelectionChanged.connect(self._selection)
         self.list.itemDoubleClicked.connect(lambda it: self.host.open_path(it.data(_PATH)))
         cl.addWidget(self.list)
-        self.empty = QLabel()
-        self.empty.setAlignment(Qt.AlignCenter)
-        self.empty.setWordWrap(True)
+        self.empty = EmptyState(lambda c: self.host.icon("folder", c, 56).pixmap(56, 56))
+        self.open_folder_btn = self.empty.add_button("", lambda: self.host.open_path(str(self.host.default_output_dir())),
+                                                     primary=True)
         cl.addWidget(self.empty)
         lay.addWidget(card, stretch=1)
 
@@ -130,7 +130,7 @@ class LibraryPage(QWidget):
             + f"QListWidget#lib_list::item:hover {{ background:{p['SURFACE_HI']}; }}"
             + f"QListWidget#lib_list::item:selected {{ background:{p['SEL']}; color:{p['TEXT']}; }}")
         self.folder_lbl.setStyleSheet(f"color:{p['TEXT_MUTED']}; font-size:12px;")
-        self.empty.setStyleSheet(f"color:{p['TEXT_MUTED']}; font-size:14px;")
+        self.empty.apply_theme(p)
         self.count_lbl.setStyleSheet(f"color:{p['TEXT_MUTED']}; font-size:12px;")
         self._fill()
 
@@ -187,9 +187,12 @@ class LibraryPage(QWidget):
         self.empty.setVisible(not shown)
         self.list.setVisible(bool(shown))
         fix = self._finder.did_you_mean(self.search.text()) if self._entries and not shown else None
-        self.empty.setText(t("Nothing here yet. Downloads and renders you make will show up in this list.")
-                           if not self._entries else
-                           t("No file matches.") + (f"  {t('Did you mean')} “{fix}”?" if fix else ""))
+        if not self._entries:
+            self.empty.set_texts(t("Nothing here yet"), t("Downloads and renders you make will show up here."))
+        else:
+            self.empty.set_texts(t("No file matches."), (f"{t('Did you mean')} “{fix}”?" if fix else ""))
+        self.open_folder_btn.setText(t("Open downloads folder"))
+        self.open_folder_btn.setVisible(not self._entries)
         self.count_lbl.setText(t("{n} files", n=len(shown)))
         self._paint_thumbs()
         self._selection()

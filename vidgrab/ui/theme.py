@@ -633,6 +633,11 @@ QStatusBar {
     color: @TEXT_MUTED@;
     padding: 5px 12px;
 }
+QLabel#empty_title {
+    font-size: 17px;
+    font-weight: 800;
+    color: @TEXT@;
+}
 QScrollArea#page_scroll {
     background: transparent;
     border: none;

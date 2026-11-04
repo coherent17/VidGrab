@@ -46,7 +46,7 @@ jobs:
           echo "$PWD/ffmpeg/linux" >> "$GITHUB_PATH"
 
       - name: Run real download & processing tests
-        run: python -m pytest tests/test_integration.py -v
+        run: python -m pytest tests/integration/test_integration.py -v
         env:
           VIDGRAB_INTEGRATION: "1"
           QT_QPA_PLATFORM: "offscreen"

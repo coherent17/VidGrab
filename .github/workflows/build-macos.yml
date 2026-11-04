@@ -54,7 +54,7 @@ jobs:
 
       # Studio relies on libass (subtitles), amix and acrossfade
       - name: Test Studio against the pinned ffmpeg
-        run: PATH="$PWD/ffmpeg/mac:$PATH" python -m pytest tests/test_studio.py -v
+        run: PATH="$PWD/ffmpeg/mac:$PATH" python -m pytest tests/unit/test_studio.py -v
 
       - name: Make the app icon
         run: |

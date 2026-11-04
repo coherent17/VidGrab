@@ -93,7 +93,7 @@ def test_an_update_from_another_app_version_is_ignored(root):
 
 def _run(root: Path, code: str) -> str:
     env = {"VIDGRAB_YTDLP_DIR": str(root), "PATH": ""}
-    repo = str(Path(__file__).parent.parent)
+    repo = str(Path(__file__).resolve().parents[2])
     code = f"import sys; sys.path.insert(0, {repo!r}); " + code
     return subprocess.run([sys.executable, "-I", "-c", code], env=env, capture_output=True,
                           text=True, check=True, cwd=str(root.parent)).stdout.strip()

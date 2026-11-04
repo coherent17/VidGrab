@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("PyInstaller")
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 import pyi_parallel_pkg
 from PyInstaller.archive.writers import CArchiveWriter

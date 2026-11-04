@@ -38,7 +38,7 @@ def test_versions_compare_by_number_not_text() -> None:
 def test_a_newer_release_is_reported_and_the_rest_is_ignored(monkeypatch) -> None:
     _patch(monkeypatch, {"tag_name": "v9.0.0", "html_url": "https://github.com/x/y/releases/v9", "body": "hi"})
     news = uc.latest_release(current="4.1.1")
-    assert news == {"version": "9.0.0", "url": "https://github.com/x/y/releases/v9", "notes": "hi"}
+    assert news == {"version": "9.0.0", "url": "https://github.com/x/y/releases/v9", "notes": "hi", "assets": {}}
     _patch(monkeypatch, {"tag_name": "v4.1.1"})
     assert uc.latest_release(current="4.1.1") is None  # already on it
     _patch(monkeypatch, {"tag_name": "v9.0.0", "prerelease": True})

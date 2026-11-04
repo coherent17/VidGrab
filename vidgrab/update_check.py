@@ -1,7 +1,7 @@
 """Qt-free **new version** check: one quiet request to GitHub's releases API.
 
-It only *tells* the user (a note in the Download page, a link to the release);
-nothing is downloaded or installed. It never raises: offline, rate-limited or
+It *tells* the user (a note in the Download page, a link to the release);
+`self_update.py` installs it when they ask. It never raises: offline, rate-limited or
 a strange answer all mean "no news"."""
 from __future__ import annotations
 
@@ -42,7 +42,9 @@ def latest_release(timeout: float = 4.0, proxy: str = "", current: str = __versi
         tag = str(data.get("tag_name") or "")
         if data.get("draft") or data.get("prerelease") or not is_newer(tag, current):
             return None
+        assets = {str(a.get("name")): str(a.get("browser_download_url"))
+                  for a in data.get("assets") or [] if a.get("name") and a.get("browser_download_url")}
         return {"version": tag.lstrip("vV"), "url": str(data.get("html_url") or PAGE),
-                "notes": str(data.get("body") or "")[:600]}
+                "notes": str(data.get("body") or "")[:600], "assets": assets}
     except Exception:  # noqa: BLE001 - a nicety, never an error
         return None

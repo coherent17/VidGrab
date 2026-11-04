@@ -76,6 +76,7 @@ from vidgrab import (
     __version__,
     ffmpeg_fetch,
     opener,
+    self_update,
     suggest,
     update_check,
     ytdlp_update,
@@ -1395,6 +1396,13 @@ _STOP_GRACE_MS = 5000  # how long a thread gets to finish when the window closes
 _STUCK: list[QThread] = []  # threads that ignored a stop request; kept alive, see main()
 
 
+def _detached() -> dict:
+    """Popen options so the restarted VidGrab outlives this one."""
+    if sys.platform == "win32":
+        return {"creationflags": 0x00000008 | 0x00000200}  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    return {"start_new_session": True}
+
+
 def _stop_thread(thread: QThread, grace_ms: int | None = None) -> bool:
     """Ask *thread* to stop and wait for it; True if it finished. One that is
     stuck in a driver or library call can't be killed safely: it is parked in
@@ -1458,6 +1466,33 @@ class _ReleaseThread(QThread):
         news = update_check.latest_release(proxy=self._proxy)
         if news:
             self.found.emit(news)
+
+
+class _InstallThread(QThread):
+    """Download the new version and swap it in (`self_update`); never destroyed while running."""
+
+    progress = Signal(int)
+    done = Signal()
+    failed = Signal(str)
+
+    def __init__(self, news: dict, how: self_update.Plan, proxy: str) -> None:
+        super().__init__()
+        self._news, self._how, self._proxy = news, how, proxy
+
+    def run(self) -> None:
+        try:
+            new = self_update.download(self._news, self._how, on_progress=self.progress.emit,
+                                       cancelled=self.isInterruptionRequested, proxy=self._proxy)
+            if self.isInterruptionRequested():
+                new.unlink(missing_ok=True)
+                return
+            self_update.install(new, self._how.exe)
+        except self_update.UpdateError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
+        else:
+            self.done.emit()
 
 
 class _YtdlpThread(QThread):
@@ -1841,6 +1876,8 @@ class VidGrabWindow(QMainWindow):
             QTimer.singleShot(1200, self.probe_hardware)
             if not find_ffmpeg():  # the macOS app / a pip install: fetch it once
                 QTimer.singleShot(900, self._offer_ffmpeg)
+            if getattr(sys, "frozen", False):
+                self_update.cleanup()  # the version this one replaced, or a half download
             if self.setting("update_check"):
                 QTimer.singleShot(6000, self.check_for_release)
             if self.setting("ytdlp_check") and self._can_update_ytdlp:  # one quiet request to pypi.org
@@ -2040,7 +2077,7 @@ class VidGrabWindow(QMainWindow):
         self._release_note = QPushButton()  # only shown when a newer VidGrab was released
         self._release_note.setObjectName("secondary")
         self._release_note.setCursor(QCursor(_HAND))
-        self._release_note.clicked.connect(lambda: self.open_url(update_check.PAGE))
+        self._release_note.clicked.connect(self._release_clicked)
         self._release_note.hide()
         lay.addWidget(self._release_note, alignment=Qt.AlignLeft)
 
@@ -2837,9 +2874,69 @@ class VidGrabWindow(QMainWindow):
 
     def _on_release(self, news: dict) -> None:
         self._release_info = news
-        self._release_note.setText(self._t("VidGrab {v} is out — see what is new", v=news["version"]))
+        self._release_plan = self_update.plan(news)  # None: this copy can't replace itself, so the button opens the page
+        key = "VidGrab {v} is out — update now" if self._release_plan else "VidGrab {v} is out — see what is new"
+        self._release_note.setText(self._t(key, v=news["version"]))
         self._release_note.setToolTip(news.get("notes", ""))
         self._release_note.show()
+
+    def _release_clicked(self) -> None:
+        news = getattr(self, "_release_info", None) or {}
+        how = getattr(self, "_release_plan", None)
+        if not how:
+            self.open_url(update_check.PAGE)
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle(self._t("Update VidGrab"))
+        box.setText(self._t("Install VidGrab {v} now?", v=news.get("version", "")))
+        box.setInformativeText(self._t("VidGrab downloads it, checks the file and swaps it in. Your projects and "
+                                       "settings stay as they are. Restart afterwards to use it."))
+        go = box.addButton(self._t("Update now"), QMessageBox.AcceptRole)
+        notes = box.addButton(self._t("What's new"), QMessageBox.ActionRole)
+        box.addButton(self._t("Later"), QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is notes:
+            self.open_url(news.get("url") or update_check.PAGE)
+        elif box.clickedButton() is go:
+            self._install_release(news, how)
+
+    def _install_release(self, news: dict, how) -> None:
+        if getattr(self, "_install_thread", None) is not None and self._install_thread.isRunning():
+            return
+        self._release_note.setEnabled(False)
+        self._release_note.setText(self._t("Downloading the update…"))
+        self._install_thread = _InstallThread(news, how, NETWORK.proxy)
+        self._install_thread.progress.connect(
+            lambda pct: self._release_note.setText(
+                self._t("Downloading the update… {p}%", p=pct) if pct >= 0 else self._t("Downloading the update…")))
+        self._install_thread.done.connect(self._release_installed)
+        self._install_thread.failed.connect(self._release_failed)
+        self._install_thread.start()
+
+    def _release_failed(self, message: str) -> None:
+        self._release_note.setEnabled(True)
+        self._on_release(self._release_info)
+        QMessageBox.warning(self, self._t("Update VidGrab"), self._t(message) + "\n\n" +
+                            self._t("Nothing was changed. You can download it from the release page."))
+
+    def _release_installed(self) -> None:
+        self._release_note.setText(self._t("Installed — restart VidGrab to use it"))
+        self._release_note.setEnabled(True)
+        self._release_note.clicked.disconnect()
+        self._release_note.clicked.connect(self._restart_app)
+        ask = QMessageBox.question(self, self._t("Update VidGrab"),
+                                   self._t("VidGrab {v} is installed. Restart now?",
+                                           v=self._release_info.get("version", "")))
+        if ask == QMessageBox.Yes:
+            self._restart_app()
+
+    def _restart_app(self) -> None:
+        try:
+            subprocess.Popen([sys.executable], close_fds=True, **_detached())
+        except OSError as exc:
+            QMessageBox.warning(self, self._t("Update VidGrab"), str(exc))
+            return
+        self.close()
 
     def open_url(self, url: str) -> None:
         if not opener.open_url(url):
@@ -4290,6 +4387,8 @@ class VidGrabWindow(QMainWindow):
             _stop_thread(self._hw_probe)
         if self._ytdlp_thread is not None:
             _stop_thread(self._ytdlp_thread, 3000)
+        if getattr(self, "_install_thread", None) is not None:
+            _stop_thread(self._install_thread, 3000)
         if self._ffmpeg_thread is not None:
             _stop_thread(self._ffmpeg_thread, 3000)
         self._search_panel.stop()

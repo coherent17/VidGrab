@@ -130,6 +130,7 @@ from vidgrab.ui.theme import (  # noqa: F401
 from vidgrab.ui.toast import ToastHost
 from vidgrab.ui.tools_page import _NAMES as _TOOL_NAMES
 from vidgrab.ui.tools_page import TOOLS, ToolsPage
+from vidgrab.ui.tour import Tour
 from vidgrab.ui.updates import UpdatesMixin
 from vidgrab.ui.workers import (
     _STUCK,
@@ -536,11 +537,42 @@ class VidGrabWindow(SettingsMixin, UpdatesMixin, DownloadPageMixin, QMainWindow)
     # downloads-finished notification -------------------------------------------
 
     def _welcome(self) -> None:
-        """First start only: one tip about the fastest way around."""
+        """First start only: the short tour."""
         if self.setting("welcome_shown"):
             return
+        self.start_tour()
+
+    def start_tour(self) -> None:
+        """A card beside the sidebar that walks through the pages (also in the palette)."""
+        if getattr(self, "_tour", None) is None:
+            self._tour = Tour(self, self._tour_steps, self._tour_labels, self._sidebar.select,
+                              lambda i: self._sidebar._buttons[i], _PALETTES[self._theme], self._tour_done)
+        self._tour.start()
+
+    def _tour_steps(self) -> list:
+        t = self._t
+        return [
+            (PAGE_DOWNLOAD, t("Download anything"),
+             t("Paste a link, or type words to search YouTube. Pick MP4 or Audio and press Download.")),
+            (PAGE_STUDIO, t("Make a video"),
+             t("Add clips, trim them on the timeline, add subtitles and music, then press Render. "
+               "Drag the handle above the timeline to give the panels more room.")),
+            (PAGE_LIBRARY, t("Find your files"),
+             t("Everything you downloaded and made, as a list or a grid. Select a file to open it, "
+               "send it to the Studio or shrink it.")),
+            (PAGE_TOOLS, t("One-click tools"),
+             t("Make a Short, shrink a video to a size, convert, GIF, thumbnail, extract audio: "
+               "no Studio needed.")),
+            (PAGE_HELP, t("Need a hand?"),
+             t("Press Ctrl+K to jump anywhere or run an action, and F1 for the Help guide.")),
+        ]
+
+    def _tour_labels(self) -> dict[str, str]:
+        return {"next": self._t("Next"), "skip": self._t("Skip the tour"), "done": self._t("Got it")}
+
+    def _tour_done(self) -> None:
         self.set_setting("welcome_shown", True)
-        self.toast(self._t("Tip: press Ctrl+K to jump anywhere, or drop a video on this window to start."), "info")
+        self._sidebar.select(PAGE_DOWNLOAD)
 
     def toast(self, text: str, kind: str = "ok", action=None):
         """A message that slides in at the bottom right and goes away by itself."""
@@ -653,6 +685,8 @@ class VidGrabWindow(SettingsMixin, UpdatesMixin, DownloadPageMixin, QMainWindow)
             )
         if hasattr(self, "_toasts"):
             self._toasts.apply_theme(_PALETTES[self._theme])
+        if getattr(self, "_tour", None) is not None:
+            self._tour.apply_theme(_PALETTES[self._theme])
         if hasattr(self, "_info_empty"):
             self._info_empty.apply_theme(_PALETTES[self._theme])
         if hasattr(self, "_help"):
@@ -1174,6 +1208,7 @@ class VidGrabWindow(SettingsMixin, UpdatesMixin, DownloadPageMixin, QMainWindow)
             (t("Open the downloads folder"), lambda: self.open_path(str(self.default_output_dir()))),
             (t("Switch between dark and light"), self._toggle_theme),
             (t("Keyboard shortcuts"), lambda: (self._sidebar.select(PAGE_STUDIO), self._studio.show_shortcuts())),
+            (t("Take the tour"), self.start_tour),
         ]
         return cmds
 

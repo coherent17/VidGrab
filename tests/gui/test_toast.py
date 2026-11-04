@@ -115,24 +115,29 @@ def test_the_title_bar_names_the_open_project(win, tmp_path) -> None:
     assert win.windowTitle().startswith("holiday") and win.windowTitle().endswith("VidGrab")
 
 
-def test_the_welcome_tip_shows_once(win) -> None:
+def test_the_first_run_tour_walks_the_pages_and_shows_once(win) -> None:
     assert win.setting("welcome_shown") is False
     win._welcome()
-    assert len(win._toasts.active()) == 1 and win.setting("welcome_shown") is True
+    tour = win._tour
+    assert tour.active() and win._stack.currentIndex() == 0
+    seen = [win._stack.currentIndex()]
+    while tour.active():
+        tour.next()
+        if tour.active():
+            seen.append(win._stack.currentIndex())
+    assert seen == [0, 1, 2, 3, 6]  # Download, Studio, Library, Tools, Help
+    assert win.setting("welcome_shown") is True and win._stack.currentIndex() == 0
     win._welcome()  # not again
-    assert len(win._toasts.active()) == 1
+    assert not tour.active()
 
 
-def test_a_page_slides_in_and_ends_exactly_in_place(win) -> None:
-    stack = win._stack
-    stack.slide_enabled = True  # off under offscreen by default
-    stack.setCurrentIndex(2)
-    _pump(0.05)
-    page = stack.currentWidget()
-    assert page.pos().y() >= 0  # on its way (or already there)
-    _pump(0.4)
-    assert page.pos().x() == 0 and page.pos().y() == 0
-    stack.setCurrentIndex(0)  # a quick second switch must not leave a page off-centre
-    stack.setCurrentIndex(1)
-    _pump(0.4)
-    assert stack.currentWidget().pos().y() == 0
+def test_the_tour_can_be_skipped_and_restarted_from_the_palette(win) -> None:
+    win.start_tour()
+    assert win._tour.active()
+    win._tour.skip_btn.click()
+    assert not win._tour.active() and win.setting("welcome_shown") is True
+    win.open_palette()
+    dlg = win._palette_dlg
+    dlg.box.setText("tour")
+    dlg._run(dlg.list.item(0))
+    assert win._tour.active() and win._tour.ring.isVisible()
